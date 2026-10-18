@@ -1,0 +1,17 @@
+{
+  "name": "whale-pod",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "QQ bot runtime with a free-first LLM gateway. Tray-resident, zero windows.",
+  "main": "src/index.js",
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js",
+    "test": "node tests/run.mjs"
+  },
+  "license": "MIT"
+}

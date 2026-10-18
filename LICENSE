@@ -1,0 +1,49 @@
+MIT License
+
+Copyright (c) 2026 WhalePod contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+---
+
+## 第三方组件说明 / Third-party notices
+
+WhalePod 本身不含任何第三方代码，但它在运行时会**导入**宿主机上已有的组件：
+
+| 组件 | 用途 | 许可 |
+|---|---|---|
+| `@deepseek-ai/cordis` | 插件容器（提供服务上下文） | 见其包内 LICENSE |
+| `@deepseek-ai/dsh-llm` | LLM 路由与适配器契约 | 见其包内 LICENSE |
+| `dsh-our-free-model` 的 `channel-pack` | 各免费渠道的适配器实现 | MIT（见该插件 LICENSE） |
+| DSH Desktop | 提供上述包与本机运行时 | 见 DSH 仓库 |
+
+**这些组件不随 WhalePod 分发** —— WhalePod 在运行时从用户自己的
+DSH 安装目录里加载它们。使用者需自行遵守各自许可。
+
+WhalePod 运行时**只读取** DSH 的凭据文件（`~/.dsh/.credentials.yaml`），
+写入时走自己的 overlay 文件（`~/.whale-pod/credentials-overlay.json`），
+不会修改 DSH 的数据。
+
+## 合规提醒
+
+- WhalePod **不下载、不安装、不修改** QQ 客户端或任何协议端。
+- 使用第三方 QQ 协议端（NapCat、SnowLuma 等）请自行阅读其许可与
+  《QQ 用户协议》。**建议使用小号**，账号风险自负。
+- SnowLuma 的 EULA 对「通过自动化脚本部署」有额外限制，
+  因此 WhalePod 刻意不提供协议端的自动安装。

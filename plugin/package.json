@@ -1,0 +1,47 @@
+{
+  "name": "dsh-whale-pod",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "WhalePod —— DSH 的 QQ 聊天机器人插件。内置 DeepSeek 账户凭证 + 支持自定义供应商。",
+  "main": "./index.js",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "README.md",
+    "assets"
+  ],
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "qq",
+    "onebot",
+    "napcat"
+  ],
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": []
+    }
+  },
+  "license": "MIT",
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.2",
+    "@deepseek-ai/dsh-credentials": "^0.1.2-rc.1 || ^0.1.7-rc.2 || ^0.2.0-rc.1",
+    "@deepseek-ai/dsh-llm": "^0.1.2-rc.1 || ^0.1.7-rc.2 || ^0.2.0-rc.1",
+    "@deepseek-ai/schemastery": "^3.18.4"
+  }
+}

@@ -1,0 +1,34 @@
+# ============================================================================
+# dsh-whale-pod —— DSH bundle patch
+# ============================================================================
+# 挂载声明：把 WhalePod 插入当前 profile 的配置树。
+#
+# 本插件是**纯 Host 插件**：只有 index.js 一个半身，不声明 dsh.client。
+#
+# ⚠️ 不要在这里或 package.json 里加 dsh.client —— 一旦声明，
+#    client-modules 注册表就会去找 client.js，找不到会让**整个 startup 失败**
+#    （报 "client bundles not found; run pnpm run build before launch"），
+#    而且失败面是整个宿主，不只是本插件。
+#    要加 UI 时，必须同时提供 client.js 构建产物，两者不可分开。
+#
+# 安装（桌面端 desktop profile）：
+#   dsh plugin --profile desktop add link:<本目录绝对路径>
+# ============================================================================
+
+- insert:
+    - id: dsh-whale-pod
+      name: dsh-whale-pod
+      # ── 生命周期开关（都可选，不写就是下面这对默认值）──────────────
+      #
+      # autoStart: DSH 启动时是否自动拉起 WhalePod
+      #   true  （默认）跟 DSH 一起起，侧栏直接就是可用状态
+      #   false 只有你点侧栏「一键启动」才起 —— 适合不想让它偷偷常驻
+      #
+      # stopOnExit: DSH 关闭时是否连带停止 WhalePod
+      #   true  （默认）DSH 退了机器人就停，NapCat 一起关
+      #   false 保持常驻，QQ 不下线（适合"机器人 24 小时在线"的场景）
+      #
+      # ⚠️ 两者独立：可以"不自动起但也不自动停"（全程手动管理）。
+      config:
+        autoStart: true
+        stopOnExit: true

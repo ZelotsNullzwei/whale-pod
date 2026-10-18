@@ -1,0 +1,622 @@
+/**
+ * WhalePod 主入口：组装所有层并启动。
+ *
+ * 启动顺序（有依赖关系，不能乱）：
+ *   1. 配置       ← 其它层都读它
+ *   2. 日志       ← 配置里有 level
+ *   3. 凭据       ← 网关和决策层都要
+ *   4. LLM 网关核心 ← 装载 channel-pack（14 渠道）
+ *   5. 决策层     ← 独立于 LLM，但共享凭据与日志
+ *   6. HTTP 服务  ← 暴露 OpenAI 兼容端点
+ *   7. Web UI     ← 管理界面
+ *   8. 托盘       ← 可选；失败不影响核心功能
+ */
+
+import path from 'node:path'
+import crypto from 'node:crypto'
+import { fileURLToPath } from 'node:url'
+
+import { ConfigStore } from './config/store.js'
+import { Credentials } from './config/credentials.js'
+import { Logger } from './logger.js'
+import { findDshAppDir, findChannelPack, linkDshModules, createLlmGateway } from './gateway/llm-core.js'
+import { createGatewayServer, mintKey } from './gateway/server.js'
+import { UsageTracker } from './gateway/usage.js'
+import { resolveCandidates, openFirstAvailable, DEFAULT_FREE_ORDER } from './gateway/router.js'
+import { createDecisionLayer } from './decision/index.js'
+import { createWebServer } from './web/server.js'
+import { MemoryStore } from './memory/short.js'
+import { LongTermStore } from './memory/long.js'
+import { PersonaStore } from './persona/store.js'
+import { OneBotClient } from './qq/onebot.js'
+import { QQBridge } from './qq/bridge.js'
+import * as protocols from './qq/protocol.js'
+import { ProtocolSupervisor, detectInstalled } from './qq/protocol.js'
+import * as runtime from './qq/runtime.js'
+import * as modes from './qq/modes.js'
+import { MODES, astrbotGatewayHint } from './qq/modes.js'
+import { createFallbackLlm } from './gateway/fallback.js'
+
+/**
+ * 把「DSH 渠道」和「自备渠道」合成一个 llm 对象。
+ *
+ * 为什么要合：router 只看 `llm.stream()` 与 `llm.listProviders()`。
+ * 只要这两个方法能同时覆盖两边的 provider，上层（网关 / QQ / 决策）
+ * 就完全不用改 —— 融合发生在这一个点上。
+ *
+ * 优先级：DSH 免费渠道优先（省钱），自备渠道作为候补与兜底。
+ * `stream()` 按 provider 归属派发，所以同名也不会串。
+ */
+function mergeLlm(core, extra, log) {
+  const coreProviders = () => {
+    try { return (core.providers ?? []).slice() } catch { return [] }
+  }
+  const extraProviders = () => extra.listProviders()
+
+  return {
+    __merged: true,
+    /** 暴露原始对象，便于调试与状态页展示。 */
+    __core: core,
+    __extra: extra,
+
+    get providers() {
+      return [...coreProviders(), ...extraProviders()]
+    },
+
+    /** provider → 默认模型（router 的 auto 模式需要它认识自备渠道）。 */
+    defaultModels() {
+      return { ...(core.defaultModels?.() ?? {}), ...(extra.defaultModels?.() ?? {}) }
+    },
+
+    get catalog() {
+      return core.catalog ?? []
+    },
+
+    listProviders() {
+      return this.providers
+    },
+
+    listModels(o = {}) {
+      const p = o?.provider
+      if (p && extraProviders().includes(p)) return extra.listModels(o)
+      return core.llm?.listModels?.(o) ?? []
+    },
+
+    refreshCatalog(o) {
+      return core.refreshCatalog?.(o) ?? Promise.resolve([])
+    },
+
+    /**
+     * 按 provider 归属派发流。
+     *
+     * 注意：必须**原样返回**底层迭代器（不能包一层 async generator），
+     * 因为 router 的 takeFirst() 会手动调 it.return() 来放弃失败的候选 ——
+     * 中间多一层会让那个清理动作落不到真正的流上。
+     */
+    stream(o = {}) {
+      const p = o?.provider
+      if (p && extraProviders().includes(p)) return extra.stream(o)
+      if (!core.llm?.stream) {
+        // DSH 侧不可用时的兜底（例如 core 起来了但 llm 服务缺失）
+        return (async function* () {
+          yield { type: 'finish', reason: { kind: 'error', failure: { message: 'DSH 渠道不可用' } } }
+        })()
+      }
+      return core.llm.stream(o)
+    },
+
+    close() {
+      try { core.close?.() } catch { /* ignore */ }
+    },
+  }
+}
+
+const here = path.dirname(fileURLToPath(import.meta.url))
+const projectRoot = path.resolve(here, '..')
+
+/**
+ * 等 OneBot 端点就绪再连接。
+ *
+ * 为什么需要：NapCat 刚被拉起来时，它的 OneBot 端口要几秒才监听。
+ * 立刻 connect() 会失败一轮、打出一堆"连接出错"警告，看起来像坏了。
+ * 这里只做**一次**等待（不是轮询重连 —— 那由 OneBotClient 自己负责）。
+ *
+ * @param {object} onebotCfg
+ * @param {object} log
+ * @param {number} [timeoutMs]
+ */
+async function waitForOneBot(onebotCfg, log, timeoutMs = 20000) {
+  const mode = onebotCfg.mode ?? 'forward'
+  if (mode !== 'forward' && mode !== 'both') return     // 反向模式是我们自己监听，不用等
+  const wsUrl = onebotCfg.wsUrl
+  if (!wsUrl) return
+
+  let port = 0
+  try { port = Number(new URL(wsUrl).port) || (wsUrl.startsWith('wss') ? 443 : 80) } catch { return }
+  const host = (() => { try { return new URL(wsUrl).hostname } catch { return '127.0.0.1' } })()
+
+  const net = await import('node:net')
+  const deadline = Date.now() + timeoutMs
+  let waited = false
+  while (Date.now() < deadline) {
+    const ok = await new Promise((resolve) => {
+      const sock = net.connect({ host, port })
+      const done = (v) => { try { sock.destroy() } catch { /* ignore */ } resolve(v) }
+      sock.setTimeout(1200, () => done(false))
+      sock.once('connect', () => done(true))
+      sock.once('error', () => done(false))
+    })
+    if (ok) {
+      if (waited) log.info(`QQ：协议端已就绪（${host}:${port}）`)
+      return
+    }
+    if (!waited) { log.info(`QQ：等待协议端就绪（${host}:${port}）…`); waited = true }
+    await new Promise((r) => setTimeout(r, 700))
+  }
+  log.warn(`QQ：等协议端超时（${host}:${port} 一直没监听）—— 仍尝试连接，会自动重连`)
+}
+
+
+/** 解析命令行参数（只做必要的最小集合）。 */
+function parseArgs(argv) {
+  const out = { home: undefined, port: undefined, webPort: undefined, noWeb: false, noTray: false, dshApp: undefined, profile: undefined, daemon: false }
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i]
+    const next = () => argv[++i]
+    if (a === '--home') out.home = next()
+    else if (a === '--port') out.port = Number(next())
+    else if (a === '--web-port') out.webPort = Number(next())
+    else if (a === '--no-web') out.noWeb = true
+    else if (a === '--no-tray') out.noTray = true
+    else if (a === '--dsh-app') out.dshApp = next()
+    else if (a === '--profile') out.profile = next()
+    else if (a === '--daemon') out.daemon = true
+    else if (a === '--help' || a === '-h') out.help = true
+  }
+  return out
+}
+
+const HELP = `
+WhalePod —— QQ 机器人运行时 + 免费优先的 LLM 网关
+
+用法： whale-pod [选项]
+
+选项：
+  --home <dir>       数据目录（默认 ~/.whale-pod）
+  --port <n>         LLM 网关端口（默认 18899）
+  --web-port <n>     管理界面端口（默认 18898）
+  --no-web           不启动管理界面
+  --no-tray          不创建托盘图标
+  --dsh-app <dir>    DSH 安装目录（默认自动探测）
+  --profile <name>   使用哪个 DSH profile 的 channel-pack
+  -h, --help         显示本帮助
+`.trim()
+
+export async function main(argv = process.argv.slice(2)) {
+  const args = parseArgs(argv)
+  if (args.help) { console.log(HELP); return { code: 0 } }
+
+  // ── 1. 配置 ─────────────────────────────────────────────────
+  const store = new ConfigStore({ home: args.home })
+  store.load()
+  const overrides = {}
+  if (args.port) overrides.gateway = { ...(overrides.gateway ?? {}), port: args.port }
+  if (args.webPort) overrides.web = { ...(overrides.web ?? {}), port: args.webPort }
+  if (Object.keys(overrides).length) store.update(overrides)
+
+  // 首次启动生成密钥
+  store.ensureSecrets(mintKey)
+  const cfg = store.get()
+
+  // ── 2. 日志 ─────────────────────────────────────────────────
+  const logger = new Logger({
+    level: cfg.log?.level ?? 'info',
+    ringSize: cfg.log?.ringSize ?? 2000,
+    file: path.join(store.home, 'whale-pod.log'),
+  })
+  const log = logger.api
+  log.info(`WhalePod 启动（数据目录 ${store.home}）`)
+
+  const shutdown = []
+  const state = {
+    startedAt: Date.now(),
+    gateway: null,
+    web: null,
+    llm: null,
+    decision: null,
+    usage: null,
+    tray: null,
+    errors: [],
+  }
+
+  try {
+    // ── 3. 凭据 ───────────────────────────────────────────────
+    const creds = new Credentials({
+      mode: cfg.credentials?.mode ?? 'overlay',
+    })
+    const refCount = creds.listRefs().length
+    log.info(`凭据：${refCount} 个 ref（源 ${creds.file}，模式 ${creds.mode}）`)
+    if (creds.load().dshMissing) {
+      log.warn('未找到 DSH 凭据文件 —— 免费渠道可能全部不可用')
+    }
+
+    // ── 4. LLM 网关核心 ───────────────────────────────────────
+    //
+    // 两条来源，可叠加：
+    //
+    //   ① DSH 的 channel-pack —— 14 个免费渠道（有 DSH 才有）
+    //   ② 自备渠道           —— 用户自己填的 OpenAI 兼容端点（Ollama/DeepSeek/…）
+    //
+    // 少了 ① 不该让程序起不来 —— 那样没有 DSH 的用户就完全用不了。
+    // 所以这里把「找不到 DSH」降级成警告：能用自备渠道就继续跑，
+    // 两个都没有才报错（因为那时确实没法回话）。
+    const appDir = findDshAppDir(args.dshApp)
+    const pack = appDir ? findChannelPack({ profile: args.profile }) : null
+    // 记录到 state —— Web UI（渠道页 / 总览）靠这两个字段判断
+    // "到底有没有 DSH"。漏掉会导致界面同时显示"14 个渠道"和"没检测到 DSH"。
+    state.dshAppDir = appDir ?? null
+    state.dshPack = pack ?? null
+    state.profile = pack?.profile ?? null
+    const selfChannels = (cfg.gateway?.channels ?? []).filter((c) => c && c.enabled !== false && c.baseUrl)
+    const fallbackLlm = selfChannels.length > 0
+      ? createFallbackLlm({
+        channels: selfChannels,
+        log: (lv, msg) => log[lv]?.(msg),
+      })
+      : null
+
+    if (appDir && pack) {
+      log.info(`DSH：${appDir}`)
+      log.info(`channel-pack：${pack.profile} profile`)
+    } else {
+      // 找不到宿主渠道包不是错误 —— WhalePod 自己就能跑，只要用户配了供应商。
+      // 这里只说清楚「能用什么」，不暗示用户去装别的东西。
+      log.info('LLM：使用内置 DeepSeek 账户凭证 + 自定义供应商')
+      log.warn(selfChannels.length > 0
+        ? `已配置自备渠道 ${selfChannels.length} 个：${selfChannels.map((c) => c.id).join(', ')}`
+        : '还没有配置供应商 → 请在「配置」页填入 DeepSeek API Key，或添加一个 OpenAI 兼容端点。')
+    }
+
+    let llm
+    // 用量统计：网关 HTTP 调用与 QQ 内部调用**都**记到这里，
+    // 否则总览页的 token/费用永远是 0（QQ 才是真正烧 token 的地方）。
+    const usage = new UsageTracker()
+    if (appDir && pack) {
+      linkDshModules(appDir, projectRoot)
+      const core = await createLlmGateway({ appDir, packFile: pack.file, credentials: creds, log })
+      // 有自备渠道时叠加进去：让 router 能同时看到 DSH 渠道与自备渠道
+      llm = fallbackLlm ? mergeLlm(core, fallbackLlm, log) : core
+      // 账号池挂在 cordis ctx 上（channel-pack 用 ctx.provide('accountPool')）。
+      // 存进 state 供 Web 层查「某渠道有几个账号」—— 侧栏用它隐藏未接入渠道。
+      // 不放在 llm 上是因为 mergeLlm 只搬运 llm 相关字段，ctx 会被丢掉。
+      state.accountPool = core.ctx?.accountPool ?? null
+      // 后台刷新一次模型目录（不阻塞启动；失败不影响核心功能）
+      core.refreshCatalog().then((cat) => {
+        log.info(`模型目录：${cat.length} 个`)
+      }).catch((e) => log.warn(`模型目录刷新失败：${String(e?.message ?? e)}`))
+    } else {
+      if (!fallbackLlm) {
+        throw new Error(
+          '没有可用的 LLM 渠道。两种方式任选其一：\n' +
+          '  1. 使用内置的 DeepSeek 账户凭证（在「配置」页填入你自己的 DeepSeek API Key）\n' +
+          '  2. 添加自定义供应商（任何 OpenAI 兼容端点，如 Ollama / DeepSeek / 自建服务）',
+        )
+      }
+      llm = fallbackLlm
+      log.info(`LLM：仅用自备渠道（${selfChannels.map((c) => c.id).join(', ')}）`)
+      // ⚠️ 无 DSH 时，配置里那条默认付费兜底（deepseek-official）是个幽灵：
+      //    它排在自备渠道后面却被当成有效候选，失败信息还会盖住真正的原因。
+      //    这里在启动时把它关掉，只用用户显式配置的渠道。
+      if (cfg.gateway?.fallback?.enabled) {
+        store.update({ gateway: { fallback: { ...cfg.gateway.fallback, enabled: false } } })
+        log.warn('已自动禁用付费兜底（deepseek-official 需要 DSH 凭据，当前不可用）')
+        cfg.gateway.fallback.enabled = false
+      }
+    }
+    state.llm = llm
+    state.usage = usage
+    // 记录**启动时**实际装载的自备渠道 id。Web UI 靠它区分"自备渠道"与
+    // "DSH 免费渠道"—— 必须用快照而不是当前配置，否则配置改动后
+    // （要重启才生效）会把已删的渠道误判成 DSH 渠道。
+    state.selfChannelIds = selfChannels.map((c) => c.id)
+    shutdown.push(() => llm.close?.())
+
+    // ── 4b. 免费渠道优先顺序 ──────────────────────────────────
+    //
+    // 首次运行时配置里是空数组。如果不填，顺序就等于 channel-pack 的
+    // **注册顺序**（codearts 打头，验证过最稳的 gemini 排到第 12）——
+    // 实测这样会让前面十几个没配 model hint 的渠道白白空转。
+    //
+    // 所以首次启动把 DEFAULT_FREE_ORDER 落成显式配置：
+    //   · 用户下次打开「模型」页就能看到真实顺序，可自行调整
+    //   · 之后启动都按这份配置走，不会每次重算
+    // 已有配置的用户不受影响（只在为空时写一次）。
+    if (!cfg.gateway.freeProviders?.length) {
+      const all = llm.providers ?? []
+      const wanted = DEFAULT_FREE_ORDER.filter((p) => all.includes(p))
+      if (wanted.length > 0) {
+        store.update({ gateway: { freeProviders: wanted } })
+        cfg.gateway.freeProviders = wanted
+        log.info(`免费渠道优先级已初始化为默认顺序：${wanted.slice(0, 4).join(' → ')} …`)
+      }
+    }
+
+    // ── 5. 决策层 ─────────────────────────────────────────────
+    const decision = createDecisionLayer(cfg.decision ?? {}, { credentials: creds, log })
+    state.decision = decision
+    log.info(`决策层：order = [${decision.order.join(' → ')}]，阈值 ${decision.threshold}`)
+    // 启动时探一次可用性，把问题尽早暴露在日志里
+    decision.probeAll().then((r) => {
+      for (const p of r.providers) {
+        log[p.ok ? 'info' : 'warn'](`决策提供者 ${p.id}：${p.ok ? '可用' : '不可用'} — ${p.detail}`)
+      }
+    }).catch(() => { })
+
+    // ── 7. 记忆 + 人格 ────────────────────────────────────────
+    const memory = new MemoryStore(cfg.memory?.short ?? {})
+    const persona = new PersonaStore({
+      home: store.home,
+      active: cfg.persona?.active ?? 'default',
+      log,
+    })
+    persona.init()
+    log.info(`人格：当前角色 "${persona.active}"（可选 ${persona.list().join(', ')}）`)
+
+    // 长期记忆：摘要用便宜模型做（复用网关）
+    const longMemory = new LongTermStore({
+      cfg: cfg.memory?.long ?? {},
+      home: store.home,
+      log,
+      summarize: async ({ messages, previous, scene, self }) => {
+        const { SUMMARY_PROMPT } = await import('./memory/long.js')
+        const prompt = SUMMARY_PROMPT
+          .replace('{previous}', previous || '（无）')
+          .replace('{messages}', messages.map((m) => `${m.isMe ? '[我]' : m.senderName}: ${m.text}`).join('\n'))
+
+        const candidates = resolveCandidates('auto', {
+          freeProviders: llm.providers,
+          freeOrder: cfg.gateway?.freeProviders ?? [],
+          disabledProviders: cfg.gateway?.disabledProviders ?? [],
+          catalog: llm.catalog,
+          selfModels: llm.defaultModels?.() ?? {},
+          fallback: cfg.gateway?.fallback,
+        })
+        if (candidates.length === 0) return ''
+        const opened = await openFirstAvailable({
+          llm,
+          candidates,
+          // content 用数组块（与 bridge 保持一致）。纯文本时字符串也能跑，
+          // 但一旦某条消息带图，上游会遍历所有消息调 content.some(...)，
+          // 字符串会直接抛错 —— 统一用数组块就不用记这个坑。
+          request: { messages: [{ role: 'user', content: [{ type: 'text', text: prompt }] }], maxTokens: 512 },
+          onAttempt: () => { },
+        })
+        let text = ''
+        for await (const chunk of opened.stream) {
+          if (chunk?.type === 'text-delta' || chunk?.type === 'text') text += chunk.text ?? ''
+        }
+        return text.trim()
+      },
+    })
+    longMemory.load()
+    state.memory = memory
+    state.persona = persona
+    state.longMemory = longMemory
+
+    // ── 8. 协议端托管 + 运行模式 ──────────────────────────────
+    //
+    // 运行模式决定「谁当机器人框架」：
+    //   whale-pod —— WhalePod 自己接 OneBot（下面第 9 步）
+    //   astrbot  —— AstrBot 接 OneBot，WhalePod 退为纯 LLM 网关
+    // 两者**不能同时**接同一个 OneBot 端点，否则会抢事件。
+    const supervisor = new ProtocolSupervisor({
+      home: store.home,
+      log,
+      // NapCat 的 OneBot 端点要按 WhalePod 的配置自动写进它的账号配置
+      // （否则 NapCat 不监听 3001，桥接永远连不上 —— 见 protocol.js
+      //   ensureOneBotServers 的说明）
+      oneBot: cfg.qq?.onebot ?? {},
+    })
+    state.supervisor = supervisor
+    state.backends = detectInstalled(store.home)
+    shutdown.push(async () => { await supervisor.stopAll() })
+
+    const mode = cfg.qq?.mode === 'astrbot' ? 'astrbot' : 'whale-pod'
+    state.mode = mode
+    log.info(`运行模式：${MODES[mode]?.name ?? mode}`)
+
+    const installed = Object.entries(state.backends)
+      .filter(([, v]) => v.installed)
+      .map(([k]) => k)
+    log.info(`已装组件：${installed.length ? installed.join(', ') : '(无)'}`)
+
+    // ── 9. QQ 桥接（仅 whale-pod 模式）─────────────────────────
+    //
+    // ⚠️ 启动协议端要放在**接 OneBot 之前**，否则第一次连接必然失败、
+    //    还要等重连（用户会看到几秒"连不上"的警告）。
+    //
+    // 之前这里只创建了 supervisor 却从不启动任何后端 —— 于是每次重启
+    // WhalePod 后 NapCat 都是死的，必须手动去组件页点「启动」。
+    // 现在按配置自动拉起（supervisor.enabled 默认视为开启）。
+    if (mode === 'whale-pod' && cfg.qq?.enabled === true) {
+      const supCfg = cfg.qq?.supervisor ?? {}
+      const wantKind = supCfg.kind ?? 'napcat'
+      const installedOk = state.backends?.[wantKind]?.installed === true
+      // supervisor.enabled 显式为 false 才跳过（老配置里没有这个字段）
+      if (supCfg.enabled !== false && installedOk && !supervisor.running(wantKind)) {
+        try {
+          const r = supervisor.start(wantKind)
+          log.info(`协议端：已自动启动 ${wantKind}（pid ${r.pid}）`)
+        } catch (e) {
+          log.warn(`协议端：自动启动 ${wantKind} 失败 — ${String(e?.message ?? e)}`)
+        }
+      } else if (supCfg.enabled !== false && !installedOk) {
+        log.info(`协议端：${wantKind} 未安装，跳过自动启动`)
+      }
+    }
+
+    if (cfg.qq?.enabled === true && mode === 'astrbot') {
+      log.info('QQ：astrbot 模式 —— WhalePod 不接 OneBot，请让 AstrBot 连协议端')
+      const hint = astrbotGatewayHint(cfg.gateway)
+      log.info(`QQ：把 AstrBot 的 API 地址指向 ${hint.apiBase}`)
+    } else if (cfg.qq?.enabled === true) {
+      const onebot = new OneBotClient(cfg.qq.onebot ?? {}, { log })
+      const bridge = new QQBridge({
+        cfg: {
+          ...cfg.qq,
+          fallback: cfg.gateway?.fallback,
+          // 免费渠道优先级与开关：bridge 的 auto 模式靠它们决定"先试哪个"
+          freeOrder: cfg.gateway?.freeProviders ?? [],
+          disabledProviders: cfg.gateway?.disabledProviders ?? [],
+          // 别名（鱼/鲸鱼/白饭…）：群里叫它这些词也算在叫它
+          decisionAliases: cfg.decision?.aliases,
+        },
+        onebot,
+        gateway: llm,
+        decision,
+        memory,
+        longMemory,
+        persona,
+        usage,
+        // 联网搜索用 DeepSeek 的 key（没有就自动跳过搜索，不影响其它功能）
+        searchKey: (() => {
+          try { return creds.get('DEEPSEEK_API_KEY') ?? null } catch { return null }
+        })(),
+        log,
+      })
+      bridge.attach()
+      // NapCat 是刚拉起来的，OneBot 端口要几秒才开。直接连会先失败一轮、
+      // 打出一堆"连接出错"的警告，看起来像坏了。等端口就绪再连（最多 20s）。
+      await waitForOneBot(cfg.qq.onebot ?? {}, log)
+      onebot.connect()
+      state.onebot = onebot
+      state.bridge = bridge
+      shutdown.push(async () => { onebot.close() })
+      const dir = cfg.qq.onebot?.mode ?? 'forward'
+      log.info(`QQ：已启用（${dir} 模式，${cfg.qq.onebot?.wsUrl || cfg.qq.onebot?.reversePort || '未配置地址'}）`)
+      if (!cfg.qq.allow?.groups?.length && !cfg.qq.allow?.private?.length) {
+        // ⚠️ 这里必须**真的读** allowAllWhenEmpty，不能想当然。
+        //    老代码只要白名单为空就固定打 "allowAllWhenEmpty=false —— 不会响应
+        //    任何消息"，而配置明明是 true —— 日志在撒谎，用户据此以为机器人
+        //    坏了（实测被这条误导过）。实际拦截逻辑在 bridge.js，它读的是真值。
+        if (cfg.qq.allow?.allowAllWhenEmpty === true) {
+          log.warn('QQ：白名单为空，但 allowAllWhenEmpty=true —— 会响应所有人（如需收紧请在设置里加白名单）')
+        } else {
+          log.warn('QQ：白名单为空且 allowAllWhenEmpty=false —— 不会响应任何消息（这是 fail-closed 默认值）')
+        }
+      }
+    } else {
+      log.info('QQ：未启用（qq.enabled = false）')
+    }
+
+    // ── 10. LLM 网关 HTTP ─────────────────────────────────────
+    if (cfg.gateway?.enabled !== false) {
+      const gw = createGatewayServer({
+        gateway: cfg.gateway, llm, log, usage,
+        // 网关侧也支持联网（外部工具问时效性问题时用），与 QQ 侧同一套判断
+        searchKey: (() => {
+          try { return creds.get('DEEPSEEK_API_KEY') ?? null } catch { return null }
+        })(),
+      })
+      await gw.listen()
+      state.gateway = gw
+      shutdown.push(() => gw.close())
+      log.info(`LLM 网关：http://${cfg.gateway.host}:${cfg.gateway.port}/v1`)
+      log.info(`网关 key：${cfg.gateway.key}`)
+      if (mode === 'astrbot') {
+        log.info(`→ AstrBot 里把 API Base 填：http://${cfg.gateway.host}:${cfg.gateway.port}/v1`)
+      }
+    } else {
+      log.info('LLM 网关已禁用')
+    }
+
+    // ── 11. 管理 Web UI ───────────────────────────────────────
+    if (!args.noWeb && cfg.web?.enabled !== false) {
+      const web = createWebServer({
+        web: cfg.web,
+        store,
+        logger,
+        llm,
+        decision,
+        credentials: creds,
+        memory,
+        persona,
+        longMemory,
+        bridge: state.bridge,
+        state,
+        log,
+        protocols,
+        runtime,
+        modes,
+      })
+      await web.listen()
+      state.web = web
+      shutdown.push(() => web.close())
+      log.info(`管理界面：http://${cfg.web.host}:${cfg.web.port}?token=${cfg.web.token}`)
+    }
+
+    // ── 11. 托盘（可选）───────────────────────────────────────
+    // --daemon 模式：被 dsh-whale-pod 插件的守护器拉起，无托盘、无独立窗口。
+    // 管理 UI 保留（Web 端口照常服务）—— DSH 插件通过它透传全部功能。
+    if (!args.noTray && !args.daemon) {
+      try {
+        const { createTray } = await import('./tray/index.js')
+        state.tray = await createTray({
+          log,
+          onQuit: () => doShutdown('托盘退出'),
+          onOpenWeb: () => {
+            const url = `http://${cfg.web.host}:${cfg.web.port}?token=${cfg.web.token}`
+            log.info(`请在浏览器打开：${url}`)
+          },
+          status: () => ({
+            gateway: state.gateway ? `${cfg.gateway.host}:${cfg.gateway.port}` : null,
+            web: state.web ? `${cfg.web.host}:${cfg.web.port}` : null,
+            providers: state.llm?.providers?.length ?? 0,
+            qq: state.bridge?.statsSnapshot?.()?.connected ? 'connected' : 'off',
+          }),
+        })
+        if (state.tray) log.info('托盘图标已创建')
+      } catch (e) {
+        log.warn(`托盘不可用（不影响运行）：${String(e?.message ?? e)}`)
+      }
+    }
+
+    log.info('WhalePod 就绪')
+
+    // ── 优雅退出 ──────────────────────────────────────────────
+    let shuttingDown = false
+    async function doShutdown(reason) {
+      if (shuttingDown) return
+      shuttingDown = true
+      log.info(`正在关闭（${reason}）…`)
+      for (const fn of shutdown.reverse()) {
+        try { await fn() } catch { /* ignore */ }
+      }
+      logger.close()
+      process.exit(0)
+    }
+
+    process.on('SIGINT', () => doShutdown('SIGINT'))
+    process.on('SIGTERM', () => doShutdown('SIGTERM'))
+    if (process.platform === 'win32') {
+      process.on('SIGBREAK', () => doShutdown('SIGBREAK'))
+    }
+
+    return { store, logger, state, shutdown: doShutdown }
+  } catch (err) {
+    log.error(`启动失败：${String(err?.message ?? err)}`)
+    if (err?.stack) log.debug(String(err.stack).split('\n').slice(1, 5).join('\n'))
+    for (const fn of shutdown.reverse()) {
+      try { await fn() } catch { /* ignore */ }
+    }
+    return { code: 1, error: err }
+  }
+}
+
+// 直接运行时才执行（被 import 时不执行）
+if (import.meta.url === `file://${process.argv[1]?.replace(/\\/g, '/')}` ||
+  process.argv[1]?.endsWith('index.js')) {
+  const r = await main()
+  if (r?.code) process.exit(r.code)
+  // 保持进程存活（HTTP 服务会让它活着）
+}

@@ -1,0 +1,32 @@
+# 依赖与产物
+node_modules/
+.test-home/
+.test-home-qq/
+*.log
+
+# 运行期数据（不该进仓库）
+config.json
+credentials-overlay.json
+memory-long.json
+persona/roles/*.md
+
+# 编辑器/系统
+.DS_Store
+Thumbs.db
+*.tmp
+*.bak
+*.bak.*
+*.backup
+*.orig
+*.rej
+
+# 本地交接笔记（含个人环境信息，不进仓库）
+交接文档.md
+
+# 打包产物
+dist/
+.test-exe-home/
+vendor-backup/
+
+# 用户个人数据：表情包索引由 scripts/extract-stickers.mjs 从本机 QQ 生成
+src/qq/stickers.json
