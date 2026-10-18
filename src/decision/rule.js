@@ -185,14 +185,47 @@ export class RuleDecisionProvider extends DecisionProvider {
       p = Math.max(p * 2.5, 0.8)
     }
 
+    // ⚠️ **追问：我刚说完话，别人接着说 → 大概率是在对[/我]说。**
+    //
+    //    实测踩过（2026-10-18）：群里刚问完它一个问题、它答了，紧接着
+    //    有人问「你最喜欢的ai是谁」—— 日志打出 p=0.04 然后沉默。
+    //    用户看到的是"我明明在问它，它却不理我"。
+    //
+    //    人不会这样。真人刚说完话，紧接着有人开口，默认是接自己的话茬；
+    //    只有明显在跟别人聊时才会退出去。所以这里把"我上一条之后的第一句"
+    //    当作强信号。
+    //
+    //    判据（任一成立即可，都要在"上一条是我"的前提下）：
+    //      ① 消息里有第二人称（你/您/你们）→ 直接在对我说
+    //      ② 是问句 / 招呼 / 祈使 → 在追问我
+    //      ③ 与我上一条的内容有实词重叠 → 在接我的话
+    //
+    //    ⚠️ 只在"我上一条之后**没有别人插话**"时才算。如果中间已经有
+    //       第三人说了话，那就不是追问了，交给常规规则判断。
+    const followUp = detectFollowUp(msgs, input.self)
+    if (followUp.hit) {
+      // ⚠️ 2026-10-18 从 0.85 提到 0.97。
+      //
+      //    0.85/0.9 有个实际观测到的问题：**连着两次都掷不中**。
+      //    日志证据：同一句「你最喜欢的ai是谁」，先 p=0.06 沉默（判据没生效），
+      //    再 p=0.90 又沉默（判据生效了但没掷中）。用户体验上这就是
+      //    "我问了两遍它都不理我"，而背后的概率是 10% —— 单看一次没问题，
+      //    但人力感知只认"我问了它没答"这个事实。
+      //
+      //    追问不同于随机插话：它是**明确的对话邀请**。对这种信号留 10%
+      //    装死概率没有收益，只有伤害。留 3% 只是为了避免极端情况
+      //    （有人恶意连刷几十遍）下每条都秒回，显得像机器。
+      p = Math.max(p, 0.97)
+    }
+
     // 纯语气词/表情符号：确实没什么可接的。
     // 这里用**直接封顶**而不是乘系数 —— 系数法只降 15%，和正常短句
     // 几乎拉不开差距（实测 28% vs 40%，区分度不足）。
     const isPureFiller = /^[\s\p{Emoji_Presentation}\p{Extended_Pictographic}哈哈嘿嗯哦喔噢额呃唉诶草6啊?？!！。.~～]+$/u.test(text)
       && text.replace(/[\s\p{Emoji_Presentation}\p{Extended_Pictographic}]/gu, '').length <= 4
-    // ⚠️ 话题连续时不压 —— 大家都在发梗图，单看一条是"纯表情"，
-    //    放在连续语境里恰恰是"该接话"的信号。
-    if (isPureFiller && !nickHit && !thread.hit) {
+    // ⚠️ 话题连续 / 正在追问我时不压 —— 大家都在发梗图，单看一条是"纯表情"，
+    //    放在连续语境里恰恰是"该接话"的信号；追问时发的表情也是如此。
+    if (isPureFiller && !nickHit && !thread.hit && !followUp.hit) {
       p = Math.min(p, this.cfg.idleChatterProbability * 0.45)
     }
 
@@ -226,12 +259,25 @@ export class RuleDecisionProvider extends DecisionProvider {
     // ⚠️ 2026-10-18：被**点名**的情况下不封顶到 0.9 —— 上面已经把
     //    nickHit 抬到 0.95，这里若按 0.9 削一刀等于白抬。
     //    点名 = 最明确的召唤，给 0.95；其余情况仍按 0.9 封顶。
-    p = nickHit ? Math.min(p, 0.95) : Math.min(p, 0.9)
+    //
+    // ⚠️ 追问（followUp）同理，而且要**排在最高**：它是「有人在对我说话」
+    //    的明确信号，上面抬到 0.97 若被这里削回 0.9，等于白改 ——
+    //    这个 bug 被概率分布测试抓出来过（200 次全是 0.9，没有一次 0.97）。
+    p = followUp.hit
+      ? Math.min(p, 0.97)
+      : (nickHit ? Math.min(p, 0.95) : Math.min(p, 0.9))
     const reply = rnd() < p
+    // 原因文案要能区分几种典型场景，否则调日志时只能看到一句
+    // "无 @，保持沉默"，分不出是"没叫我"还是"我正在被追问"。
+    const why = reply
+      ? (followUp.hit ? `接话（${followUp.why}）` : '群聊中随机插话命中')
+      : (followUp.hit
+        ? `本该接话（${followUp.why}）但本次随机放弃`
+        : '群聊中无 @，本次保持沉默')
     return {
       reply,
       probability: Number(p.toFixed(3)),
-      reason: reply ? '群聊中随机插话命中' : '群聊中无 @，本次保持沉默',
+      reason: why,
       delayMs: reply ? this._delay(1500, 5000, rnd) : undefined,
     }
   }
@@ -248,6 +294,102 @@ export class RuleDecisionProvider extends DecisionProvider {
 }
 
   /**
+ * 判断当前这条是不是在「追问我」。
+ *
+ * ## 为什么需要这个
+ *
+ * 实测踩过（2026-10-18）：群里先是 @ 它问了句，它答了；紧接着有人问
+ * 「你最喜欢的ai是谁」—— 日志打出 p=0.04 然后沉默。用户看到的是
+ * "我明明在问它，它却不理我"。
+ *
+ * 原因：判断"在叫我吗"只看三个信号 —— 被 @、叫名字、引用我的消息。
+ * 这三样都没有时，一律归到 4% 的随机插话档。可现实里**最常见的情况
+ * 就是接着上一句问**，谁会每句话都重新 @ 一次？
+ *
+ * ## 判据
+ *
+ * 先在消息序列里找**我最后一条发言的位置**，要求：
+ *   · 存在这样一条（我说过话）
+ *   · 它之后**没有第三人**插话（否则就不是追问我，是在跟别人聊）
+ *
+ * 满足后，看当前这条是否带有"在对我说"的痕迹：
+ *   ① 第二人称（你/您/你们）        → 直接在对我说
+ *   ② 问句 / 招呼 / 祈使句          → 在追问我
+ *   ③ 与我上一条有实词重叠          → 在接我的话
+ *
+ * 任一成立即算。
+ *
+ * @param {Array<{isMe?:boolean, text?:string}>} msgs
+ * @param {object} [self]
+ * @returns {{hit:boolean, why:string}}
+ */
+export function detectFollowUp(msgs, self) {
+  const list = msgs ?? []
+  if (list.length < 2) return { hit: false, why: '' }
+
+  // 从后往前找「我」最后一条发言的位置（排除当前这条）
+  let myIdx = -1
+  for (let i = list.length - 2; i >= 0; i--) {
+    if (list[i]?.isMe === true) { myIdx = i; break }
+  }
+  if (myIdx === -1) return { hit: false, why: '' }
+
+  // 我发言之后到当前这条之间的消息
+  const between = list.slice(myIdx + 1, list.length - 1)
+
+  const last = list[list.length - 1]
+  const text = String(last?.text ?? '').trim()
+  if (!text) return { hit: false, why: '' }
+
+  /**
+   * 判定"是不是在接我的话"。
+   *
+   * ⚠️ 原来要求 between 里**一个人都没有** —— 太严了。实测（2026-10-18）
+   *    19:24 那次：它答完「你最喜欢的ai是谁」后隔了一分多钟，中间夹了
+   *    别人的零散发言，于是判据完全失效，p 掉回 0.04。
+   *
+   *    现实里群聊是交错的，"我问完你、中间别人插了两句、我又追问"非常
+   *    常见。所以改成按**人数与距离**分级：
+   *      · 中间没人             → 强信号（原有逻辑）
+   *      · 中间 ≤1 人且 ≤2 条   → 仍算追问，但理由标为"弱"
+   *      · 中间 ≥2 人           → 不算（那真的是在跟别人聊）
+   */
+  const others = new Set(between.filter((m) => m?.isMe !== true).map((m) => m?.senderId ?? m?.senderName ?? '?'))
+  const strong = between.length === 0
+  const weak = between.length <= 2 && others.size <= 1
+  if (!strong && !weak) return { hit: false, why: '' }
+
+  const tag = strong ? '' : '（隔了几句）'
+
+  // ① 第二人称 —— 最直接的"在对我说"
+  if (/(你|您|你们)/.test(text)) {
+    return { hit: true, why: `接着我的话，用了第二人称${tag}` }
+  }
+
+  // ② 问句 / 招呼 / 祈使
+  //
+  // ⚠️ 疑问语气词也算问句。中文群里大量问句不带问号：
+  //    「cluade，gpt，gemini，grok四选一呢」「那你说啥」「为什么啊」
+  //    只看 [?？] 会漏掉一大半，所以补上句尾的疑问词。
+  const looksQuestion = /[?？]/.test(text)
+    || /(在吗|在么|有人吗|谁在|在不在)/.test(text)
+    || /(呢|吗|吧|么|啥|怎么|为什么|为啥|哪个|哪里|多少)\s*[。.!！~～]?$/.test(text)
+  if (looksQuestion) {
+    return { hit: true, why: `我刚说完，紧接着发问${tag}` }
+  }
+
+  // ③ 与我上一条有实词重叠 —— 在接我的话
+  const mine = contentWords(String(list[myIdx]?.text ?? ''))
+  const theirs = contentWords(text)
+  const shared = [...theirs].filter((w) => mine.has(w))
+  if (shared.length >= 1) {
+    return { hit: true, why: `接着「${shared.slice(0, 2).join('、')}」在说${tag}` }
+  }
+
+  return { hit: false, why: '' }
+}
+
+/**
  * 这句话是不是在说机器人（提到它的名字 / 叫它）。
  *
  * ## 为什么要做这个
