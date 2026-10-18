@@ -211,14 +211,32 @@ export async function ensureRunning(opts = {}) {
     //    时启动的是 GUI 而不是脚本，端口永远不监听 → 守护器误报"启动超时"）。
     //    优先系统 node；其次 DSH 自带的 node（desktop-runtime 里）。
     const node = findNodeExe()
+
+    // ── 关于 detached：**必须是 false** ───────────────────────────
+    //
+    // 早期用 detached: true + unref()，意图是「DSH 重启时机器人不掉线」。
+    // 实测发现这条路彻底走不通：
+    //
+    //   ① 宿主的退出有 5s 超时强杀（见 main.js 的 createDesktopShutdown），
+    //      而 dispose 要串行跑完所有插件，我们的清理经常轮不上。
+    //   ② 实测 2026-10-18 连续多次重启，`ctx.effect` 注册的清理函数
+    //      **一次都没被调用**（宿主日志里连一行都没有）。
+    //   ③ 于是 detached 的进程失去唯一的清理途径 —— 关了 DSH，
+    //      机器人永远在线、18898/3001 一直占着。
+    //
+    // 改成 detached: false 后，后端作为宿主的**普通子进程**存在：
+    // 宿主以任何方式退出（正常关闭 / 任务管理器 / 崩溃），Windows 都会
+    // 连带结束整棵进程树。不依赖任何钩子，也不需要额外的监控逻辑。
+    //
+    // 代价是「机器人 24 小时在线」这个能力没有了 —— 但那本来就该由
+    // 独立启动（双击 bat）承担，不该让 DSH 的子进程去兼。
     child = spawn(node.exe, args, {
-      detached: true,
+      detached: false,
       windowsHide: true,
       stdio: 'ignore',
       cwd: WHALE_POD_ROOT,
       env: node.env,
     })
-    child.unref()   // 让 DSH 宿主退出时不拖走它
     log.info?.(`WhalePod 守护进程已启动（pid ${child.pid}）`)
 
     // ── 等就绪 ──────────────────────────────────────────────────
@@ -300,20 +318,31 @@ export async function stopDaemon(opts = {}) {
 /**
  * 同步版「彻底关闭」—— 专给宿主退出路径用。
  *
- * ## 为什么不复用 stopDaemon
+ * ## 为什么不能只 `child.kill()`
  *
- * stopDaemon 是 async 的：内部有 `await import('node:child_process')`、
- * `await isAlive()`、`await sleep()`。宿主退出时进程立刻结束，这些 await
- * 之后的代码**永远不会执行** —— 实测就是「日志里连一行都没有、进程还在」。
+ * `child` 只指向**本进程启动的那一个**。实际上后端可能是上一轮 DSH 起的、
+ * 用户手动双击 bat 起的，这时 `child` 是空的，只 kill 它等于什么都没做。
  *
- * 这个函数只做同步系统调用：
- *   ① 结束本进程持有的子进程
- *   ② 用 taskkill /T /F 杀掉命令行走特征匹配的 WhalePod 与 NapCat
- *      （/T 连带子进程树，NapCat 是两三层进程）
- *   ③ 不做「等端口释放」这种需要轮询的事 —— 退出路径上没必要，下次启动
- *      的 ensureRunning 会自己重试
+ * ## 为什么必须在**极短时间**内完成
  *
- * 慢一点（每个进程一次 taskkill）完全可接受，能杀掉才是目的。
+ * 宿主（DSH Desktop）的退出是有超时的：
+ *
+ *     function createDesktopShutdown(dispose, exit, timeoutMs = 5e3) {
+ *       timeout = setTimeout(() => exitOnce(failureCode), timeoutMs)
+ *       pending = Promise.resolve().then(dispose).then(() => exitOnce(code))
+ *     }
+ *
+ * 也就是 **挂载 5 秒后无条件 exit**。而 `dispose` 要跑完**所有**插件的
+ * cleanup，我们只是其中一个。所以本函数能用的时间远不到 5 秒 ——
+ * 之前用同步 `taskkill` 逐个杀（每个约 1 秒、3 个进程 3 秒）会把它耗尽，
+ * 结果就是"日志里一行都没有、进程还在"（19:29 那次实测）。
+ *
+ * 现在改成：
+ *   ① 一次性把所有 PID 查出来（1 次 powershell）
+ *   ② 用**一个** taskkill 命令同时结束它们（支持多 /PID）
+ *   ③ 不等待、不校验、不轮询 —— 退出路径上没时间做这些
+ *
+ * 全程 2 个进程调用，通常 200–400ms 完成。
  *
  * @param {{log?:object}} [opts]
  * @returns {{killed:number, pids:number[]}}
@@ -321,50 +350,51 @@ export async function stopDaemon(opts = {}) {
 export function killDaemonSync(opts = {}) {
   const log = opts.log
   const pids = []
-  let killed = 0
 
-  // ① 我们 spawn 的那个 child
+  // ① 我们 spawn 的那个 child（无论后面扫不扫得到，先杀掉）
+  const ownPid = child?.pid
   if (child && !child.killed) {
-    try {
-      child.kill()
-      killed++
-      log?.info?.(`已结束子进程 pid ${child.pid}`)
-    } catch { /* ignore */ }
+    try { child.kill() } catch { /* ignore */ }
   }
   child = null
 
-  // ② 按命令行特征扫残余进程（同步 exec）
-  //
-  // 匹配三类，缺一类都会留残留：
-  //   · whale-pod/src/index.js   —— 守护进程本体
-  //   · whale-pod/protocol/napcat —— 协议端（launcher 与 core 各一个）
-  //
-  // 只认这两个明确的路径片段，不会误杀用户自己的其它 node 进程。
+  // ② 一次查出所有相关 PID
+  const found = []
+  const push = (pid) => {
+    const n = Number(pid)
+    if (Number.isFinite(n) && n > 0 && !found.includes(n)) found.push(n)
+  }
+  if (ownPid) push(ownPid)
+
   try {
     const out = execFileSync('powershell', ['-NoProfile', '-Command',
       "Get-CimInstance Win32_Process -Filter \"Name='node.exe'\" | " +
       "Where-Object { $_.CommandLine -match 'whale-pod[\\\\/]src[\\\\/]index\\.js|whale-pod[\\\\/]protocol[\\\\/]napcat' } | " +
       "ForEach-Object { $_.ProcessId }",
-    ], { encoding: 'utf8', timeout: 8000 })
-
-    for (const pid of String(out).trim().split(/\s+/).filter(Boolean)) {
-      try {
-        // /T 连带子进程树 —— NapCat 是 launcher → core 两层，
-        // 只杀 launcher 会留下 core 继续占着端口。
-        execFileSync('taskkill', ['/PID', pid, '/T', '/F'], { stdio: 'ignore', timeout: 5000 })
-        killed++
-        pids.push(Number(pid))
-        log?.info?.(`已结束 WhalePod 进程 pid ${pid}`)
-      } catch { /* 可能已经退了 */ }
-    }
+    ], { encoding: 'utf8', timeout: 3000 })
+    for (const pid of String(out).trim().split(/\s+/).filter(Boolean)) push(pid)
   } catch (error) {
     log?.warn?.(`扫描 WhalePod 进程失败：${String(error?.message ?? error)}`)
   }
 
-  // ③ 兜底：本进程是 DSH 的 utility 子进程，`child` 变量可能为空
-  //    （比如 WhalePod 是上一轮 DSH 启动的）。上面第 ② 步已覆盖这种情况。
+  if (found.length === 0) return { killed: 0, pids: [] }
 
-  return { killed, pids }
+  // ③ 一条 taskkill 命令杀掉全部（/T 连带子进程树）
+  //
+  //    taskkill 支持重复 /PID：`taskkill /PID 1 /PID 2 /T /F`
+  //    这比循环调用快得多，而且不会因为某一个卡住而拖慢整体。
+  const args = []
+  for (const pid of found) args.push('/PID', String(pid))
+  args.push('/T', '/F')
+
+  try {
+    execFileSync('taskkill', args, { stdio: 'ignore', timeout: 3000 })
+    return { killed: found.length, pids: found }
+  } catch {
+    // taskkill 在多 PID 时只要有一个失败就返回非 0，但通常其它已经杀了。
+    // 退出路径没时间重试，如实报告尝试过的 PID 即可。
+    return { killed: 0, pids: found }
+  }
 }
 
 /** 守护进程的启动参数：--daemon 在旧版 index.js 中定义。 */

@@ -602,6 +602,62 @@ export async function main(argv = process.argv.slice(2)) {
       process.on('SIGBREAK', () => doShutdown('SIGBREAK'))
     }
 
+    // ── 宿主存活监控（父进程没了就优雅关闭）──────────────────────
+    //
+    // ## 背景：为什么靠插件钩子不行
+    //
+    // 宿主（DSH Desktop）退出时**不保证**执行插件的 dispose —— 实测
+    // 2026-10-18 连续多次重启，`ctx.effect` 注册的清理函数一次都没触发
+    // （宿主日志里连一行都没有）。而宿主退出本身有 5s 超时强杀：
+    //
+    //     function createDesktopShutdown(dispose, exit, timeoutMs = 5e3) {
+    //       timeout = setTimeout(() => exitOnce(failureCode), timeoutMs)
+    //       pending = Promise.resolve().then(dispose).then(() => exitOnce(code))
+    //     }
+    //
+    // ## 现在的主防线是 detached: false
+    //
+    // 插件侧已改成 `detached: false`（见 plugin/daemon.js），本进程是宿主的
+    // **普通子进程**。宿主以任何方式退出，Windows 都会连带结束整棵进程树 ——
+    // 这条路径不依赖任何代码，是最可靠的。
+    //
+    // ## 这段监控的作用是「双保险 + 体面退出」
+    //
+    // 进程树被系统直接杀掉时，我们是**没机会写日志、也没机会让 NapCat
+    // 优雅停止**的（它会被一起 taskkill）。有了这段监控，在大多数情况下
+    // （宿主正常退出、或子进程没被立刻清理时）我们能自己发现问题，
+    // 走一遍 `doShutdown()` —— 那样日志里能看到「正在关闭」，
+    // NapCat 也能按正常流程停下，而不是被强杀。
+    //
+    // ⚠️ 只在 `--daemon` 模式下启用：手动 `node src/index.js` 时父进程
+    //    是终端，关掉终端不该顺带关掉机器人。
+    if (args.daemon && process.ppid > 0) {
+      const parentPid = process.ppid
+      const intervalMs = 3000
+      log.info(`宿主监控：父进程 pid ${parentPid}，每 ${intervalMs / 1000}s 检查一次`)
+
+      const parentAlive = () => {
+        try {
+          // 信号 0 不发送信号，只做存在性探测；进程不存在时抛 ESRCH
+          process.kill(parentPid, 0)
+          return true
+        } catch (error) {
+          // EPERM = 进程存在但没权限（不是真正的「已退出」）
+          return error?.code === 'EPERM'
+        }
+      }
+
+      const parentTimer = setInterval(() => {
+        if (shuttingDown) { clearInterval(parentTimer); return }
+        if (parentAlive()) return
+        clearInterval(parentTimer)
+        void doShutdown(`宿主进程 ${parentPid} 已退出`)
+      }, intervalMs)
+      // unref：这个定时器不该单方面把进程留住
+      parentTimer.unref?.()
+      shutdown.push(() => clearInterval(parentTimer))
+    }
+
     return { store, logger, state, shutdown: doShutdown }
   } catch (err) {
     log.error(`启动失败：${String(err?.message ?? err)}`)
