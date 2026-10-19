@@ -206,7 +206,20 @@ export async function ensureRunning(opts = {}) {
     if (now - lastStartAt >= 60_000) failCount = 0
     lastStartAt = now
 
-    const args = [entry, '--daemon', '--no-tray', '--home', opts.home ?? path.join(process.env.DSH_HOME ?? path.join(process.env.USERPROFILE ?? '', '.dsh'), 'whale-pod')]
+    // `--hosted`：告诉后端"你由 DSH 插件托管"。
+    //
+    // 作用只有一个：**关掉后端的父进程监控**。
+    //
+    // 为什么必须关（2026-10-19 反复复现）：
+    //   DSH 重启后插件宿主是新进程，后端记录下当时的 ppid；宿主一旦被
+    //   替换/回收，旧 pid 消失，后端就判定"宿主退出了"，**自己杀掉自己**。
+    //   日志上的表现极具误导性：启动成功、已登录 QQ，两秒后进程消失，
+    //   而且没有"正在关闭"的记录。用户看到的是"刷新一下偶尔显示未启用"。
+    //
+    // 生命期本来就不靠那个监控保证，已有两层：
+    //   ① 下面 spawn 用 detached:false → DSH 真退出时 Windows 连带杀整棵树
+    //   ② 插件 ctx.effect 清理钩子 → killDaemonSync() 同步收尾
+    const args = [entry, '--daemon', '--hosted', '--no-tray', '--home', opts.home ?? path.join(process.env.DSH_HOME ?? path.join(process.env.USERPROFILE ?? '', '.dsh'), 'whale-pod')]
     // ⚠️ 不能用 process.execPath —— DSH 宿主里它是 electron.exe（不带 ELECTRON_RUN_AS_NODE
     //    时启动的是 GUI 而不是脚本，端口永远不监听 → 守护器误报"启动超时"）。
     //    优先系统 node；其次 DSH 自带的 node（desktop-runtime 里）。

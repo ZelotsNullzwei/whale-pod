@@ -171,6 +171,9 @@ function parseArgs(argv) {
     else if (a === '--dsh-app') out.dshApp = next()
     else if (a === '--profile') out.profile = next()
     else if (a === '--daemon') out.daemon = true
+    // 由外部宿主托管（DSH 插件）。与 --daemon 的区别：
+    // 不启用父进程监控 —— 宿主的 pid 会变，监控会误杀自己。
+    else if (a === '--hosted') out.hosted = true
     else if (a === '--help' || a === '-h') out.help = true
   }
   return out
@@ -632,9 +635,26 @@ export async function main(argv = process.argv.slice(2)) {
     // ⚠️ 只在 `--daemon` 模式下启用：手动 `node src/index.js` 时父进程
     //    是终端，关掉终端不该顺带关掉机器人。
     //
-    // ⚠️ 可用 `WHALE_POD_NO_PARENT_WATCH=1` 关闭。开发/调试时从 shell 起
-    //    进程，shell 一退出就会连带杀后端 —— 排查时很碍事。
-    if (args.daemon && process.ppid > 0 && process.env.WHALE_POD_NO_PARENT_WATCH !== '1') {
+    // ⚠️ `--hosted` 时**完全不启用**。这是给 DSH 插件用的模式。
+    //
+    //    实测踩过（2026-10-19，反复复现）：DSH 重启后，插件宿主是新的
+    //    子进程；后端记录下的 `process.ppid` 指向那个宿主，而宿主在
+    //    插件重载/DSH 重启时会被替换 —— 旧的 pid 消失，我们误判成
+    //    "宿主退出了"，于是**自己杀掉自己**。
+    //    表现：日志显示启动成功、已登录 QQ，2 秒后进程没了，
+    //    而且**没有任何"正在关闭"的记录**（走的是 doShutdown，
+    //    但日志已经来不及刷盘）；用户看到的是"刷新一下偶尔变成未启用"。
+    //
+    //    在 DSH 下这个监控本来也是多余的，已有两层保护：
+    //      ① spawn 用 detached:false → DSH 真退出时 Windows 连带杀掉整棵树
+    //      ② 插件 ctx.effect 清理钩子 → killDaemonSync() 同步收尾
+    //    所以 --hosted 时直接跳过。
+    //
+    // ⚠️ 也可以用 WHALE_POD_NO_PARENT_WATCH=1 手动关（调试用）。
+    const parentWatchDisabled =
+      args.hosted === true ||
+      process.env.WHALE_POD_NO_PARENT_WATCH === '1'
+    if (args.daemon && process.ppid > 0 && !parentWatchDisabled) {
       const parentPid = process.ppid
       const intervalMs = 3000
       // 连续 3 次探测失败才动手 —— 避免瞬时抖动（比如宿主在做 GC、

@@ -43,6 +43,15 @@ window.__ModuleLoader__.load({
     const PANEL_ID = 'whale-pod'
 
     /**
+     * 项目仓库地址。
+     *
+     * 设置页右上角那个「点个 Star」按钮跳这里。
+     * 单独提出来是因为：README、安装说明、issue 入口都在这个仓库，
+     * 用户想反馈问题或看文档时需要它 —— 藏在下拉菜单里找不到。
+     */
+    const REPO_URL = 'https://github.com/ZelotsNullzwei/whale-pod'
+
+    /**
      * 模型分类标签（与渠道界面同一套分法）。
      *
      * 顺序按"常用程度"：白嫖渠道放第一 —— 用户接了账号的就是那几个渠道，
@@ -71,6 +80,7 @@ window.__ModuleLoader__.load({
         saving: '保存中…',
         saved: '已保存',
         saveFailed: '保存失败',
+        'repo.star': '点个 Star',
 
         // 仪表盘
         'dash.subtitle': 'QQ 机器人实时状态',
@@ -289,6 +299,7 @@ window.__ModuleLoader__.load({
         saving: 'Saving…',
         saved: 'Saved',
         saveFailed: 'Save failed',
+        'repo.star': 'Star us',
 
         'dash.subtitle': 'QQ bot live status',
         'dash.off': 'Bot is disabled',
@@ -545,7 +556,23 @@ window.__ModuleLoader__.load({
     // ── 基础样式 ───────────────────────────────────────────────────────────
     // 全部走主题变量，切换配色方案时不用改。
     const CSS = `
-.gd_root{display:flex;flex-direction:column;gap:14px;padding:4px 2px 28px;color:var(--dsw-alias-label-primary);font-size:13px;line-height:1.6;height:100%;overflow-y:auto;overscroll-behavior:contain}
+/* ── 根容器 ───────────────────────────────────────────────────────
+ *
+ * ⚠️ 这里是 height:100% 换成 min-height:0 的原因（2026-10-19 实测）：
+ *
+ *   这个 .gd_root 同时被两处复用：
+ *     · 侧栏面板（main slot）—— 父容器有确定高度，height:100% 正常
+ *     · 设置页（settings.section）—— 父容器是**可滚动的 section**，
+ *       高度由内容撑开，不是确定的
+ *
+ *   height:100% 在"父容器高度不确定"时会解析成 auto/0 ——
+ *   于是整块内容被压成 0 高，用户看到的就是**一片空白**。
+ *   实际踩到：后端关掉后进设置页，标题和提示都看不见，只有白板。
+ *
+ *   改成 min-height:0（=.min-height:auto 语义）让内容自己撑开；
+ *   滚动交给外层容器，这里只在"内容确实超高"时兜底滚动。
+ * ──────────────────────────────────────────────────────────────── */
+.gd_root{display:flex;flex-direction:column;gap:14px;padding:4px 2px 28px;color:var(--dsw-alias-label-primary);font-size:13px;line-height:1.6;overflow-y:auto;overscroll-behavior:contain}
 /* 整页视图（main 槽位）下内容会被拉到一千多像素宽，而侧栏只有 ~300px。
    同一份 CSS 要同时服务两种宽度，所以用容器查询分别调布局：
      · 宽（整页）→ 限宽 + 两栏网格，不把按钮/卡片拉满
@@ -559,6 +586,11 @@ window.__ModuleLoader__.load({
 .gd_hero p{margin:0;color:var(--dsw-alias-label-secondary);font-size:12.5px}
 /* 图标 + 标题并排（设置页头部） */
 .gd_herotop{display:flex;align-items:center;gap:11px;min-width:0}
+/* 右上角「点个 Star」——参考同类插件的做法：圆角胶囊 + 主题色描边。
+   用 <a> 而不是 button：它是外链跳转，中键/右键「新标签打开」应该能用。 */
+.gd_herotop .gd_repobtn{margin-left:auto;flex:none;display:inline-flex;align-items:center;gap:6px;padding:6px 14px;border-radius:999px;border:1px solid color-mix(in srgb,var(--dsw-alias-brand-primary) 45%,transparent);background:color-mix(in srgb,var(--dsw-alias-brand-primary) 10%,transparent);color:var(--dsw-alias-brand-primary);font-size:12.5px;font-weight:600;text-decoration:none;white-space:nowrap;transition:background .15s,border-color .15s}
+.gd_herotop .gd_repobtn:hover{background:color-mix(in srgb,var(--dsw-alias-brand-primary) 20%,transparent);border-color:var(--dsw-alias-brand-primary)}
+.gd_repobtnstar{font-size:13px;line-height:1}
 .gd_heroicon{flex:none;width:40px;height:40px;border-radius:10px;object-fit:cover;background:var(--dsw-alias-bg-layer-1);border:1px solid var(--dsw-alias-border-l1)}
 .gd_herotext{display:flex;flex-direction:column;gap:2px;min-width:0}
 .gd_herotext h2{margin:0;font-size:17px;font-weight:600;line-height:1.35}
@@ -923,9 +955,18 @@ window.__ModuleLoader__.load({
         return () => clearInterval(timer)
       }, [state.reload, intervalMs])
       // ② 变更广播：别处刚改过数据 → 立刻刷新，不等轮询
-      useEffect(() => refreshBus.subscribe(() => {
-        try { state.reload() } catch { /* ignore */ }
-      }), [state.reload])
+      //
+      // ⚠️ cleanup 必须包一层返回 undefined。
+      //    refreshBus.subscribe() 返回的是 `() => listeners.delete(fn)`，
+      //    而 Set.delete 返回 boolean —— React 会把它当 cleanup 函数调用，
+      //    拿到 true 就报警告（"useEffect must not return anything
+      //    besides a function"），在严格模式下甚至直接抛错。
+      useEffect(() => {
+        const unsubscribe = refreshBus.subscribe(() => {
+          try { state.reload() } catch { /* ignore */ }
+        })
+        return () => { unsubscribe() }
+      }, [state.reload])
       return state
     }
 
@@ -1445,16 +1486,19 @@ window.__ModuleLoader__.load({
         // ── 当前模型 + 推理等级（顶部一行摘要）──────────────────────
         //
         // 这一行是**保存状态的锚点**：点模型是即时生效的（不需要按保存），
-        // 但用户看不出来"到底存上没有"。所以：
-        //   · 保存中 → 显示「保存中…」
-        //   · 刚存完 → 短暂显示 ✓ 已保存
-        // 比在底部弹 toast 更靠近视线焦点。
+        // 但用户看不出来"到底存上没有"。
+        //
+        // ⚠️ 用本组件自己的 `flash`（第 1246 行）判断，**不要用 justSaved**。
+        //    justSaved 是 SettingsPage 的 state，作用域不覆盖这里 ——
+        //    直接引用会抛 ReferenceError: justSaved is not defined，
+        //    而它在渲染期抛出 → 整个设置页白屏（2026-10-19 实测踩到，
+        //    表现为"设置里鲸舱那一栏全白"，且不报任何可见错误）。
         h('div', { className: 'gd_modelrow' },
           h('span', { className: 'gd_modelrowlabel' }, t('model.current')),
           h('b', { title: currentLabel }, currentLabel),
           busy
             ? h('span', { className: 'gd_savestate saving' }, t('saving'))
-            : (justSaved
+            : (flash?.ok === true
               ? h('span', { className: 'gd_savestate done' }, `✓ ${t('saved')}`)
               : null),
           currentEfforts.length > 0
@@ -1781,7 +1825,21 @@ window.__ModuleLoader__.load({
             }),
             h('div', { className: 'gd_herotext' },
               h('h2', null, t('title')),
-              h('p', null, t('sub'))))),
+              h('p', null, t('sub'))),
+            // 右上角：跳转仓库。
+            //
+            // 参考同类插件（OFM 那排是「★ 点个 Star」）。放这里而不是塞进
+            // 下面某个 Section，是因为它属于"关于这个项目"的动作，
+            // 和具体配置项不是一类东西。
+            h('a', {
+              className: 'gd_repobtn',
+              href: REPO_URL,
+              target: '_blank',
+              rel: 'noopener noreferrer',
+              title: REPO_URL,
+            },
+              h('span', { className: 'gd_repobtnstar' }, '★'),
+              t('repo.star')))),
 
         toast === null ? null : h('p', { className: toast.ok ? 'gd_note' : 'gd_err' }, toast.text),
 

@@ -329,7 +329,17 @@ export class ConfigStore {
     if (fs.existsSync(this.file)) {
       try {
         const raw = fs.readFileSync(this.file, 'utf8')
-        const parsed = JSON.parse(raw)
+        // ⚠️ 必须剥掉 UTF-8 BOM 再解析。
+        //
+        //    实测踩过（2026-10-19）：用 PowerShell 的 ConvertTo-Json 写配置，
+        //    Set-Content 默认带 BOM（EF BB BF），JSON.parse 直接抛
+        //    "Unexpected token ''"。而这个 catch 会把**整份配置重置成默认值** ——
+        //    表现就是"我明明开了 QQ，重启后又变成关闭"，而且日志只说
+        //    "qq.enabled = false"，完全看不出是文件坏了。
+        //
+        //    目录里留了一堆 config.json.corrupt-* 就是那几次的现场。
+        const text = raw.charCodeAt(0) === 0xFEFF ? raw.slice(1) : raw
+        const parsed = JSON.parse(text)
         this.value = deepMerge(structuredClone(DEFAULTS), parsed)
       } catch (err) {
         // 坏文件不致命：备份后回默认值，避免用户彻底起不来。
@@ -348,6 +358,7 @@ export class ConfigStore {
   save() {
     fs.mkdirSync(path.dirname(this.file), { recursive: true })
     const tmp = `${this.file}.${process.pid}.tmp`
+    // 明确写 UTF-8 无 BOM（Node 默认行为），别让下游再踩一次
     fs.writeFileSync(tmp, JSON.stringify(this.value, undefined, 2) + '\n', { mode: 0o600 })
     fs.renameSync(tmp, this.file)
   }
