@@ -632,6 +632,10 @@ window.__ModuleLoader__.load({
 /* 侧栏的只读模型行 */.gd_modelrow{display:flex;align-items:center;gap:8px;padding:7px 10px;border-radius:9px;border:1px solid var(--dsw-alias-border-l1);background:color-mix(in srgb,var(--dsw-alias-bg-layer-1) 55%,transparent);min-width:0}
 .gd_modelrowlabel{font-size:10.5px;color:var(--dsw-alias-label-tertiary);flex:none}
 .gd_modelrow b{font-size:12px;font-weight:600;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* 保存状态提示：紧跟在模型名后面，不占额外一行 */
+.gd_savestate{font-size:10.5px;flex:none;margin-left:2px;transition:opacity .2s}
+.gd_savestate.saving{color:var(--dsw-alias-label-tertiary)}
+.gd_savestate.done{color:var(--dsw-alias-state-success-primary)}
 /* ── 渠道优先级列表（侧栏模型卡片）───────────────────────────── */
 .gd_chlist{display:flex;flex-direction:column;gap:8px}
 /* ── 模态大类切换（LLM / VLM）────────────────────────────────── */
@@ -879,14 +883,49 @@ window.__ModuleLoader__.load({
       return { ...state, reload: run }
     }
 
+    /**
+     * 轻量的「数据已变更」广播器。
+     *
+     * ## 为什么需要它
+     *
+     * 设置页改了模型后，侧栏那行「当前模型」要等**下一个 20 秒轮询**才更新。
+     * 用户点完保存切到侧栏一看还是旧模型，自然以为没存上。
+     *
+     * 这里做一个极简事件总线：谁改了数据就 broadcast()，
+     * 所有 usePoll 组件立刻 reload()，不用等轮询周期。
+     *
+     * ⚠️ 刻意不用 Context / 全局 store：这只是「通知别人刷新」，
+     *    不需要共享状态 —— 订阅者自己重新打接口，数据源始终是后端，
+     *    本地不留副本，也就没有同步问题。
+     */
+    const refreshBus = (() => {
+      const listeners = new Set()
+      return {
+        subscribe(fn) {
+          listeners.add(fn)
+          return () => listeners.delete(fn)
+        },
+        broadcast() {
+          for (const fn of [...listeners]) {
+            try { fn() } catch { /* 单个订阅者出错不影响其它 */ }
+          }
+        },
+      }
+    })()
+
     /** 定时轮询 hook：仪表盘与日志共用。间隔毫秒；0 = 不轮询。 */
     function usePoll(loader, deps, intervalMs) {
       const state = useAsync(loader, deps)
+      // ① 定时刷新
       useEffect(() => {
         if (!intervalMs || intervalMs <= 0) return undefined
         const timer = setInterval(() => state.reload(), intervalMs)
         return () => clearInterval(timer)
       }, [state.reload, intervalMs])
+      // ② 变更广播：别处刚改过数据 → 立刻刷新，不等轮询
+      useEffect(() => refreshBus.subscribe(() => {
+        try { state.reload() } catch { /* ignore */ }
+      }), [state.reload])
       return state
     }
 
@@ -1404,9 +1443,20 @@ window.__ModuleLoader__.load({
               h('span', { className: 'gd_tabcount' }, String(n))))),
 
         // ── 当前模型 + 推理等级（顶部一行摘要）──────────────────────
+        //
+        // 这一行是**保存状态的锚点**：点模型是即时生效的（不需要按保存），
+        // 但用户看不出来"到底存上没有"。所以：
+        //   · 保存中 → 显示「保存中…」
+        //   · 刚存完 → 短暂显示 ✓ 已保存
+        // 比在底部弹 toast 更靠近视线焦点。
         h('div', { className: 'gd_modelrow' },
           h('span', { className: 'gd_modelrowlabel' }, t('model.current')),
           h('b', { title: currentLabel }, currentLabel),
+          busy
+            ? h('span', { className: 'gd_savestate saving' }, t('saving'))
+            : (justSaved
+              ? h('span', { className: 'gd_savestate done' }, `✓ ${t('saved')}`)
+              : null),
           currentEfforts.length > 0
             ? h('select', {
               className: 'gd_effortsel',
@@ -1620,6 +1670,13 @@ window.__ModuleLoader__.load({
       const [busy, setBusy] = useState(false)
       const [toast, setToast] = useState(null)
       const [probe, setProbe] = useState(null)
+      /**
+       * 「刚保存完成」的短暂标记。
+       *
+       * 点模型是**即时生效**的（不需要额外按保存），但用户看不出反应。
+       * 这个 state 让顶部那行显示 1.8 秒的 ✓ 已保存，然后自动消失。
+       */
+      const [justSaved, setJustSaved] = useState(false)
 
       const cfg = config.data?.config
       const qq = cfg?.qq ?? {}
@@ -1634,13 +1691,25 @@ window.__ModuleLoader__.load({
           await post('/config', patch)
           config.reload()
           status.reload()
+          // ⚠️ 关键：广播出去，让侧栏等其它面板**立刻**刷新。
+          //    没有这一行的话，侧栏的「当前模型」要等 20 秒轮询才更新，
+          //    用户会以为没存上（实测反馈过）。
+          refreshBus.broadcast()
           setToast({ ok: true, text: t('saved') })
+          setJustSaved(true)
         } catch (error) {
           setToast({ ok: false, text: `${t('saveFailed')}：${String(error?.message ?? error)}` })
         } finally {
           setBusy(false)
         }
       }, [config, status, t])
+
+      // 「已保存」标记 1.8 秒后自动消失
+      useEffect(() => {
+        if (!justSaved) return undefined
+        const timer = setTimeout(() => setJustSaved(false), 1800)
+        return () => clearTimeout(timer)
+      }, [justSaved])
 
       useEffect(() => {
         if (toast === null) return undefined

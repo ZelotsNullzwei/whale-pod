@@ -134,17 +134,30 @@ export function createWebServer(opts) {
       }
 
       // ── QQ ────────────────────────────────────────────────
+      //
+      // ⚠️ 必须读 **state.bridge**，不能读闭包里的 `bridge`。
+      //
+      //    闭包里的 `bridge` 是 createWebServer() 调用时传进来的**快照**；
+      //    而侧栏「一键启动」是**运行时**才创建桥接并挂到 state.bridge 上。
+      //    于是闭包那个永远是 null，`/api/qq` 一直回「QQ 未启用」——
+      //    用户看到的是"启动成功了但状态还是关的、消息也收不到"。
+      //    （2026-10-19 实测踩到，正是本次"不会消息"的根因之一）
       if (p === '/api/qq' && req.method === 'GET') {
-        return json(res, 200, bridge?.statsSnapshot?.() ?? {
-          enabled: false, connected: false, reason: 'QQ 未启用（qq.enabled = false）',
+        const qqOn = store.get().qq?.enabled === true
+        const liveBridge = qqOn ? state.bridge : undefined
+        return json(res, 200, liveBridge?.statsSnapshot?.() ?? {
+          enabled: qqOn,
+          connected: false,
+          reason: qqOn ? 'QQ 已启用但桥接未就绪' : 'QQ 未启用（qq.enabled = false）',
         })
       }
       if (p === '/api/qq/pause' && req.method === 'POST') {
-        if (!bridge) return json(res, 400, { error: 'QQ 未启用' })
+        const liveBridge = store.get().qq?.enabled === true ? state.bridge : undefined
+        if (!liveBridge) return json(res, 400, { error: 'QQ 未启用' })
         const body = await readJson(req)
-        bridge.paused = body?.paused === true
-        log.info('Web：QQ ' + (bridge.paused ? '已暂停' : '已恢复'))
-        return json(res, 200, { ok: true, paused: bridge.paused })
+        liveBridge.paused = body?.paused === true
+        log.info('Web：QQ ' + (liveBridge.paused ? '已暂停' : '已恢复'))
+        return json(res, 200, { ok: true, paused: liveBridge.paused })
       }
 
       // ── 组件（协议端 / 框架）─────────────────────────────────

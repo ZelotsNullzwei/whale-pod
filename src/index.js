@@ -631,9 +631,15 @@ export async function main(argv = process.argv.slice(2)) {
     //
     // ⚠️ 只在 `--daemon` 模式下启用：手动 `node src/index.js` 时父进程
     //    是终端，关掉终端不该顺带关掉机器人。
-    if (args.daemon && process.ppid > 0) {
+    //
+    // ⚠️ 可用 `WHALE_POD_NO_PARENT_WATCH=1` 关闭。开发/调试时从 shell 起
+    //    进程，shell 一退出就会连带杀后端 —— 排查时很碍事。
+    if (args.daemon && process.ppid > 0 && process.env.WHALE_POD_NO_PARENT_WATCH !== '1') {
       const parentPid = process.ppid
       const intervalMs = 3000
+      // 连续 3 次探测失败才动手 —— 避免瞬时抖动（比如宿主在做 GC、
+      // 或者进程正在被替换）导致误杀自己。
+      let missCount = 0
       log.info(`宿主监控：父进程 pid ${parentPid}，每 ${intervalMs / 1000}s 检查一次`)
 
       const parentAlive = () => {
@@ -649,7 +655,15 @@ export async function main(argv = process.argv.slice(2)) {
 
       const parentTimer = setInterval(() => {
         if (shuttingDown) { clearInterval(parentTimer); return }
-        if (parentAlive()) return
+        if (parentAlive()) { missCount = 0; return }
+        // 连续 3 次探测不到才认「已退出」（约 9 秒）。
+        // 实测踩过：单次探测失败就自杀太激进 —— 宿主在做 GC、
+        // 或者进程正在被替换的瞬间都会读到 ESRCH，结果后端莫名其妙退出。
+        missCount++
+        if (missCount < 3) {
+          log.warn?.(`宿主监控：父进程暂不可达（${missCount}/3），继续观察`)
+          return
+        }
         clearInterval(parentTimer)
         void doShutdown(`宿主进程 ${parentPid} 已退出`)
       }, intervalMs)
