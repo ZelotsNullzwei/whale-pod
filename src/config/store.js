@@ -226,8 +226,13 @@ export const DEFAULTS = {
       quote: false,
       /** 把收到的图片送给多模态模型（关掉可省钱） */
       imagesEnabled: true,
-      /** 最多附几张图 */
-      maxImages: 2,
+      /**
+       * 最多附几张图。
+       *
+       * 原来 2 张。群里连续发几张图问「这几张哪个好看」很常见，
+       * 2 张会漏掉后面的；4 张基本够用，再多 token 就涨得明显了。
+       */
+      maxImages: 4,
       /** 单张图大小上限（超过就跳过） */
       maxImageBytes: 4194304,
     },

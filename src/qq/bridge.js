@@ -915,7 +915,12 @@ export class QQBridge {
     // ⚠️ 必须是 dsh-llm 认的 ImageBlock（{type:'image', attachment:{attachmentId,…}}），
     //    不能传 {type:'image', url:'data:…'} —— 后者字段不对，上游会报
     //    "content.some is not a function" / "reading 'replayState'"。
-    const imageCache = await this._collectImages(mem.recent(6))
+    // 取最近 10 条里的图（原来是 6）。
+    //
+    // 为什么放宽：图上一条消息问「这图里是什么」很常见，而 6 条在活跃群里
+    // 一眨眼就滑过去了 —— 图还在记忆里但已经不在收集窗口内，模型只看到
+    // 「（对方发了一张图）」却拿不到图，只能瞎猜或者装作没看见。
+    const imageCache = await this._collectImages(mem.recent(10))
 
     const messages = buildChatMessages({
       system,
