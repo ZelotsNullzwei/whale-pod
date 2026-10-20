@@ -998,7 +998,9 @@ export class QQBridge {
     let finish = null
     const t0 = Date.now()
     // 记住这次用的渠道/模型 —— 存自己的回复进记忆时要用它填 assistant 的 source
-    this._lastRoute = { provider: opened.provider ?? null, model: opened.model ?? null }
+    // 同样是 opened.picked（见上面 openFirstAvailable 的返回结构）
+    const routePicked = opened.picked ?? {}
+    this._lastRoute = { provider: routePicked.provider ?? null, model: routePicked.model ?? null }
     // 用量：优先用上游返回的 usage（准确），拿不到就按字符估算。
     let usage = null
     try {
@@ -1072,9 +1074,14 @@ export class QQBridge {
     }
     if (!tokensOut) tokensOut = Math.round(String(outText ?? '').length / 1.6)
 
+    // ⚠️ 路由信息在 `opened.picked` 里，不在 `opened` 顶层。
+    //    openFirstAvailable 返回 { stream, picked, attempts }。
+    //    写成 opened.provider / opened.model 会永远得到 undefined，
+    //    于是 estimateCost 拿不到价格、费用恒为 0 —— 面板上显示「¥0」。
+    const picked = opened.picked ?? {}
     tracker.record({
-      provider: opened.provider,
-      model: opened.model,
+      provider: picked.provider,
+      model: picked.model,
       source: 'qq',
       tokensIn,
       tokensOut,

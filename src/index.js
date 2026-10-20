@@ -283,7 +283,10 @@ export async function main(argv = process.argv.slice(2)) {
     let llm
     // 用量统计：网关 HTTP 调用与 QQ 内部调用**都**记到这里，
     // 否则总览页的 token/费用永远是 0（QQ 才是真正烧 token 的地方）。
-    const usage = new UsageTracker()
+    //
+    // ⚠️ 传 home 让它落盘到 <home>/usage.json —— 原来只用内存，
+    //    每次重启归零，用户看到的是「昨天用了 24K，今天一开变 0」。
+    const usage = new UsageTracker({ home: store.home })
     if (appDir && pack) {
       linkDshModules(appDir, projectRoot)
       const core = await createLlmGateway({ appDir, packFile: pack.file, credentials: creds, log })

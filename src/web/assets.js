@@ -2224,7 +2224,7 @@ export const CLIENT_JS = `
       (provRows.length ? '<div class="note mt-sm"><b>按渠道</b></div>' + kvRows(provRows) : '') +
       (modelRows.length ? '<div class="note mt-sm"><b>按模型</b></div>' + kvRows(modelRows) : '') +
       (hasAny ? '' : '<div class="note mt-sm">还没有产生用量。QQ 每回一条消息都会记在这里。</div>') +
-      '<div class="note mt-sm">' + esc(u.note || '费用按公开挂牌价估算；免费渠道实际支出为 0。') + '</div>'
+      '<div class="note mt-sm">' + esc(u.note || '费用按各厂商官网挂牌价折算，与实际渠道无关。') + '</div>'
   }
 
   // ══ QQ ════════════════════════════════════════════════════

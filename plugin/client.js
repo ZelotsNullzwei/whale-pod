@@ -1209,7 +1209,7 @@ window.__ModuleLoader__.load({
           : null,
 
         // ── 用量（tokens / 估算费用）─────────────────────────────────
-        // 费用按公开挂牌价估算（免费渠道实际支出为 0）——看的是"省了多少"。
+        // 费用按模型官网价折算，与走哪个渠道无关 —— 看的是"这些用量按原价值多少"。
         enabled ? h(UsageCards, { t }) : null,
 
         // ── 当前模型（只读一行，点它跳设置页改）─────────────────────
@@ -1757,7 +1757,19 @@ window.__ModuleLoader__.load({
         if (v >= 1000) return `${(v / 1000).toFixed(v >= 10_000 ? 0 : 1)}K`
         return String(v)
       }
-      const money = (usd, cny) => usd > 0 ? `≈¥${Number(cny).toFixed(2)}` : '¥0（免费）'
+      // 费用一律按模型官网价折算，**不再标「免费」**。
+    //
+    // 原来写的是 `usd > 0 ? '≈¥xx' : '¥0（免费）'`，但：
+    //   · 走免费渠道时确实花了 0，可用户想看的是"这些用量按官网价值多少"
+    //   · 金额小的时候 toFixed(2) 会显示成 0.00，看着也像免费
+    // 所以：有 token 用量就按官网价折算，金额太小就多留几位小数。
+    const money = (usd, cny) => {
+      const y = Number(cny) || 0
+      if (!(Number(usd) > 0) && y <= 0) return '¥0'
+      if (y >= 1) return `≈¥${y.toFixed(2)}`
+      if (y >= 0.01) return `≈¥${y.toFixed(3)}`
+      return `≈¥${y.toFixed(4)}`
+    }
       return h('div', null,
         h('div', { className: 'gd_grid gd_grid3' },
           h('div', { className: 'gd_count' }, h('b', null, String(u.calls ?? 0)), h('span', null, t('usage.calls'))),
