@@ -237,6 +237,26 @@ export const DEFAULTS = {
       maxImageBytes: 4194304,
     },
     /**
+     * 联网搜索。
+     *
+     * 触发判断在 gateway/search.js 的 needsFreshInfo()：明确要求搜索、
+     * 时效性问题、具体人名/作品名，这些情况才查（一次 5~15 秒，
+     * 群里绝大多数是闲聊，不能每条都搜）。
+     *
+     * 需要 DEEPSEEK_API_KEY（从 DSH 凭据里读）；没有 key 时自动跳过，
+     * 不影响其它功能。
+     */
+    search: {
+      /** 关掉就完全不联网 */
+      enabled: true,
+      /** 搜到结果后顺手抓一张封面图，接在回复最后发出去 */
+      images: true,
+      /** 单次最多搜几个来源 */
+      maxUses: 3,
+      /** 搜索超时 */
+      timeoutMs: 20000,
+    },
+    /**
      * 自动收藏别人发的表情包。
      *
      * 判据是 NapCat 给的 `sub_type === 1`（或 summary 含「动画表情」），

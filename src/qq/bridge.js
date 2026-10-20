@@ -23,7 +23,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { makeMessage } from '../memory/short.js'
 import { resolveCandidates, openFirstAvailable, applyFreeOrder, PROVIDER_MODEL_HINTS } from '../gateway/router.js'
-import { needsFreshInfo, webSearch, formatSearchContext } from '../gateway/search.js'
+import { needsFreshInfo, webSearch, formatSearchContext, pickCoverImage } from '../gateway/search.js'
 import FACE_TABLE from './faces.json' with { type: 'json' }
 
 /** 模型表示"不说话"的标记。 */
@@ -692,8 +692,12 @@ export class QQBridge {
     }
     // 4. 生成回复
     let text
+    let cover = null
     try {
-      text = await this._generate(msg, mem, scene, self)
+      const gen = await this._generate(msg, mem, scene, self)
+      // _generate 返回 { text, cover } —— cover 是搜索时顺手抓的封面图
+      text = gen?.text ?? ''
+      cover = gen?.cover ?? null
     } catch (e) {
       this.stats.failed++
       this.log.warn?.(`bridge：生成失败 — ${String(e?.message ?? e)}`)
@@ -725,7 +729,7 @@ export class QQBridge {
 
     // 5. 发送
     try {
-      const sentIds = await this._send(msg, text)
+      const sentIds = await this._send(msg, text, cover)
       this.stats.replied++
       mem.push(makeMessage({
         // ⚠️ 用自己的 message_id 记录这条回复。
@@ -833,6 +837,8 @@ export class QQBridge {
     // ⚠️ 不能每条都搜：一次 5~15 秒，群聊里绝大多数是闲聊。
     //    触发判断在 search.js 的 needsFreshInfo()，收得比较紧。
     let searchContext = ''
+    /** 本次回复备下的封面图（随返回值带走，避免实例变量竞态）。 */
+    let pendingCover = null
     const qqCfg = this.cfg.search ?? {}
     if (qqCfg.enabled !== false && this.searchKey) {
       const hit = needsFreshInfo(msg.text)
@@ -849,6 +855,18 @@ export class QQBridge {
           if (r.ok) {
             searchContext = formatSearchContext(r)
             this._lastSearch = { at: Date.now(), query: hit.query, sources: r.sources.slice(0, 5), ms: r.ms }
+
+            // 顺手抓一张封面图 —— 聊到具体作品/产品时，配张图比纯文字更像人。
+            // 抓不到就算了（pickCoverImage 内部吞掉所有错误），不影响回复。
+            if (this.cfg.search?.images !== false) {
+              try {
+                const img = await pickCoverImage(r.sources, { maxProbe: 3, timeoutMs: 4000 })
+                if (img) {
+                  pendingCover = img
+                  this.log.info?.(`bridge：备好封面图 ${img.url.slice(0, 80)}`)
+                }
+              } catch { /* 图是锦上添花 */ }
+            }
           } else {
             this.log.warn?.(`bridge：联网失败（按无联网继续）— ${r.error}`)
           }
@@ -1045,7 +1063,14 @@ export class QQBridge {
         this.log.warn?.(`bridge：输出结尾是残缺的表情标记，已修补/清除 — ${JSON.stringify(text.slice(-20))}`)
       }
     }
-    return cleanModelText(text)
+    // 把封面图**随返回值带出去**，而不是挂在 this 上。
+    //
+    // ⚠️ 用实例变量（this._pendingImage）会有竞态：_generate 到 _send 中间
+    //    隔了几百行调用，群里并发处理两条消息时，后一条搜到的图可能被
+    //    前一条的发送流程取走 —— 张冠李戴。
+    const cover = pendingCover
+    pendingCover = null
+    return { text: cleanModelText(text), cover }
   }
 
   /**
@@ -1179,7 +1204,12 @@ export class QQBridge {
    *   ⚠️ 必须返回 id —— 否则"用户引用我的话回复"就匹配不上
    *   （见 _handle 里 quotedMine 的判断）。
    */
-  async _send(msg, text) {
+  /**
+   * @param {object} msg
+   * @param {string} text
+   * @param {object|null} [cover] 搜索时抓到的封面图 { url, title }
+   */
+  async _send(msg, text, cover = null) {
     const reply = this.cfg.reply ?? {}
     const maxChars = reply.maxChars ?? 500
     /** @type {string[]} */
@@ -1196,10 +1226,21 @@ export class QQBridge {
       for (const c of chunks) if (String(c).trim()) segments.push({ kind: 'text', text: String(c) })
     }
 
+    // 搜索时备下的封面图：接在回复最后发出去。
+    //
+    // cover 只在**真的聊到具体作品/产品**时才有（由 _generate 随返回值带出）。
+    // 它是锦上添花 —— 发送失败静默跳过，不能因此让整条回复失败。
+    if (cover?.url && segments.length > 0) {
+      segments.push({ kind: 'image', url: cover.url })
+    }
+
     for (let i = 0; i < segments.length; i++) {
       const seg = segments[i]
       let payload
-      if (seg.kind === 'face') {
+      if (seg.kind === 'image') {
+        // OneBot 的 image 段直接收 URL
+        payload = [{ type: 'image', data: { file: seg.url } }]
+      } else if (seg.kind === 'face') {
         payload = [{ type: 'face', data: { id: String(seg.id) } }]
       } else if (seg.kind === 'mface') {
         const m = await this._pickMface(seg.name)
@@ -1215,6 +1256,12 @@ export class QQBridge {
         : await this.onebot.sendPrivate(msg.userId, payload)
 
       if (res?.status === 'failed' || (typeof res?.retcode === 'number' && res.retcode !== 0)) {
+        // 图片发失败（外链失效、被反盗链拦）不影响文字回复已经发出的事实，
+        // 记一条 warn 就够 —— 否则整条回复会被当成失败重试。
+        if (seg.kind === 'image') {
+          this.log.warn?.(`bridge：封面图发送失败（跳过）— ${JSON.stringify(res).slice(0, 120)}`)
+          continue
+        }
         throw new Error(`OneBot 返回失败：${JSON.stringify(res).slice(0, 200)}`)
       }
       // 记下这条的 message_id（OneBot 放在 data.message_id）
