@@ -102,51 +102,49 @@
 
 ## 要花钱吗
 
-**面板上的「折合费用」按官网价折算，不是你实际扣的钱。**
+**看你用哪个模型。**
 
-这两件事要分开看：
+WhalePod 本身不收费，钱花在**你选的模型**上。它支持两类来源：
 
-| | 面板显示 | 实际扣费 |
-|---|---|---|
-| **QQ 聊天** | 按模型官网价折算（如 ¥0.02 / 万 token） | **当前渠道不扣你的钱** |
-| **联网搜索** | ¥0.005/次 + 总结的 token | **真扣**（走你的 DeepSeek Key） |
-| **NapCat / 协议端** | — | ¥0 |
+| 来源 | 怎么计费 |
+|---|---|
+| **官方 API**（默认） | 按模型厂商官网价，从你的 API Key 余额扣 |
+| **自备渠道**（Ollama / 自建中转 / 别的 API） | 看你的渠道 —— 本地模型免费，中转看你买的套餐 |
 
-### 为什么聊天按官网价显示
+### 默认按官方价计费
 
-因为想知道「**这些用量如果按原价买要多少钱**」—— 这比「我在这个渠道花了 0」
-有用得多。面板那一行注脚写的就是这个意思：
+面板上的「折合费用」就是按**模型官网挂牌价**算的：
 
 ```
 费用按各厂商官网挂牌价折算，与实际渠道无关
 ```
 
-### 那聊天到底花不花钱
+它回答的是「**这些用量按原价买要多少钱**」—— 换渠道时好做对比。
+但**它不是你的账单**：如果你走的是免费/包月渠道，实际扣费会更少甚至为 0。
+要核账请去对应厂商的后台。
 
-**聊天走 DSH 的渠道池（`channel-pack` 里那 14 个渠道），不经过你的
-DeepSeek 账户，所以不扣你钱。** 但它也不是"无限免费"：
-
-- 免费额度可能限速、可能用完
-- 渠道随时可能下线
-- 换模型/换渠道后实际能不能跑，得看当时的情况
-
-想看真实用量就开面板 —— 那里分开记「聊天」和「搜索」。
-
-### 搜索是真花钱
+### 搜索是唯一固定成本
 
 | 项目 | 单价 |
 |---|---|
 | Search API | 每 1,000 次成功请求 ¥5 → **¥0.005/次** |
-| 总结那一步 | 几百 token → 约 ¥0.002 |
+| 总结那一步 | 几百 token → 按你选的模型官网价 |
 
-按群里一天搜十几次算，**一个月大概 ¥2~3**，从你的 DeepSeek 余额里扣。
+按群里一天搜十几次算，**一个月大概 ¥2~3**（用便宜模型的话）。
 
 余额低于 ¥2 时它会自己提一句（大肥鱼会念叨 Token，这是她的性格）。
 
-> **不想花这笔钱**：设置里可以关掉搜索，纯聊天不受影响。
-> 关掉之后遇到新番、新人名这类问题，它会说「不太确定」而不是硬编。
+> **想完全不花钱**：
+> · 搜索可以在设置里关掉 —— 之后遇到新番、新人名它会说「不太确定」而不是硬编
+> · 模型换成本地 Ollama 或任何免费渠道，聊天成本就是 0
 
----
+### 怎么控制成本
+
+- **看面板**：实时用量、按模型/渠道分开记，能看出钱花在哪
+- **换便宜模型**：`flash` 档比 `pro` 档便宜一个数量级，闲聊够用
+- **关掉搜索**：不查实时信息就不花钱
+- **设路由策略**：不想意外走付费渠道时，用「只用免费」或「只用自备」
+
 
 ## 为什么做这个
 
@@ -285,13 +283,16 @@ node src/index.js
 启动后会打印：
 
 ```
-[INF] 已注册 provider 14 个：codearts, buddy, ..., gemini, ..., opencode
+[INF] 已注册 provider N 个：<你配了哪些渠道…>
 [INF] 决策层：order = [rule]，阈值 0.5
 [INF] LLM 网关：http://127.0.0.1:18899/v1
 [INF] 网关 key：gdn-xxxxxxxx
 [INF] 管理界面：http://127.0.0.1:18898?token=gdn-yyyyyyyy
 [INF] WhalePod 就绪
 ```
+
+> 渠道列表取决于你装了哪些、配了哪些。一个都没有时也能跑起来，
+> 只是要先在设置里加一个（官方 API Key 或自备端点）。
 
 ### 前置
 
@@ -683,8 +684,8 @@ src/
 │   ├── store.js          配置（原子写 + 深合并 + 损坏自愈）
 │   └── credentials.js    凭据（overlay 读写 + YAML 解析）
 ├── gateway/
-│   ├── llm-core.js       cordis Context + channel-pack（13 渠道）
-│   ├── router.js         路由策略（免费优先 → 兜底）
+│   ├── llm-core.js       cordis Context + channel-pack 装载
+│   ├── router.js         路由策略（渠道选择与兜底）
 │   ├── openai.js         OpenAI 协议 ↔ dsh-llm 转换
 │   └── server.js         HTTP 端点（/v1/chat/completions）
 ├── decision/
@@ -776,19 +777,24 @@ This is a **DSH plugin**, not a standalone app.
 
 **Does it cost anything?**
 
-Two different things — don't conflate them:
+WhalePod itself is free. Money goes to **whichever model you point it at**:
 
-- **Chatting** runs through DSH's channel pool, so it **doesn't bill your
-  DeepSeek account**. The panel still shows a "converted cost", but that's the
-  *list price* of the tokens (what they'd cost from the vendor directly), not
-  what you paid. Free channels can rate-limit or disappear, so it's not
-  "unlimited free" either.
-- **Web search** does bill you: about **¥0.005 per lookup** (DeepSeek's paid
-  Search API, billed per request) plus a few hundred tokens to summarize —
-  roughly **¥2–3/month** for a typical group.
+- **Official APIs** (default) — billed at the vendor's list price, deducted from
+  your API key balance.
+- **Your own channels** — Ollama, a self-hosted endpoint, a subscription relay —
+  whatever that costs. Local models are free.
 
-You can turn search off and keep chat working; it'll just say "not sure" instead
-of looking things up.
+The panel's "converted cost" is the **list price** of the tokens (what they'd
+cost from the vendor directly), regardless of which channel served them. That's
+useful for comparing channels, but it isn't your bill — check the vendor's
+dashboard for that.
+
+**Web search** is the one fixed cost: about **¥0.005 per lookup** (billed per
+request) plus a few hundred tokens to summarize — roughly **¥2–3/month** for a
+typical group, using a cheap model.
+
+Turn search off and chat keeps working; it'll just say "not sure" instead of
+looking things up. Point it at a local model and cost drops to zero.
 
 
 **What it does**
