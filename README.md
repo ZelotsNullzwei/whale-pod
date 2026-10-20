@@ -20,9 +20,38 @@
 
 <br>
 
-<sub>一个插件、零命令行、点侧栏就能用。内置 DeepSeek 账户凭证，也支持任何 OpenAI 兼容供应商。</sub>
+<sub>装好后不用碰命令行：启停、配模型、看用量都在侧栏面板里。内置 DeepSeek 账户凭证，也支持任何 OpenAI 兼容供应商。</sub>
 
 </div>
+
+---
+
+## 30 秒判断这东西适不适合你
+
+<table>
+<tr><td width="50%" valign="top">
+
+**✅ 适合你，如果**
+
+- 你**已经在用 [DSH Desktop](https://github.com/deepseek-ai/deepseek-harness)**
+- 你有自己的 DeepSeek API Key（几块钱够跑很久）
+- 你想要一个**会看场合**的群聊机器人，而不是「问一句答一句」的客服
+- 你不介意它是 beta —— 可能有 bug，但你会拿它当自己用的工具
+
+</td><td width="50%" valign="top">
+
+**❌ 不适合，如果**
+
+- 你**没有 DSH** —— 这首先是个 DSH 插件，不是独立程序
+- 你以为是一键脚本 —— 还要装 NapCat、配 QQ 号、扫码登录
+- 你想要开箱即用的成品 —— 现在还在 beta
+- 你想要的是「自动回复机器人」—— 它**经常故意不说话**，这是设计
+
+</td></tr>
+</table>
+
+> **为什么先说这些**：这个项目是给「已经有 DSH」的人省事的，不是给所有人
+> 降低门槛的。如果你没有 DSH，先去把它装上 —— 没有它，这个插件跑不起来。
 
 ---
 
@@ -68,6 +97,39 @@
 > 以后要补的是 AstrBot 专属的那部分 —— 而不是从零重写。
 >
 > 只想要一个能跑的 QQ 机器人，用 `whale-pod` 模式就够了。
+
+---
+
+## 要花钱吗
+
+**聊天基本不花。搜索要花一点。**
+
+| 项目 | 成本 | 说明 |
+|---|---|---|
+| **QQ 聊天** | **¥0** | 走 DSH 的免费渠道池（`channel-pack` 里那 14 个） |
+| **联网搜索** | **约 ¥0.007 / 次** | 走 DeepSeek 官方付费 API，因为要真联网 |
+| **NapCat / 协议端** | ¥0 | 开源，本地跑 |
+
+搜索按次计费，不按 token：
+
+```
+Search API   每 1,000 次成功请求  ¥5   →  ¥0.005 / 次
+总结那一步   几百 token              →  约 ¥0.002
+```
+
+按群里一天搜十几次算，**一个月大概 ¥2~3**。
+
+面板上看得到实时用量，也分得清「聊天花的」和「搜索花的」：
+
+```
+qq       2 次  ¥0.0309
+search   2 次  ¥0.0239
+```
+
+余额低于 ¥2 时它会自己提一句（大肥鱼会念叨 Token，这是她的性格）。
+
+> **不想花钱也行**：搜索可以在设置里关掉，纯聊天仍然免费。
+> 关掉之后遇到新番、新人名这类问题，它会说「不太确定」而不是硬编。
 
 ---
 
@@ -151,16 +213,54 @@ SnowLuma 的 EULA 明确规定「将其并入第三方安装包或 Docker 镜像
 
 ## 快速开始
 
-### 前置
+### 先选一条路
 
-| 依赖 | 说明 |
+| 你想做什么 | 走哪条 |
 |---|---|
-| **DSH Desktop** | WhalePod 复用它的 `channel-pack`（14 个渠道）和凭据 |
-| **宿主的渠道包**（可选） | 若已装，WhalePod 会自动复用它；没装也能用自配供应商 |
-| **Node 22+** | 用 DSH 自带的运行时也行（`ELECTRON_RUN_AS_NODE=1`） |
-| **QQ 协议端**（可选） | NapCat / SnowLuma —— **可以在「组件」页一键装** |
+| **在 DSH 里用**（推荐，也是这个插件的主用途） | ↓ [装成 DSH 插件](#装成-dsh-插件) |
+| **只要那个 LLM 网关**（用 OpenAI 客户端接） | ↓ [独立跑](#独立跑) |
 
-### 启动
+两条路互不冲突：装成插件之后，网关也照样能用。
+
+---
+
+### 装成 DSH 插件
+
+假设你已经装好 [DSH Desktop](https://github.com/deepseek-ai/deepseek-harness)。
+
+**① 下载 Release 解压**
+
+到 [Releases](https://github.com/ZelotsNullzwei/whale-pod/releases) 下最新的
+`dsh-whale-pod-vX.Y.Z.zip`，解压到任意目录（下面用 `<解压目录>` 代指）。
+
+**② 挂进 profile**
+
+```bash
+dsh plugin --profile desktop add link:<解压目录>/plugin
+```
+
+**③ 重启 DSH**
+
+侧栏会出现「鲸舱」。第一次点「一键启动」，它会：
+
+- 自己拉 WhalePod 进程
+- 自己下载 NapCat（如果还没有）
+- 弹二维码让你扫码登录
+
+**④ 扫码登录 QQ**
+
+登录成功后在群里 @ 它就能用。默认**只在被 @ 或提到名字时**说话。
+
+> **装不上怎么办**：先看 [已知限制](#已知限制)。如果卡在某一步，去
+> [Issues](https://github.com/ZelotsNullzwei/whale-pod/issues) 说清楚卡在哪，
+> 附上 DSH 的日志（`~/.dsh/logs/host/` 下最新的那个）。
+
+---
+
+### 独立跑
+
+不用 DSH，直接跑这个仓库（能拿到 LLM 网关，但**没有**插件面板和 channel-pack
+复用 —— 要自己配供应商）：
 
 ```bash
 cd whale-pod
@@ -177,6 +277,14 @@ node src/index.js
 [INF] 管理界面：http://127.0.0.1:18898?token=gdn-yyyyyyyy
 [INF] WhalePod 就绪
 ```
+
+### 前置
+
+| 依赖 | 说明 |
+|---|---|
+| **DSH Desktop** | 装成插件时必需（复用它的 `channel-pack` 和凭据）；独立跑时可选 |
+| **Node 22+** | 独立跑必需；用 DSH 自带的运行时也行 |
+| **QQ 协议端** | NapCat / SnowLuma —— **可以在「组件」页一键装**，不用手动折腾 |
 
 ### 立刻用起来（任何 OpenAI 客户端）
 
@@ -638,7 +746,25 @@ ELECTRON_RUN_AS_NODE=1 "D:/DSH Desktop/DSH Desktop.exe" tests/check-boot.mjs
 
 </div>
 
-You install the plugin, open the sidebar, and press Start. No command line, no manual process juggling.
+You install the plugin, open the sidebar, and press Start. No command line, no manual process juggling — *after* the one-line install.
+
+**Before you start — is this for you?**
+
+This is a **DSH plugin**, not a standalone app.
+
+- ✅ **Yes, if** you already run [DSH Desktop](https://github.com/deepseek-ai/deepseek-harness),
+  you have a DeepSeek API key, and you want a group-chat bot that knows when to
+  stay quiet.
+- ❌ **No, if** you don't have DSH, you expected a one-click script (you'll still
+  configure NapCat and scan a QR code), or you want a "reply to everything" bot —
+  this one deliberately stays silent most of the time.
+
+**Does it cost anything?**
+
+Chatting is free (it uses DSH's free channel pool). Web search costs about
+**¥0.007 per lookup** (DeepSeek's paid Search API, billed per request — roughly
+¥2–3/month for a typical group). You can turn search off and keep chat free.
+
 
 **What it does**
 
