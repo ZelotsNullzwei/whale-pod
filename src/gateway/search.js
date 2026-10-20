@@ -30,29 +30,36 @@
  *    所以不能自己拼摘要，必须用接口合成的最后那段 `text`。
  */
 
-const SEARCH_URL = process.env.DEEPSEEK_SEARCH_BASE_URL
-  ? String(process.env.DEEPSEEK_SEARCH_BASE_URL).replace(/\/$/, '') + '/messages'
-  : 'https://api.deepseek.com/anthropic/v1/messages'
+/**
+ * DeepSeek 原生 Search 接口。
+ *
+ * ⚠️ 这不是 Anthropic 兼容层的 `web_search` server tool —— 那个是另一条路：
+ *     POST /anthropic/v1/messages + tools:[{type:'web_search_20250305'}]
+ *    模型要先把网页全文读进上下文再总结，输入 2~3 万 token，
+ *    费用按 token 算（¥0.011~0.03/次），耗时 3~8 秒。
+ *
+ * 原生接口直接返回结构化结果，**按次 ¥0.005，不按 token、不看返回条数**。
+ * 实测 397ms，5 条 result 的 summary 总共才 500 多字符。
+ *
+ * 文档：https://api-docs.deepseek.com/zh-cn/guides/search
+ */
+const SEARCH_ENDPOINT = process.env.DEEPSEEK_SEARCH_ENDPOINT
+  ? String(process.env.DEEPSEEK_SEARCH_ENDPOINT)
+  : 'https://api.deepseek.com/v1/tools/search'
+
+/** 把搜索结果写成回答用的模型（OpenAI 兼容端点）。 */
+const SUMMARIZE_ENDPOINT = process.env.DEEPSEEK_SUMMARIZE_ENDPOINT
+  ? String(process.env.DEEPSEEK_SUMMARIZE_ENDPOINT)
+  : 'https://api.deepseek.com/v1/chat/completions'
 
 /**
- * 用于搜索的模型（必须支持 web_search 服务端工具）。
+ * 总结用哪个模型。
  *
- * 选 flash 而不是 chat 的原因，实测数据（2026-10）：
- *
- *   模型                        耗时      单次费用    每月100次
- *   deepseek-chat（原）          6.8s     ¥0.060     ¥6.00
- *   deepseek-flash + 开推理     12.3s     ¥0.030     ¥3.00
- *   deepseek-flash + 禁推理      3.2s     ¥0.011     ¥1.14   ← 现在
- *
- * 两个关键点：
- *   · flash 的**输入**价只有 chat 的一半（0.14 vs 0.28 /M）——
- *     搜索场景输入是大头（搜索结果正文全塞进上下文，2~3 万 token），
- *     所以这一项才是省钱的地方，输出价降幅反而是次要的。
- *   · 必须**禁用推理**。flash 默认先输出 thinking，实测 1500 max_tokens
- *     会被思考吃光（stop_reason: max_tokens，正文 0 字）。禁掉之后
- *     输出从 ~2000 降到 ~600，正文完整、速度还快一半。
+ * 选 flash：这一步只是"把资料改成通顺的几句话"，不需要强模型。
+ * 必须关推理（见下面的 thinking 参数），否则输出 token 翻三倍。
  */
-const SEARCH_MODEL = process.env.DEEPSEEK_SEARCH_MODEL || 'deepseek-flash'
+const SUMMARIZE_MODEL = process.env.DEEPSEEK_SUMMARIZE_MODEL || 'deepseek-flash'
+
 
 /**
  * 判断一句话是不是"需要联网才能答"。
@@ -250,96 +257,152 @@ function cleanQuery(t) {
  * @param {Function} [o.log]
  * @returns {Promise<{ok:boolean, answer:string, sources:Array<{title:string,url:string}>, error?:string, ms:number}>}
  */
+/**
+ * 联网搜索。
+ *
+ * ## 两步走，而不是一步到位
+ *
+ *   ① Search API 拿结构化结果（按次 ¥0.005，不按 token）
+ *   ② 把 title + summary 交给对话模型写成简短回答（几百 token）
+ *
+ * 对比原来「让模型自己边搜边读网页」的做法：
+ *
+ *   原做法  输入 2~3 万 token（网页全文）  3~8 秒   ¥0.011~0.03
+ *   新做法  搜索 ¥0.005 + 总结 ~¥0.002     约 1 秒   ¥0.007
+ *
+ * 关键在于 **summary 只有 600~800 字符**，不像网页全文那样把上下文撑爆。
+ *
+ * @param {object} o
+ * @param {string} o.question         要查什么
+ * @param {string} o.apiKey           DeepSeek API key
+ * @param {number} [o.count]          返回几条结果（1~50，默认 5）
+ * @param {number} [o.timeoutMs]      总超时
+ * @param {Function} [o.log]
+ */
 export async function webSearch(o) {
   const started = Date.now()
   const question = String(o.question ?? '').trim()
-  const fail = (error) => ({ ok: false, answer: '', sources: [], error, ms: Date.now() - started })
+  const count = Math.min(Math.max(Number(o.count) || 5, 1), 50)
+  const timeoutMs = o.timeoutMs ?? 25000
+  const fail = (error) => ({
+    ok: false, answer: '', sources: [], error,
+    ms: Date.now() - started,
+    usage: { in: 0, out: 0, searches: 0 },
+  })
 
   if (!question) return fail('没有查询内容')
   if (!o.apiKey) return fail('没有 DeepSeek 凭据（联网搜索需要 DEEPSEEK_API_KEY）')
 
-  const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), o.timeoutMs ?? 25000)
-
+  // ── ① 调 Search API ───────────────────────────────────────
+  let results = []
   try {
-    const res = await fetch(SEARCH_URL, {
+    const res = await fetch(SEARCH_ENDPOINT, {
       method: 'POST',
-      signal: controller.signal,
       headers: {
-        'content-type': 'application/json',
-        'x-api-key': String(o.apiKey),
-        'anthropic-version': '2023-06-01',
+        Authorization: `Bearer ${o.apiKey}`,
+        'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        model: SEARCH_MODEL,
-        // 2000 是给"搜索多、来源长"的情况留的余量。禁用推理后实际输出
-        // 只有 300~700 token，这个上限基本不会碰到。
-        max_tokens: 2000,
-        // ⚠️ 必须禁用推理。flash 默认先吐 thinking，会：
-        //    ① 把 max_tokens 吃光（正文 0 字，stop_reason: max_tokens）
-        //    ② 输出 token 翻三倍（2000 vs 600）
-        //    ③ 慢一倍（12.3s vs 3.2s）
-        // 搜索是"查完照实转述"，不需要推理。
-        thinking: { type: 'disabled' },
-        messages: [{
-          role: 'user',
-          content: '请联网搜索后用简洁的中文回答下面的问题。只给事实，不要客套和开场白。'
-            + '如果搜到的信息互相矛盾，指出矛盾点。\n\n问题：' + question,
-        }],
-        tools: [{
-          type: 'web_search_20250305',
-          name: 'web_search',
-          max_uses: o.maxUses ?? 3,
-        }],
+        query: question.slice(0, 128),
+        count,
+        // ⚠️ 不要正文。content 是整页 Markdown，塞进去就是原来"2~3 万 token"
+        //    的老问题。summary（600~800 字符）已经够写答案了。
+        need_content: false,
       }),
+      signal: AbortSignal.timeout(timeoutMs),
     })
 
     if (!res.ok) {
       const t = await res.text().catch(() => '')
-      return fail(`HTTP ${res.status} ${t.slice(0, 160)}`)
+      // 402 = 余额不足，单独识别 —— 上层据此触发"要饭"提示
+      if (res.status === 402) return fail('余额不足（HTTP 402）')
+      return fail(`Search HTTP ${res.status} ${t.slice(0, 120)}`)
     }
 
     const j = await res.json()
-    const blocks = Array.isArray(j.content) ? j.content : []
-
-    // 取最后一段 text —— 那才是"结合搜索结果写出的答案"（前面那段是"我来帮您搜索…"）
-    const texts = blocks.filter((b) => b.type === 'text').map((b) => String(b.text ?? ''))
-    const answer = texts.length ? texts[texts.length - 1].trim() : ''
-
-    // 来源列表（去重）
-    const seen = new Set()
-    const sources = []
-    for (const b of blocks) {
-      if (b.type !== 'web_search_tool_result') continue
-      for (const it of (Array.isArray(b.content) ? b.content : [])) {
-        const url = String(it?.url ?? '')
-        if (!url || seen.has(url)) continue
-        seen.add(url)
-        sources.push({ title: String(it?.title ?? '').slice(0, 120), url })
-      }
-    }
-
-    const ms = Date.now() - started
-    if (!answer) return { ok: false, answer: '', sources, error: '搜索没返回正文', ms }
-    o.log?.(`联网：已查到「${question.slice(0, 30)}」→ ${answer.length} 字 / ${sources.length} 个来源（${ms}ms）`)
-    // 把用量带出去 —— 侧栏的"折合费用"要把它算进去。
-    // 搜索花的钱是真金白银（用的是 DeepSeek 官方 key，不是免费渠道），
-    // 不记的话面板上会显示 0，用户以为不花钱。
-    return {
-      ok: true, answer, sources, ms,
-      model: SEARCH_MODEL,
-      usage: {
-        in: Number(j.usage?.input_tokens) || 0,
-        out: Number(j.usage?.output_tokens) || 0,
-        cacheRead: Number(j.usage?.cache_read_input_tokens) || 0,
-        searches: Number(j.usage?.server_tool_use?.web_search_requests) || 0,
-      },
-    }
+    results = Array.isArray(j.results) ? j.results : []
+    // 空结果是**不计费**的（文档：只有产生结果才收费）
+    if (results.length === 0) return fail('搜索没有结果')
   } catch (e) {
     const aborted = e?.name === 'AbortError'
-    return fail(aborted ? `超时（${o.timeoutMs ?? 25000}ms）` : String(e?.message ?? e))
-  } finally {
-    clearTimeout(timer)
+    return fail(aborted ? `搜索超时（${timeoutMs}ms）` : String(e?.message ?? e))
+  }
+
+  // 按相关度排序，留 5 条给模型
+  const sources = results
+    .slice()
+    .sort((a, b) => (b.rerank_score ?? 0) - (a.rerank_score ?? 0))
+    .slice(0, 5)
+    .map((r) => ({
+      title: String(r.title ?? '').slice(0, 120),
+      url: String(r.url ?? ''),
+      summary: String(r.summary ?? r.snippet ?? '').slice(0, 900),
+      siteName: r.site_name ?? null,
+      date: r.date ?? null,
+      score: r.rerank_score ?? null,
+      authority: r.authority ?? null,
+    }))
+
+  // ── ② 让对话模型把结果写成简短回答 ────────────────────────
+  //
+  // 这一步才花 token，但只有几百 —— 喂进去的是 summary 而不是正文。
+  const material = sources
+    .map((s, i) => `[${i + 1}] ${s.title}\n${s.summary}`)
+    .join('\n\n')
+
+  let answer = ''
+  let inTok = 0
+  let outTok = 0
+  try {
+    const res = await fetch(SUMMARIZE_ENDPOINT, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${o.apiKey}`,
+      },
+      body: JSON.stringify({
+        model: SUMMARIZE_MODEL,
+        max_tokens: 600,
+        // 同搜索：不需要推理，禁掉能省一大半输出 token 和时间
+        thinking: { type: 'disabled' },
+        messages: [{
+          role: 'user',
+          content: '下面是刚搜到的资料。请用简洁的中文回答后面的问题。\n'
+            + '只给事实，不要客套和开场白。资料互相矛盾时指出矛盾点。\n'
+            + '不要列出所有来源，也不要贴链接。\n\n'
+            + `问题：${question}\n\n资料：\n${material}`,
+        }],
+      }),
+      signal: AbortSignal.timeout(timeoutMs),
+    })
+    if (res.ok) {
+      const j = await res.json()
+      // ⚠️ 这是 **OpenAI 兼容**端点，不是 Anthropic 格式：
+      //      OpenAI:    choices[0].message.content / prompt_tokens / completion_tokens
+      //      Anthropic: content[].text / input_tokens / output_tokens
+      //    写错字段的话 answer 恒为空、usage 恒为 0，然后悄悄走兜底拼接 ——
+      //    表面上"能用"，实际模型根本没参与。
+      answer = String(j.choices?.[0]?.message?.content ?? '').trim()
+      inTok = Number(j.usage?.prompt_tokens) || 0
+      outTok = Number(j.usage?.completion_tokens) || 0
+    }
+  } catch { /* 总结失败就用摘要兜底 */ }
+
+  // 总结失败（或空）时用标题+摘要拼一个 —— 总比一个字都没有强
+  if (!answer) {
+    answer = sources.slice(0, 3).map((s) => `· ${s.title}：${s.summary.slice(0, 120)}`).join('\n')
+  }
+
+  const ms = Date.now() - started
+  o.log?.(`联网：已查到「${question.slice(0, 30)}」→ ${answer.length} 字 / ${sources.length} 个来源（${ms}ms）`)
+
+  return {
+    ok: true,
+    answer,
+    sources,
+    ms,
+    // 搜索按次计价（¥0.005），一次请求算一次；总结的 token 单独记
+    usage: { in: inTok, out: outTok, searches: 1 },
   }
 }
 

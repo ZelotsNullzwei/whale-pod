@@ -887,6 +887,10 @@ export class QQBridge {
                   source: 'search',
                   tokensIn: u.in ?? 0,
                   tokensOut: u.out ?? 0,
+                  // ⚠️ 必须传 —— Search 接口按**次**收费（¥0.005/次），
+                  //    不传的话只算 token，会低估一半以上（简单问题时
+                  //    按次费比 token 费还高）。
+                  searches: u.searches ?? 0,
                   ok: true,
                   ms: r.ms,
                 })

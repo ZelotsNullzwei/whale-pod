@@ -22,7 +22,27 @@ import path from 'node:path'
  *    拿不到价格的渠道一律按 0 计（宁可少算也不虚报）。
  *    价格会变，这里只放长期稳定的主力模型。
  */
+/**
+ * 搜索接口的按次计价（人民币 / 次）。
+ *
+ * 1000 次 5 元 = 0.005 元/次。
+ * 2026-11-01 00:00 起生效；之前官方不计费，但我们按会收来估。
+ */
+export const SEARCH_CALL_CNY = 0.005
+
 export const PRICES = {
+  // ── 搜索接口的**按次**计费（不是 token）────────────────────────────
+  //
+  // DeepSeek 官方文档（网页搜索与抓取价格）：
+  //     Search  每 1,000 次成功请求 5 元  →  ¥0.005 / 次
+  //     Fetch   每 1,000 次成功请求 5 元  →  ¥0.005 / 次
+  //
+  // ⚠️ **2026-11-01 00:00（北京时间）之前这部分不计费**，之后按次收。
+  //    我们按"以后会收"来算 —— 宁可预估偏高，也别到时候账单对不上。
+  //
+  // ⚠️ 这一项很容易被漏掉：简单问题（只搜 1 次）的搜索费 ¥0.005
+  //    比 token 费 ¥0.002 还高，占了大头。只算 token 会低估一半以上。
+  //
   // ── DeepSeek 官网价（美元 / 百万 token）──────────────────────────
   //
   // ⚠️ 搜索用的 deepseek-flash 走的是 DeepSeek **官方付费 API**，
@@ -254,7 +274,12 @@ export class UsageTracker {
     if (!ok) this.failed++
     const tin = Number(o.tokensIn) || 0
     const tout = Number(o.tokensOut) || 0
+    // 搜索的按次费（¥0.005/次）单独加 —— 它不跟 token 走，是按调用次数。
+    // o.searches 只有搜索类记录才有；聊天记录不传，自然是 0。
+    const searchCalls = Number(o.searches) || 0
+    const searchFeeCny = searchCalls * SEARCH_CALL_CNY
     const cost = estimateCost({ model: o.model, tokensIn: tin, tokensOut: tout })
+      + searchFeeCny / 7.2   // 内部统一按美元累加，展示时再乘回去
 
     // ⚠️ token 为 0 时不要累加费用 —— 有些渠道不返回 usage，
     //    硬算会让"预计金额"忽高忽低，还不如标成"未知"。
