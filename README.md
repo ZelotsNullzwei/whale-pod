@@ -102,33 +102,48 @@
 
 ## 要花钱吗
 
-**聊天基本不花。搜索要花一点。**
+**面板上的「折合费用」按官网价折算，不是你实际扣的钱。**
 
-| 项目 | 成本 | 说明 |
+这两件事要分开看：
+
+| | 面板显示 | 实际扣费 |
 |---|---|---|
-| **QQ 聊天** | **¥0** | 走 DSH 的免费渠道池（`channel-pack` 里那 14 个） |
-| **联网搜索** | **约 ¥0.007 / 次** | 走 DeepSeek 官方付费 API，因为要真联网 |
-| **NapCat / 协议端** | ¥0 | 开源，本地跑 |
+| **QQ 聊天** | 按模型官网价折算（如 ¥0.02 / 万 token） | **当前渠道不扣你的钱** |
+| **联网搜索** | ¥0.005/次 + 总结的 token | **真扣**（走你的 DeepSeek Key） |
+| **NapCat / 协议端** | — | ¥0 |
 
-搜索按次计费，不按 token：
+### 为什么聊天按官网价显示
 
-```
-Search API   每 1,000 次成功请求  ¥5   →  ¥0.005 / 次
-总结那一步   几百 token              →  约 ¥0.002
-```
-
-按群里一天搜十几次算，**一个月大概 ¥2~3**。
-
-面板上看得到实时用量，也分得清「聊天花的」和「搜索花的」：
+因为想知道「**这些用量如果按原价买要多少钱**」—— 这比「我在这个渠道花了 0」
+有用得多。面板那一行注脚写的就是这个意思：
 
 ```
-qq       2 次  ¥0.0309
-search   2 次  ¥0.0239
+费用按各厂商官网挂牌价折算，与实际渠道无关
 ```
+
+### 那聊天到底花不花钱
+
+**聊天走 DSH 的渠道池（`channel-pack` 里那 14 个渠道），不经过你的
+DeepSeek 账户，所以不扣你钱。** 但它也不是"无限免费"：
+
+- 免费额度可能限速、可能用完
+- 渠道随时可能下线
+- 换模型/换渠道后实际能不能跑，得看当时的情况
+
+想看真实用量就开面板 —— 那里分开记「聊天」和「搜索」。
+
+### 搜索是真花钱
+
+| 项目 | 单价 |
+|---|---|
+| Search API | 每 1,000 次成功请求 ¥5 → **¥0.005/次** |
+| 总结那一步 | 几百 token → 约 ¥0.002 |
+
+按群里一天搜十几次算，**一个月大概 ¥2~3**，从你的 DeepSeek 余额里扣。
 
 余额低于 ¥2 时它会自己提一句（大肥鱼会念叨 Token，这是她的性格）。
 
-> **不想花钱也行**：搜索可以在设置里关掉，纯聊天仍然免费。
+> **不想花这笔钱**：设置里可以关掉搜索，纯聊天不受影响。
 > 关掉之后遇到新番、新人名这类问题，它会说「不太确定」而不是硬编。
 
 ---
@@ -761,9 +776,19 @@ This is a **DSH plugin**, not a standalone app.
 
 **Does it cost anything?**
 
-Chatting is free (it uses DSH's free channel pool). Web search costs about
-**¥0.007 per lookup** (DeepSeek's paid Search API, billed per request — roughly
-¥2–3/month for a typical group). You can turn search off and keep chat free.
+Two different things — don't conflate them:
+
+- **Chatting** runs through DSH's channel pool, so it **doesn't bill your
+  DeepSeek account**. The panel still shows a "converted cost", but that's the
+  *list price* of the tokens (what they'd cost from the vendor directly), not
+  what you paid. Free channels can rate-limit or disappear, so it's not
+  "unlimited free" either.
+- **Web search** does bill you: about **¥0.005 per lookup** (DeepSeek's paid
+  Search API, billed per request) plus a few hundred tokens to summarize —
+  roughly **¥2–3/month** for a typical group.
+
+You can turn search off and keep chat working; it'll just say "not sure" instead
+of looking things up.
 
 
 **What it does**
