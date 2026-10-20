@@ -2109,13 +2109,24 @@ async function whalePodCompat(o) {  const { sub, method, url, req, res, json, re
       // 同 /status：只认 state.bridge，且要求 qq.enabled 为真。
       // 已关闭时把配置推给一个死掉的旧实例毫无意义。
       const liveBridge = store.get().qq?.enabled === true ? state.bridge : undefined
-      if (nested.qq && liveBridge) {
+      if (liveBridge && (nested.qq || nested.search)) {
         const q = store.get().qq ?? {}
-        if (q.allow) liveBridge.cfg.allow = { ...liveBridge.cfg.allow, ...q.allow }
-        if (q.model !== undefined) liveBridge.cfg.model = q.model
-        if (q.maxTokens !== undefined) liveBridge.cfg.maxTokens = q.maxTokens
-        if (q.effort !== undefined) liveBridge.cfg.effort = q.effort
-        if (q.reply) liveBridge.cfg.reply = { ...liveBridge.cfg.reply, ...q.reply }
+        if (nested.qq) {
+          if (q.allow) liveBridge.cfg.allow = { ...liveBridge.cfg.allow, ...q.allow }
+          if (q.model !== undefined) liveBridge.cfg.model = q.model
+          if (q.maxTokens !== undefined) liveBridge.cfg.maxTokens = q.maxTokens
+          if (q.effort !== undefined) liveBridge.cfg.effort = q.effort
+          if (q.reply) liveBridge.cfg.reply = { ...liveBridge.cfg.reply, ...q.reply }
+        }
+        // ⚠️ search.* 也必须推。
+        //
+        //    原来这个分支只判 `nested.qq`，于是侧栏里改「启用联网搜索」
+        //    写进了配置文件但**不推给运行中的 bridge** —— 界面上开关拨了，
+        //    实际还在搜（或反过来）。必须重启才生效，而用户根本不知道
+        //    要重启。
+        if (nested.search) {
+          liveBridge.cfg.search = { ...(liveBridge.cfg.search ?? {}), ...store.get().search }
+        }
       }
       log.info(`[whale-pod 兼容层] 配置已更新（${Object.keys(patch).join(', ')}）`)
       return json(res, 200, { ok: true, changed: Object.keys(patch) })

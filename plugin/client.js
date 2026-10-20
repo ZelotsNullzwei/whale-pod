@@ -210,6 +210,16 @@ window.__ModuleLoader__.load({
         'model.current': '当前模型',
         'model.auto': 'auto（按下方顺序自动选）',
         'model.backToAuto': '切回自动选择',
+        'section.search': '联网搜索',
+        'section.searchHint': '遇到新番 / 人名 / 时效性问题时先查再答',
+        'search.enabled': '启用联网搜索',
+        'search.enabledHint': '关掉之后完全不联网，遇到不确定的会说不知道而不是硬编',
+        'search.images': '顺便配一张封面图',
+        'search.imagesHint': '聊到具体作品时会附一张图',
+        'search.maxUses': '最多搜几次',
+        'search.maxUsesHint': '每次搜索固定取 10 个网页；这个数字是上限',
+        'search.lowBalance': '余额提醒阈值',
+        'search.lowBalanceHint': '低于这个数（元）会让它念叨一句',
         'model.strategy': '路由策略',
         'model.freeFirst': '免费优先 → 付费兜底',
         'model.freeOnly': '只用免费',
@@ -427,6 +437,16 @@ window.__ModuleLoader__.load({
         'model.current': 'Current model',
         'model.auto': 'auto (pick by the order below)',
         'model.backToAuto': 'Back to automatic',
+        'section.search': 'Web search',
+        'section.searchHint': 'Look things up before answering — new releases, names, current events',
+        'search.enabled': 'Enable web search',
+        'search.enabledHint': 'When off, it will say it is not sure instead of making things up',
+        'search.images': 'Attach a cover image',
+        'search.imagesHint': 'Shows a poster when talking about a specific work',
+        'search.maxUses': 'Max searches per question',
+        'search.maxUsesHint': 'Each search returns 10 pages; this caps how many searches',
+        'search.lowBalance': 'Low-balance threshold',
+        'search.lowBalanceHint': 'Below this amount (CNY) it will complain about tokens',
         'model.strategy': 'Routing strategy',
         'model.freeFirst': 'Free first → paid fallback',
         'model.freeOnly': 'Free only',
@@ -1820,6 +1840,7 @@ window.__ModuleLoader__.load({
       const cfg = config.data?.config
       const qq = cfg?.qq ?? {}
       const dec = cfg?.decision ?? {}
+      const sr = cfg?.search ?? {}
       const napcatInstalled = (backends.data?.installed ?? []).includes('napcat')
 
       /** 提交一个配置补丁；成功后刷新。 */
@@ -2089,6 +2110,38 @@ window.__ModuleLoader__.load({
               value: qq.allow?.groups ?? [],
               disabled: busy,
               onCommit: (v) => apply({ 'qq.allow.groups': v }),
+            }))),
+
+        // ── 联网搜索 ────────────────────────────────────────────────────
+        //
+        // 这块是**唯一会真花钱**的部分（搜索走 DeepSeek 官方付费 API，
+        // 每次 ¥0.005 + 总结的 token），所以放在显眼位置、能一键关掉。
+        h(Section, { title: t('section.search'), hint: t('section.searchHint') },
+          h(Row, { label: t('search.enabled'), hint: t('search.enabledHint') },
+            h(Toggle, {
+              checked: sr.enabled !== false,
+              disabled: busy,
+              onChange: (v) => apply({ 'search.enabled': v }),
+            })),
+          h(Row, { label: t('search.images'), hint: t('search.imagesHint') },
+            h(Toggle, {
+              checked: sr.images !== false,
+              disabled: busy,
+              onChange: (v) => apply({ 'search.images': v }),
+            })),
+          h(Row, { label: t('search.maxUses'), hint: t('search.maxUsesHint') },
+            h(TextField, {
+              value: sr.maxUses ?? 3,
+              numeric: true,
+              disabled: busy,
+              onCommit: (v) => apply({ 'search.maxUses': Number(v) || 3 }),
+            })),
+          h(Row, { label: t('search.lowBalance'), hint: t('search.lowBalanceHint') },
+            h(TextField, {
+              value: sr.lowBalanceCny ?? 2,
+              numeric: true,
+              disabled: busy,
+              onCommit: (v) => apply({ 'search.lowBalanceCny': Number(v) || 2 }),
             }))),
 
         // ── 决策与人格 ──────────────────────────────────────────────────
