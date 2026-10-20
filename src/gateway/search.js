@@ -34,8 +34,25 @@ const SEARCH_URL = process.env.DEEPSEEK_SEARCH_BASE_URL
   ? String(process.env.DEEPSEEK_SEARCH_BASE_URL).replace(/\/$/, '') + '/messages'
   : 'https://api.deepseek.com/anthropic/v1/messages'
 
-/** 用于搜索的模型（必须支持 web_search 服务端工具）。 */
-const SEARCH_MODEL = process.env.DEEPSEEK_SEARCH_MODEL || 'deepseek-chat'
+/**
+ * 用于搜索的模型（必须支持 web_search 服务端工具）。
+ *
+ * 选 flash 而不是 chat 的原因，实测数据（2026-10）：
+ *
+ *   模型                        耗时      单次费用    每月100次
+ *   deepseek-chat（原）          6.8s     ¥0.060     ¥6.00
+ *   deepseek-flash + 开推理     12.3s     ¥0.030     ¥3.00
+ *   deepseek-flash + 禁推理      3.2s     ¥0.011     ¥1.14   ← 现在
+ *
+ * 两个关键点：
+ *   · flash 的**输入**价只有 chat 的一半（0.14 vs 0.28 /M）——
+ *     搜索场景输入是大头（搜索结果正文全塞进上下文，2~3 万 token），
+ *     所以这一项才是省钱的地方，输出价降幅反而是次要的。
+ *   · 必须**禁用推理**。flash 默认先输出 thinking，实测 1500 max_tokens
+ *     会被思考吃光（stop_reason: max_tokens，正文 0 字）。禁掉之后
+ *     输出从 ~2000 降到 ~600，正文完整、速度还快一半。
+ */
+const SEARCH_MODEL = process.env.DEEPSEEK_SEARCH_MODEL || 'deepseek-flash'
 
 /**
  * 判断一句话是不是"需要联网才能答"。
@@ -230,7 +247,15 @@ export async function webSearch(o) {
       },
       body: JSON.stringify({
         model: SEARCH_MODEL,
-        max_tokens: 1500,
+        // 2000 是给"搜索多、来源长"的情况留的余量。禁用推理后实际输出
+        // 只有 300~700 token，这个上限基本不会碰到。
+        max_tokens: 2000,
+        // ⚠️ 必须禁用推理。flash 默认先吐 thinking，会：
+        //    ① 把 max_tokens 吃光（正文 0 字，stop_reason: max_tokens）
+        //    ② 输出 token 翻三倍（2000 vs 600）
+        //    ③ 慢一倍（12.3s vs 3.2s）
+        // 搜索是"查完照实转述"，不需要推理。
+        thinking: { type: 'disabled' },
         messages: [{
           role: 'user',
           content: '请联网搜索后用简洁的中文回答下面的问题。只给事实，不要客套和开场白。'
