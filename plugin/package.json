@@ -1,6 +1,6 @@
 {
   "name": "dsh-whale-pod",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": true,
   "type": "module",
   "description": "WhalePod —— DSH 的 QQ 聊天机器人插件。内置 DeepSeek 账户凭证 + 支持自定义供应商。",
@@ -30,6 +30,11 @@
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": []
     }
   },
   "license": "MIT",

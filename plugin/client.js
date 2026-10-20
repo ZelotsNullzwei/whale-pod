@@ -530,6 +530,15 @@ window.__ModuleLoader__.load({
      * 调 Host 的 /api/whale-pod/*。
      * 8 秒超时兜底：后端路由未注册时 fetch 不该永久挂起。
      */
+    /**
+     * 最近一次请求失败的记录。
+     *
+     * 桌面版 DSH 没有 F12，出问题时界面上只有一句「后端未运行」，
+     * 看不到 HTTP 状态码和响应体 —— 排查全靠猜。
+     * 这里把失败细节留在模块作用域，面板上直接显示出来。
+     */
+    const lastApiError = { path: '', status: 0, body: '' }
+
     async function api(path, options) {
       const { timeout = 8000, ...rest } = options ?? {}
       const ctrl = new AbortController()
@@ -539,8 +548,41 @@ window.__ModuleLoader__.load({
         const text = await response.text()
         let payload
         try { payload = text === '' ? {} : JSON.parse(text) } catch { payload = { error: text.slice(0, 200) } }
-        if (!response.ok) throw new Error(payload?.error ?? `HTTP ${response.status}`)
+        if (!response.ok) {
+          // ⚠️ 502/503 是"后端进程没起"的正常信号，**不算错误**。
+          //
+          //    透传那头在 WhalePod 不可达时回 502（ECONNREFUSED），
+          //    这是用户主动关掉后端之后的**常态** —— 面板上应当安静地显示
+          //    「后端未运行 · 点一键启动」，而不是甩一行红字报错。
+          //    只有 4xx/5xx 里真正由我们代码引起的（400/403/500）才记录。
+          if (response.status !== 502 && response.status !== 503) {
+            lastApiError.path = path
+            lastApiError.status = response.status
+            lastApiError.body = text.slice(0, 160)
+          }
+          throw new Error(payload?.error ?? `HTTP ${response.status}`)
+        }
+        if (lastApiError.status !== 0) { lastApiError.path = ''; lastApiError.status = 0; lastApiError.body = '' }
         return payload
+      } catch (error) {
+        // ⚠️ 只记录"真的出问题"的异常。
+        //
+        //    后端进程没起时这条链路上会出现两种异常，都是**常态**，不该报红：
+        //      ① 上游回 502/503 → 上面已跳过记录，但 throw 会落到这里，
+        //         若不加判断就会被记成 -1，又甩一行红字出来。
+        //      ② 浏览器侧网络异常（ECONNREFUSED / Failed to fetch），
+        //         同样是后端不在。
+        //
+        //    只有「接口通了但返回了非 4xx/5xx 之外的东西」或真正的前端异常
+        //    才值得让用户看见。
+        const msg = String(error?.message ?? error)
+        const isBackendDown = /WhalePod 进程不可达|ECONNREFUSED|Failed to fetch|NetworkError|aborted|ECONNRESET|socket hang up/i.test(msg)
+        if (lastApiError.status === 0 && !isBackendDown) {
+          lastApiError.path = path
+          lastApiError.status = -1
+          lastApiError.body = msg.slice(0, 160)
+        }
+        throw error
       } finally {
         clearTimeout(timer)
       }
@@ -905,7 +947,14 @@ window.__ModuleLoader__.load({
       const [state, setState] = useState({ status: 'loading', data: undefined, error: '' })
       const run = useCallback(() => {
         let alive = true
-        setState((current) => ({ ...current, status: 'loading' }))
+        // ⚠️ 重载时**不把 status 打回 'loading'**，只保持已有状态。
+        //
+        //    原来这里是 `setState(c => ({...c, status: 'loading'}))`，于是每次
+        //    4 秒轮询都会让界面上所有依赖 status 的判定短暂失效 —— 面板在
+        //    「在线」和「后端未运行」之间每 4 秒闪一次。data 保留着，状态就不该抖。
+        //
+        //    首次加载时 status 本来就是 'loading'，不需要额外设置。
+        //    （原来这里有一句 setState(current => current)，是纯 no-op，删掉。）
         loader()
           .then((data) => { if (alive) setState({ status: 'ready', data, error: '' }) })
           .catch((error) => { if (alive) setState({ status: 'error', data: undefined, error: String(error?.message ?? error) }) })
@@ -1075,12 +1124,46 @@ window.__ModuleLoader__.load({
                 },
               }, '⟳'),
               h('span', { className: 'gd_sidehint' }, t('dash.autoRefresh')))),
-          status.status === 'error' && qq.status === 'error'
+          // ⚠️ 用 `||` 而不是 `&&`。
+          //
+          //    status 和 qq 是两个独立的轮询（间隔都是 4s，但启动时刻差几十毫秒），
+          //    后端没起时它们**不会同时**变成 error —— 总有一个还停在上一轮的 ready。
+          //    用 && 就要求"两个同时失败"才显示后端未运行，实际几乎永远不成立，
+          //    于是界面上一直显示「机器人未启用」，偶尔两个恰好都 error 才闪一下
+          //    「后端未运行」—— 这就是用户看到的闪烁。
+          //
+          //    任一失败就说明后端不可达，按后端未运行处理。
+          // ⚠️ 判定依据是「上次拿到的数据在不在」，不是当前的 loading/ready。
+          //
+          //    每次轮询都会把 status 置成 'loading'（见 useAsync），而 /status 和
+          //    /qq 是两条独立轮询，它们不会同步 -— 若按 status === 'error' 判断，
+          //    后端没起时会出现"一个 error 一个 loading"和"两个都 error"交替，
+          //    界面就在「机器人未启用」和「后端未运行」之间闪。
+          //
+          //    改成看 data：只要还没成功拿到过一次数据，就按后端不可达处理。
+          //    这样 loading → ready 的过渡期间不会跳变。
+          status.data === undefined || qq.data === undefined
             // ⚠️ 不显示「无法连接后端」这种红字。
             //    后端不可达是**常态**（用户主动关掉它之后就是这样），
             //    下面就有「一键启动」按钮 —— 一条红字只让人以为出故障了。
             //    真正的诊断信息放在「后端进程」窗口里。
-            ? h('p', { className: 'gd_note' }, t('dash.backendOff'))
+            //
+            // 但**接口本身报错**（403/400/500）和「后端没起」是两回事：
+            // 前者是我们的 bug，必须让它可见，否则桌面版没 F12 只能靠猜。
+            ? h('div', null,
+              h('p', { className: 'gd_note' }, t('dash.backendOff')),
+              // 只有**真正的接口错误**才显示（4xx/5xx 里非 502/503 的）
+              //
+              // ⚠️ 不要显示 status === -1 那条。它对应的是"网络异常"，
+              //    后端没起时每次轮询都会产生，而且 /status 和 /qq 两条
+              //    请求的 message 措辞不同 —— 交替显示就是用户看到的闪烁。
+              //    这类情况下面第一行已经说了"后端未运行"，不需要再补一句。
+              lastApiError.status > 0 && lastApiError.status !== 502 && lastApiError.status !== 503
+                ? h('p', {
+                  className: 'gd_err',
+                  style: { fontSize: '11px', marginTop: '4px', wordBreak: 'break-all' },
+                }, `接口出错：${lastApiError.path} → HTTP ${lastApiError.status} ${lastApiError.body}`)
+                : null)
             : h('div', { className: 'gd_statusBig' },
               h('span', { className: `gd_dot ${dotTone}` }),
               h('div', { style: { display: 'flex', flexDirection: 'column', gap: '1px', minWidth: 0 } },

@@ -29,8 +29,23 @@ import { ensureRunning, isAlive, stopDaemon, killDaemonSync, listProcesses, WHAL
 
 export const name = 'dsh-whale-pod'
 
-/** 只需要 webServer 一个硬依赖。 */
-export const inject = ['webServer']
+/**
+ * ⚠️ 不要导出对象级 `inject`。
+ *
+ * 对象级 inject 会把整个 apply() **推迟到服务就绪之后**，而桌面端的
+ * 注入表（index.html 里那些 <script> 行）是**宿主启动时一次性收集**的：
+ *     dsh-desktop-host: collectIndexInjections() → IPC → 渲染层
+ * 订阅一旦晚于那次收集，这一行就永远进不了表 —— 表现是
+ * **侧栏和设置里完全看不到这个插件**，而后端 daemon 仍在正常跑
+ * （独立进程，所以 QQ 还能发言）。
+ *
+ * 实测踩过：原来这里写着 `export const inject = ['webServer']`，
+ * 重启后 DSH 日志里连一条 [whale-pod] 都没有，apply() 压根没被调用。
+ *
+ * 现在改成：apply() 立刻执行，第一件事注册注入行；真正需要 webServer
+ * 的 HTTP API 部分再用**局部** `ctx.inject(['webServer'], ...)` 等待。
+ * 这与 dsh-whale-widget 处理 issue #154 的方式一致。
+ */
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 const clientPath = path.join(here, 'client.js')
@@ -46,7 +61,13 @@ function resolveHome(ctx) {
 }
 
 /** 轻量信任栅栏：回环 Host + 拒跨站 + Origin/Referer 同源。 */
-function trustCheck(req) {
+/**
+ * @param {object} req
+ * @param {object} [conn] 宿主的 connection 服务；有 requestRejection 时委托它。
+ *   桌面端的所有 HTTP 请求都要过宿主的会话认证，插件自己判回环是不够的 ——
+ *   只判回环会被宿主层再拦一次 403，表现就是侧栏和设置页全空。
+ */
+function trustCheck(req, conn) {
   const LOOPBACK = new Set(['127.0.0.1', '[::1]', '::1', 'localhost'])
   const authorityOf = (v, dflt = 'http') => {
     if (typeof v !== 'string' || !v.trim()) return null
@@ -57,14 +78,33 @@ function trustCheck(req) {
     } catch { return null }
   }
   const host = authorityOf(req.headers.host)
-  if (host === null || !LOOPBACK.has(host.hostname)) return 403
-  if (String(req.headers['sec-fetch-site'] ?? '').toLowerCase() === 'cross-site') return 403
+  if (host === null || !LOOPBACK.has(host.hostname)) {
+    console.warn('[whale-pod/trust] reject host=', JSON.stringify(req.headers.host), 'parsed=', JSON.stringify(host))
+    return 403
+  }
+  if (String(req.headers['sec-fetch-site'] ?? '').toLowerCase() === 'cross-site') {
+    console.warn('[whale-pod/trust] reject sec-fetch-site=cross-site')
+    return 403
+  }
   for (const h of ['origin', 'referer']) {
     const raw = req.headers[h]
     if (typeof raw !== 'string' || !raw.trim()) continue
     const a = authorityOf(raw.trim())
     if (a === null) return 403
-    if (a.scheme !== host.scheme || a.hostname !== host.hostname || a.port !== host.port) return 403
+    if (a.scheme !== host.scheme || a.hostname !== host.hostname || a.port !== host.port) {
+      console.warn('[whale-pod/trust] reject header=' + h, JSON.stringify(raw), 'vs host=', JSON.stringify(host))
+      return 403
+    }
+  }
+  // 自校验过了还不够 —— 宿主的会话认证必须一起过。
+  // 委托它（不重写它的语义），它抛异常按拒绝处理（fail-closed）。
+  if (conn && typeof conn.requestRejection === 'function') {
+    try {
+      const code = conn.requestRejection(req)
+      if (code !== undefined && code !== null && code !== false) return code
+    } catch (error) {
+      return 403
+    }
   }
   return undefined
 }
@@ -111,6 +151,14 @@ function proxyToWhalePod(target, req, res, token, timeoutMs = 20_000) {
   // node:http.request(options[, callback]) 只接受两个参数；之前误传成
   // http.request(target, options, callback)，Node 把 options 对象当 listener，
   // 抛 ERR_INVALID_ARG_TYPE，前端只看到 HTTP 400/一片白。
+  // ⚠️ timer 必须**先声明**再进 request 回调。
+  //
+  //    原来写成 `const upstream = http.request(..., (up) => { clearTimeout(timer) })`
+  //    然后才 `const timer = setTimeout(...)` —— 回调里引用的是 TDZ 里的 timer。
+  //    上游响应够快时（本地转发几乎总是快），回调在 `const timer` 求值前就跑了，
+  //    抛 ReferenceError: Cannot access 'timer' before initialization，
+  //    前端只能看到 HTTP 400 / 状态一直"未运行"并反复闪。
+  let timer
   const upstream = http.request({
     ...target,
     method: req.method,
@@ -120,7 +168,7 @@ function proxyToWhalePod(target, req, res, token, timeoutMs = 20_000) {
     res.writeHead(up.statusCode ?? 502, up.headers)
     up.pipe(res)
   })
-  const timer = setTimeout(() => {
+  timer = setTimeout(() => {
     try { upstream.destroy(new Error(`转发超时（${timeoutMs}ms）`)) } catch { /* ignore */ }
   }, timeoutMs)
   upstream.on('error', (error) => {
@@ -149,10 +197,29 @@ export function apply(ctx, config = {}) {
   }
   const home = resolveHome(ctx)
   log.info(`装配开始（WhalePod 数据目录: ${home}）`)
+  // ── 浏览器半身由 package.json 的 dsh.client 声明加载 ──────────────
+  //
+  // 不要把注入行写在这里 —— 那条路（webserver/index-inject）在这个项目里
+  // 反复出问题：apply() 的执行时机、webServer 服务就绪顺序、桌面壳的注入表
+  // 收集时机，任何一环变动都会让 UI 静默消失，而且日志里看不出原因。
+  //
+  // 官方通路 dsh.client 由 DSH 的 client-modules 直接管理，不依赖以上任何时序：
+  //   "dsh": { "client": { "platform": "web", "immediately": true, "inject": [] } }
+  // OFM 用的就是这条，运行正常。
+  //
+  // ⚠️ 代价：client.js 会被 client-modules 加载一次，所以**必须删掉手动注入**，
+  //    否则同一个 factory 注册两次 → duplicate factory registration → 前端崩溃。
 
-  const clientPathResolved = clientPath
-  const target = { host: '127.0.0.1', port: WHALE_POD_WEB_PORT }
-  /** WhalePod 的 Web token（读它的 config.json；进程未启动时为 null）。 */
+  /**
+   * 读 WhalePod 的 Web token。
+   *
+   * WhalePod 后端在 18898 上要求 Bearer 认证，插件透传时必须带上。
+   * token 存在它的 config.json 里；进程没起或文件读不到时返回 null，
+   * 上游会回 401，前端会走"后端未就绪"的分支 —— 这是预期行为。
+   *
+   * ⚠️ 这个函数曾经被误删过（删注入块时连带删掉了），
+   *    结果所有透传请求都抛 ReferenceError: readWhalePodToken is not defined。
+   */
   const readWhalePodToken = () => {
     try {
       const cfg = JSON.parse(fs.readFileSync(path.join(home, 'config.json'), 'utf8'))
@@ -160,10 +227,27 @@ export function apply(ctx, config = {}) {
     } catch { return null }
   }
 
+  /**
+   * client.js 的绝对路径。
+   *
+   * ⚠️ 这行也曾被误删过（同一次删注入块），导致 /dsh-whale-pod/widget.js
+   *    和图标路由都抛 ReferenceError，前端加载不到浏览器半身。
+   *    同 clientPath 一样指向包内的 client.js。
+   */
+  const clientPathResolved = clientPath
+
+  // WhalePod 后端的地址。透传和收集两条路径都用它。
+  //
+  // ⚠️ 这行曾经被误删过（删注入块时连带删掉了），结果所有 /api/whale-pod/*
+  //    请求都抛 ReferenceError: target is not defined，前端只看到 HTTP 400，
+  //    侧栏和设置页全空。删代码块时一定要确认边界。
+  const target = { host: '127.0.0.1', port: WHALE_POD_WEB_PORT }
+
   // webServer 缺席只是少 API，不该让装配崩掉 —— 因此 inject 也包一层防御
   if (typeof ctx.inject === 'function') {
-    ctx.inject(['webServer'], (scoped) => {
+    ctx.inject(['webServer', 'connection'], (scoped) => {
       const server = scoped?.webServer
+      const conn = scoped?.connection
       if (server === undefined || typeof server.register !== 'function') {
         log.warn('webServer 服务不可用（缺少 register）—— 跳过 HTTP API')
         return
@@ -177,7 +261,7 @@ export function apply(ctx, config = {}) {
         kind: 'prefix',
         path: '/api/whale-pod',
         handler: async (req, res) => {
-          const rejection = trustCheck(req)
+          const rejection = trustCheck(req, conn)
           if (rejection !== undefined) {
             res.writeHead(rejection, { 'content-type': 'application/json; charset=utf-8' })
             res.end(JSON.stringify({ error: rejection === 401 ? 'unauthorized' : 'forbidden' }))
@@ -308,7 +392,7 @@ export function apply(ctx, config = {}) {
         path: '/dsh-whale-pod/widget.js',
         handler: (req, res) => {
           try {
-            const rejection = trustCheck(req)
+            const rejection = trustCheck(req, conn)
             if (rejection !== undefined) {
               res.writeHead(rejection, { 'content-type': 'text/plain; charset=utf-8' })
               res.end('forbidden')
@@ -341,7 +425,7 @@ export function apply(ctx, config = {}) {
           path: route,
           handler: (req, res) => {
             try {
-              const rejection = trustCheck(req)
+              const rejection = trustCheck(req, conn)
               if (rejection !== undefined) {
                 res.writeHead(rejection, { 'content-type': 'text/plain; charset=utf-8' })
                 res.end('forbidden')
@@ -364,26 +448,7 @@ export function apply(ctx, config = {}) {
 
       // ── NapCat 面板入口：WhalePod 的 webInfo 已含 token，由透传 API 提供 ──
 
-      // ── 注入行：渲染器页面加载 client.js（鲸鱼挂件同款）─────────────
-      if (typeof ctx.on === 'function') {
-        ctx.on('webserver/index-inject', (table) => {
-          try {
-            if (!Array.isArray(table)) return
-            for (const row of table) {
-              if (row?.kind === 'script' && typeof row.text === 'string' && row.text.includes('/dsh-whale-pod/widget.js')) return
-            }
-            table.push({
-              kind: 'script',
-              placement: 'body',
-              text: '(function(){try{var d=document.body||document.head||document.documentElement;if(!d)return;var s=document.createElement("script");s.src="/dsh-whale-pod/widget.js";s.onerror=function(){};d.appendChild(s)}catch(e){}})()',
-            })
-          } catch (error) {
-            log.warn(`index-inject 注册失败：${String(error?.message ?? error)}`)
-          }
-        })
-      }
-
-      log.info('控制面已挂载：/api/whale-pod/* 透传 + client.js 注入行')
+      log.info('控制面已挂载：/api/whale-pod/* 透传')
 
       // ── 确保守护进程活着（按配置：自动启动 / 纯手动）────────────────
       //
