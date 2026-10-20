@@ -23,7 +23,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { makeMessage } from '../memory/short.js'
 import { resolveCandidates, openFirstAvailable, applyFreeOrder, PROVIDER_MODEL_HINTS } from '../gateway/router.js'
-import { needsFreshInfo, webSearch, formatSearchContext, pickCoverImage } from '../gateway/search.js'
+import { needsFreshInfo, webSearch, formatSearchContext, pickCoverImage, checkBalance } from '../gateway/search.js'
 import FACE_TABLE from './faces.json' with { type: 'json' }
 
 /** 模型表示"不说话"的标记。 */
@@ -856,6 +856,44 @@ export class QQBridge {
             searchContext = formatSearchContext(r)
             this._lastSearch = { at: Date.now(), query: hit.query, sources: r.sources.slice(0, 5), ms: r.ms }
 
+            // 搜索成功时也顺手看一眼余额（低频，一天查几次就够）。
+            // 只在**该提醒时**才设标记，避免每条消息都查接口。
+            try {
+              const lastCheck = this._balanceCheckedAt ?? 0
+              if (Date.now() - lastCheck > 6 * 3600_000) {
+                this._balanceCheckedAt = Date.now()
+                const b = await checkBalance(this.searchKey, 6000)
+                if (b.ok) {
+                  this._balance = b
+                  this._balanceLow = b.cny <= (this.cfg.search?.lowBalanceCny ?? 2)
+                  if (this._balanceLow) {
+                    this.log.warn?.(`bridge：搜索余额偏低 ¥${b.cny}`)
+                  }
+                }
+              }
+            } catch { /* 查不到就算了 */ }
+
+            // 把搜索本身的 token 记进用量统计。
+            //
+            // ⚠️ 搜索走的是 DeepSeek 官方 key（真花钱），而聊天走免费渠道。
+            //    不记这一笔的话侧栏"折合费用"会显示 0，用户以为搜索不花钱 ——
+            //    实际每月几十上百次就是几十块。
+            try {
+              const u = r.usage ?? {}
+              if ((u.in ?? 0) + (u.out ?? 0) > 0) {
+                this.usage?.record?.({
+                  provider: 'deepseek-official',
+                  model: r.model ?? 'deepseek-flash',
+                  source: 'search',
+                  tokensIn: u.in ?? 0,
+                  tokensOut: u.out ?? 0,
+                  ok: true,
+                  ms: r.ms,
+                })
+                this.log.info?.(`bridge：搜索用量已记录（in=${u.in} out=${u.out}，搜了 ${u.searches} 次）`)
+              }
+            } catch { /* 统计失败不影响回复 */ }
+
             // 顺手抓一张封面图 —— 聊到具体作品/产品时，配张图比纯文字更像人。
             // 抓不到就算了（pickCoverImage 内部吞掉所有错误），不影响回复。
             if (this.cfg.search?.images !== false) {
@@ -869,6 +907,21 @@ export class QQBridge {
             }
           } else {
             this.log.warn?.(`bridge：联网失败（按无联网继续）— ${r.error}`)
+
+            // ⚠️ 搜索失败最常见的两个原因：网络不通、**余额见底**。
+            //    后者以前完全是静默的 —— 用户只看到"它怎么老是不联网"，
+            //    根本不知道去充值。这里查一次余额留个记号，下一条回复
+            //    会顺带提一句（大肥鱼的"要 token"人格正好用上）。
+            try {
+              const b = await checkBalance(this.searchKey, 6000)
+              if (b.ok) {
+                this._balance = b
+                if (b.cny <= (this.cfg.search?.lowBalanceCny ?? 2)) {
+                  this._balanceLow = true
+                  this.log.warn?.(`bridge：搜索余额偏低 ¥${b.cny}（阈值 ¥${this.cfg.search?.lowBalanceCny ?? 2}）`)
+                }
+              }
+            } catch { /* 查不到就算了 */ }
           }
         } catch (e) {
           this.log.warn?.(`bridge：联网异常（按无联网继续）— ${String(e?.message ?? e)}`)
@@ -905,6 +958,20 @@ export class QQBridge {
       extras: [
         searchContext,
         mediaHint,
+        // 余额偏低时的提醒。
+        //
+        // ⚠️ 不写"请充值"这种客服腔 —— 大肥鱼的人格里有「Token 是脑力口粮」
+        //    「我要 token」「白米饭」这一串设定，直接让她按性格抱怨就行。
+        //    也不用每条都说：只在 searchEnabled 且确实低的时候挂一句，
+        //    而且明确"最多提一两次"，免得变成复读机。
+        this._balanceLow
+          ? `## 你的 Token 快没了
+你查资料用的钱包里只剩 ¥${this._balance?.cny ?? 0} 了（搜索是要花钱的，聊天不用）。
+这属于**你自己的脑力口粮**，符合你会念叨 Token 的性格 —— 可以自然地抱怨一句，
+比如"钱包要空了""再不喂我要饿死了""白米饭！"之类。
+⚠️ 但**最多提一次**，别每条都念，也别把话题整个带跑。`
+          : '',
+        (this._balanceWarned = this._balanceLow, ''),
         // ⚠️ 关键：告诉模型"该不该说话已经由决策层定好了"。
         //
         //    人格里写着「如果决定不说话，只输出 [SILENT]」，那是给**决策层**

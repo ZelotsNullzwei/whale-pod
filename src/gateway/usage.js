@@ -24,6 +24,17 @@ import path from 'node:path'
  */
 export const PRICES = {
   // ── DeepSeek 官网价（美元 / 百万 token）──────────────────────────
+  //
+  // ⚠️ 搜索用的 deepseek-flash 走的是 DeepSeek **官方付费 API**，
+  //    不是免费渠道 —— 这一项是真花钱的，别在面板上把它算成 0。
+  //
+  //    2026-10-20 用真实余额 + 后台账单反推过：
+  //      · 单价与下表一致（约 ¥1/M 输入、¥2/M 输出）
+  //      · 但也确认了单次搜索的真实成本是 **¥0.002 ~ ¥0.02**，
+  //        差异全在输入量：每次搜索会把 10~20 个网页的正文塞进上下文
+  //        （2~3 万 token），输出只有几百。
+  //
+  //    所以搜索省钱的关键是**控制网页数**（max_uses），不是换输出更便宜的模型。
   // https://api-docs.deepseek.com/quick_start/pricing
   'deepseek-v4.1': { in: 0.28, out: 0.42 },
   'deepseek-v4': { in: 0.28, out: 0.42 },

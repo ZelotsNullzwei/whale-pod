@@ -110,6 +110,19 @@ export function needsFreshInfo(text) {
   // ⚠️ 别只认「吗/呢/问号」。口语里「这季新番有啥好看的」完全是疑问句，
   //    但没有一个传统疑问标记 —— 原来这种就漏了，模型只能硬编。
   const question = /[?？]|吗|呢|是不是|有没有|怎么|什么|多少|如何|啥|哪些|哪个|哪个好|推荐/.test(t)
+
+  // ⚠️ "XX强吗""XX好吗""XX值得吗" 这类**短问句**要单独兜住。
+  //    它们含「吗」但前面没有时效词，原来的两段式判定（fresh && question）
+  //    不成立 —— 而这类恰恰是群里最常见的问法。
+  //    实测踩过：「祀强吗」判成不需要搜索，模型只能拿旧记忆猜。
+  // ⚠️ 只认「吗」结尾，不认「么」——「吃什么」「干什么」也以「么」结尾，
+  //    但那是日常问句，不是"问某个东西怎么样"。
+  const shortAsk = /[\u4e00-\u9fa5A-Za-z0-9]{1,12}吗[？?]?$/.test(t) && t.length <= 20
+  // 生活琐事不算：吃了/睡了/走了/来了/忙吗 这些问了也查不到什么
+  const chitchat = /^(吃了|睡了|走了|来了|好了|行吧|好吧|在吗|忙吗|醒了吗|下班了吗|到家了吗)/
+  if (shortAsk && !chitchat.test(t)) {
+    return { need: true, why: '在问某个东西好不好', query: cleanQuery(t) }
+  }
   if (fresh.test(t) && question) {
     return { need: true, why: '问的是时效性内容', query: cleanQuery(t) }
   }
@@ -177,13 +190,25 @@ function detectProperNoun(t) {
   //
   //    这里没法靠词形判断（中文没有大小写），所以看它**在句子里被怎么问**。
   //    命中时返回 XX 那一段作为 query —— 只查这个名字，比整句检索准得多。
-  const aboutTitle = /([\u4e00-\u9fa5A-Za-z0-9]{2,12}?)(?:的)?(?:作者|导演|编剧|主演|声优|制作|公司|工作室|发行商|开发商|出品方)/.exec(t)
+  // ⚠️ 这里的 `.exec` 会从**第一个能匹配的位置**开始，而中文没有词边界，
+  //    于是「赛博朋克2077的新番主角是谁」会从第 2 个字开始匹配，提取出
+  //    「博朋克2077的新番主角」—— 丢了首字、还带了多余的尾巴。
+  //    改成从字符串开头匹配，并且允许"的"前后都有内容。
+  const aboutTitle = /^([\u4e00-\u9fa5A-Za-z0-9]{2,16}?)(?:的)?(?:作者|导演|编剧|主演|声优|制作|公司|工作室|发行商|开发商|出品方)/.exec(t)
   if (aboutTitle) return trimTail(aboutTitle[1])
 
   const isWho = /([\u4e00-\u9fa5A-Za-z0-9]{2,12}?)(?:是谁|是啥|是什么|怎么样|好看吗|好玩吗|值得看吗|值得买吗)/.exec(t)
   if (isWho) return trimTail(isWho[1])
 
-  // ⑤ 「XX 什么时候/哪年/多少钱/多少集」—— 有明确事实诉求
+  // ⑤ 裸名词：只有个名字、没有问句结构（「终末地新干员」）。
+  //
+  //    ⚠️ 这里必须返回**字符串**（函数契约），不是 {need, why, query} 对象 ——
+  //       之前写成返回对象，模板里拼出来是 "[object Object]"，日志完全看不懂。
+  const freshEntity = /(新[\u4e00-\u9fa5]{2,6}|[\u4e00-\u9fa5]{2,6}新[作番季版]|第[一二三四五六七八九十\d]+[季代期弹]|即将|预告|联动|复刻)/
+  const freshHit = freshEntity.exec(t)
+  if (freshHit && t.length <= 24) return freshHit[1]
+
+  // ⑥ 「XX 什么时候/哪年/多少钱/多少集」—— 有明确事实诉求
   const whenWhat = /([\u4e00-\u9fa5A-Za-z0-9]{2,12}?)(?:什么时候|哪年|哪一季|多少钱|多少集|几集|第几季)/.exec(t)
   if (whenWhat) return trimTail(whenWhat[1])
 
@@ -297,12 +322,55 @@ export async function webSearch(o) {
     const ms = Date.now() - started
     if (!answer) return { ok: false, answer: '', sources, error: '搜索没返回正文', ms }
     o.log?.(`联网：已查到「${question.slice(0, 30)}」→ ${answer.length} 字 / ${sources.length} 个来源（${ms}ms）`)
-    return { ok: true, answer, sources, ms }
+    // 把用量带出去 —— 侧栏的"折合费用"要把它算进去。
+    // 搜索花的钱是真金白银（用的是 DeepSeek 官方 key，不是免费渠道），
+    // 不记的话面板上会显示 0，用户以为不花钱。
+    return {
+      ok: true, answer, sources, ms,
+      model: SEARCH_MODEL,
+      usage: {
+        in: Number(j.usage?.input_tokens) || 0,
+        out: Number(j.usage?.output_tokens) || 0,
+        cacheRead: Number(j.usage?.cache_read_input_tokens) || 0,
+        searches: Number(j.usage?.server_tool_use?.web_search_requests) || 0,
+      },
+    }
   } catch (e) {
     const aborted = e?.name === 'AbortError'
     return fail(aborted ? `超时（${o.timeoutMs ?? 25000}ms）` : String(e?.message ?? e))
   } finally {
     clearTimeout(timer)
+  }
+}
+
+/**
+ * 查 DeepSeek 账户余额（人民币）。
+ *
+ * 为什么要它：搜索走的是**官方付费 API**，余额见底就搜不了了。而这个账户
+ * 平时没人看，等发现搜不到东西时往往已经欠费。
+ *
+ * 大肥鱼的人格里有"Token 是脑力口粮""我要 token""白米饭"这一串设定，
+ * 所以余额低的时候提一句完全符合她的性格 —— 不用额外编文案。
+ *
+ * @returns {Promise<{ok:boolean, cny:number, available:boolean, error?:string}>}
+ */
+export async function checkBalance(apiKey, timeoutMs = 8000) {
+  if (!apiKey) return { ok: false, cny: 0, available: false, error: '没有凭据' }
+  try {
+    const res = await fetch('https://api.deepseek.com/user/balance', {
+      headers: { Authorization: `Bearer ${apiKey}` },
+      signal: AbortSignal.timeout(timeoutMs),
+    })
+    if (!res.ok) return { ok: false, cny: 0, available: false, error: `HTTP ${res.status}` }
+    const j = await res.json()
+    const info = (j.balance_infos ?? []).find((x) => x.currency === 'CNY') ?? j.balance_infos?.[0] ?? {}
+    return {
+      ok: true,
+      cny: Number(info.total_balance) || 0,
+      available: j.is_available !== false,
+    }
+  } catch (e) {
+    return { ok: false, cny: 0, available: false, error: String(e?.message ?? e).slice(0, 80) }
   }
 }
 
