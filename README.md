@@ -629,7 +629,53 @@ anthropic、qwen…）排在前面，其余按模型数量降序。每项右侧�
 （gemini 优先，已验证最稳）初始化一次。
 
 > ⚠️ 顺序与开关是**两个独立关注点**：顺序只管顺序，开关只管开关。
-> 把开关状态混进顺序数组会让读写都容易出错，所以单开了一个列表。
+> 把状态混进顺序数组会让读写都容易出错，所以单开了一个列表。
+
+---
+
+## 能用本地模型吗？
+
+**能。** 走 Ollama 或任何 OpenAI 兼容端点，聊天成本降到 0。
+
+### 接 Ollama（最省事）
+
+1. 先让 Ollama 跑起来，并拉一个中文够用的模型：
+
+   ```powershell
+   ollama pull qwen2.5:7b
+   ollama serve
+   ```
+
+2. 打开管理界面 → **渠道**页 → 添加渠道，预置里选 **Ollama（本地）**：
+
+   | 字段 | 填什么 |
+   |---|---|
+   | 预设 | `Ollama（本地）` |
+   | baseUrl | `http://127.0.0.1:11434/v1`（预置自带） |
+   | API Key | **留空** —— 本地不需要 |
+   | 模型 | 你 `ollama pull` 过的名字，例如 `qwen2.5:7b` |
+
+3. 点**测试连接**。它会打 `/v1/models`；通了会列出现有模型，再顺手试一次
+   `/v1/chat/completions` 确认能真出字。
+
+4. 去 **模型**页把**路由策略**切成 `self-only`（只用自备），
+   或把 Ollama 渠道拖到优先级最上面用 `free-first`。
+
+### 接其它端点
+
+预置里还有 OpenAI / DeepSeek / 硅基流动 / 月之暗面 / 智谱 / 阿里百炼，
+以及 **自定义端点**（任何 OpenAI 兼容服务，包括中转和 vLLM、LM Studio 这类本地服务）。
+自定义端点的 baseUrl 要**带 `/v1`**。
+
+### 挑模型的两个注意点
+
+| 注意 | 原因 |
+|---|---|
+| **token 上限要给够（建议 ≥ 1024）** | 带推理的模型会先吃掉预算再出正文。给小了就是「推理写满、正文为空」或者硬挤几个字 —— 看着像在胡说 |
+| **群聊不需要大模型** | 决策层已经挡掉了大部分「不该接」的消息，轮到模型时都是短回复。7B 量级够用，越大越慢 |
+
+> 本地模型**不支持联网搜索**的总结质量会差一些 —— 搜索本身走的是外部 API，
+> 但把结果揉成一句话那步是模型干的。介意的话在设置里关掉搜索。
 
 ---
 
@@ -832,6 +878,26 @@ looking things up. Point it at a local model and cost drops to zero.
 > mode switching, gateway hint) but has **never been verified end-to-end**: `initArgs` is
 > never called, there is no readiness check after spawn, and the OneBot wiring is inferred
 > from the NapCat path. Do not expect it to work yet. Use `whale-pod` mode.
+
+**Can I use a local model?**
+
+Yes. Point it at Ollama or any OpenAI-compatible endpoint and chat costs drop to zero.
+
+1. Run Ollama and pull a model: `ollama pull qwen2.5:7b`, then `ollama serve`.
+2. Open the panel → **Channels** → add a channel → preset **Ollama (local)**.
+   baseUrl `http://127.0.0.1:11434/v1`, **API key left empty**, model set to whatever you pulled.
+3. Hit **Test connection** — it probes `/v1/models` and then a real `/v1/chat/completions`.
+4. On the **Models** page set the routing strategy to `self-only`, or drag the Ollama
+   channel to the top under `free-first`.
+
+Any other OpenAI-compatible service works the same way via the **Custom endpoint** preset
+(the baseUrl must include `/v1`). Presets also cover OpenAI, DeepSeek, SiliconFlow,
+Moonshot, Zhipu, and DashScope.
+
+Two things to get right: **give the token limit room (≥ 1024)** — reasoning models spend
+budget before emitting any answer, and too small a limit shows up as an empty or
+truncated reply; and **a 7B-class model is plenty for group chat**, since the decision
+layer already filters out most messages.
 
 **Design notes**
 
