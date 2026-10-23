@@ -427,69 +427,19 @@ console.log('\n=== 12. 重复事件去重 ===')
 //
 // ⚠️ 真人遇到这种情况会先看一眼新内容再开口。原来不管，
 //    延迟+生成几十秒后照发，群友看到的就是答非所问。
-console.log('\n=== 13. 过时回复检测 ===')
+//
+// ⚠️ 2026-10-23：这一节原来的 5 个用例是**直接往 mem.push()** 造消息，
+//    绕过了同会话串行队列 —— 恰好掩盖了真实 bug：
+//
+//      第一条在 sleep/生成时，第二条的 `_handle` 还没跑、还没写进 mem，
+//      所以读 mem 的过时检测**永远看不到排队中的消息**，等于没做。
+//
+//    那种写法证明不了任何东西，已经删掉。过时检测的完整测试（走真实
+//    `onEvent()` 路径、含生成期并发、多群隔离、@ 与引用不被误丢）
+//    见 **tests/check-concurrency.mjs**。
+console.log('\n=== 13. 过时回复检测（已移至 check-concurrency.mjs）===')
 {
-  const mkBridge = () => {
-    const memory = new MemoryStore({})
-    const bridge = new QQBridge({
-      cfg: { enabled: true, allow: { private: [], groups: ['999'], allowAllWhenEmpty: false } },
-      onebot: { connected: true, on() { return this }, sendGroup: async () => ({ status: 'ok' }) },
-      gateway: {}, decision: {}, memory, log: {},
-    })
-    bridge.selfId = '10001'
-    return { bridge, memory }
-  }
-
-  // 场景 A：后面来了 2 条且没提我 → 判定过时
-  {
-    const { bridge, memory } = mkBridge()
-    const mem = memory.get('group:999')
-    mem.push({ id: 'x1', sender: 'u1', senderName: '甲', text: '问题', at: Date.now() })
-    mem.push({ id: 'x2', sender: 'u2', senderName: '乙', text: '另一个话题', at: Date.now() })
-    mem.push({ id: 'x3', sender: 'u3', senderName: '丙', text: '嗯嗯', at: Date.now() })
-    const r = bridge._checkSuperseded({ messageId: 'x1' }, mem)
-    check('后面 2 条且没提我 → 过时', r !== null, JSON.stringify(r))
-    check('  报告了条数', r?.count === 2, JSON.stringify(r))
-  }
-
-  // 场景 B：新消息里有人提到我 → 不过时（还在等我）
-  {
-    const { bridge, memory } = mkBridge()
-    const mem = memory.get('group:999')
-    mem.push({ id: 'y1', sender: 'u1', senderName: '甲', text: '问题', at: Date.now() })
-    mem.push({ id: 'y2', sender: 'u2', senderName: '乙', text: '插一句', at: Date.now() })
-    mem.push({ id: 'y3', sender: 'u3', senderName: '丙', text: '肥鱼你说呢', at: Date.now(), mentionsMe: true })
-    check('新消息里提到我 → 不过时', bridge._checkSuperseded({ messageId: 'y1' }, mem) === null)
-  }
-
-  // 场景 C：新消息引用了我的回复 → 不过时
-  {
-    const { bridge, memory } = mkBridge()
-    const mem = memory.get('group:999')
-    mem.push({ id: 'z1', sender: 'u1', senderName: '甲', text: '问题', at: Date.now() })
-    mem.push({ id: 'z2', sender: 'u2', senderName: '乙', text: '补充', at: Date.now() })
-    mem.push({ id: 'z3', sender: 'u3', senderName: '丙', text: '接着问', at: Date.now(), replyTo: 'z1' })
-    check('新消息引用了我 → 不过时', bridge._checkSuperseded({ messageId: 'z1' }, mem) === null)
-  }
-
-  // 场景 D：只有 1 条新消息 → 不到阈值，不过时
-  {
-    const { bridge, memory } = mkBridge()
-    const mem = memory.get('group:999')
-    mem.push({ id: 'w1', sender: 'u1', senderName: '甲', text: '问题', at: Date.now() })
-    mem.push({ id: 'w2', sender: 'u2', senderName: '乙', text: '一句', at: Date.now() })
-    check('只多了 1 条 → 不过时（不误伤）', bridge._checkSuperseded({ messageId: 'w1' }, mem) === null)
-  }
-
-  // 场景 E：我自己后面又说了话 → 不算别人插话
-  {
-    const { bridge, memory } = mkBridge()
-    const mem = memory.get('group:999')
-    mem.push({ id: 'v1', sender: 'u1', senderName: '甲', text: '问题', at: Date.now() })
-    mem.push({ id: 'v2', sender: 'me', senderName: '我', text: '我的回复', at: Date.now(), isMe: true })
-    mem.push({ id: 'v3', sender: 'me', senderName: '我', text: '再说一句', at: Date.now(), isMe: true })
-    check('只有我自己的后续消息 → 不过时', bridge._checkSuperseded({ messageId: 'v1' }, mem) === null)
-  }
+  check('过时检测改由 tests/check-concurrency.mjs 用真实 onEvent 路径覆盖', true)
 }
 
 console.log(`\n${'='.repeat(40)}`)

@@ -459,14 +459,96 @@ export class QQBridge {
       return
     }
 
+    // ⚠️ 入站登记（2026-10-23 补，修复过时检测看不到排队消息的 bug）
+    //
+    // 为什么必须在**入队之前**登记，而不是等 `_handle` 里写记忆：
+    //
+    //   同会话是**串行**的（见下面的 `_queues`）。第一条消息在 sleep 或
+    //   等 LLM 生成时，第二、三条只是**排在 Promise 链上**，它们的
+    //   `_handle` 根本还没开始跑 —— 所以还没写进 mem。
+    //   而 `_checkSuperseded` 原来读的是 `mem.recent()`，于是它永远
+    //   看不到这些「已到但未处理」的消息，过时检测形同虚设。
+    //
+    //   实测确认（tests/_probe-concurrency.mjs）：第一条生成期间连发两条，
+    //   mem 里只有 1 条，`_checkSuperseded` 返回 null，三条全部照发。
+    //
+    // 所以这里在**入口处**就登记一条独立记录（不依赖 mem、不受串行队列
+    // 阻塞），并给每个 scope 一个单调递增的序号。
+    const seq = this._recordInbound(msg)
+
     // 同会话串行，避免两条消息同时触发两条回复
     const prev = this._queues.get(msg.scope) ?? Promise.resolve()
-    const next = prev.then(() => this._handle(msg)).catch((e) => {
+    const next = prev.then(() => this._handle(msg, seq)).catch((e) => {
       this.log.warn?.(`bridge：${msg.scope} 处理失败 — ${String(e?.message ?? e)}`)
       this.stats.failed++
     })
     this._queues.set(msg.scope, next)
     await next
+  }
+
+  /**
+   * 登记一条**入站**消息，返回它在所属 scope 里的单调序号。
+   *
+   * 这份记录和 `mem`（短期记忆）是**两个东西**，职责不同：
+   *
+   *   · `mem`        —— 给模型看的对话上下文，按处理顺序写入，受串行队列阻塞
+   *   · `_inbound`   —— 给过时检测看的「到了哪些消息」，**入口即写**，不受阻塞
+   *
+   * 分开是必要的：合并成一个就会出现本次的 bug（排队中的消息对检测不可见）。
+   *
+   * @param {object} msg
+   * @returns {number} 该 scope 内的单调递增序号（从 1 开始）
+   */
+  _recordInbound(msg) {
+    const scope = String(msg.scope ?? 'unknown')
+    if (!this._inbound) this._inbound = new Map()
+    let rec = this._inbound.get(scope)
+    if (!rec) {
+      rec = { seq: 0, entries: [] }
+      this._inbound.set(scope, rec)
+    }
+    const seq = ++rec.seq
+    // ⚠️ mentionsMe 在规范化消息里**不是现成字段** —— 它是由
+    //    `isAtMe(selfId)` 现算的（见 onebot.js normalizeEvent）。
+    //    这里必须自己算一次：入口处拿不到 _handle 里那个
+    //    `(isAtMe) || quotedMine` 的组合值，但「@ 我」这一半足够
+    //    作为「有人在等我」的判据了。
+    let mentionsMe = Boolean(msg.mentionsMe)
+    if (!mentionsMe && this.selfId && typeof msg.isAtMe === 'function') {
+      try { mentionsMe = Boolean(msg.isAtMe(this.selfId)) } catch { /* 算不出就当没提 */ }
+    }
+    rec.entries.push({
+      seq,
+      messageId: msg.messageId != null ? String(msg.messageId) : null,
+      at: Number(msg.at ?? Date.now()),
+      text: String(msg.text ?? ''),
+      // 这两个字段是「有人在等我」的判据，入口处就要拿到 ——
+      // 不能等 _handle 里算（那时已经太晚）。
+      mentionsMe,
+      replyTo: msg.replyTo != null ? String(msg.replyTo) : null,
+      sender: String(msg.userId ?? ''),
+    })
+
+    // 只保留最近一段：过时检测只关心「我之后」的，留太多没意义。
+    // 按条数裁剪，避免长期运行把内存吃光（大群一天几万条）。
+    const cap = Number(this.cfg.inboundKeep ?? 50)
+    if (rec.entries.length > cap) {
+      rec.entries.splice(0, rec.entries.length - cap)
+    }
+    return seq
+  }
+
+  /**
+   * 取某个 scope 里**序号大于 afterSeq** 的入站记录。
+   *
+   * @param {string} scope
+   * @param {number} afterSeq
+   * @returns {Array<object>}
+   */
+  _inboundAfter(scope, afterSeq) {
+    const rec = this._inbound?.get(String(scope ?? 'unknown'))
+    if (!rec) return []
+    return rec.entries.filter((e) => e.seq > afterSeq)
   }
 
   /**
@@ -644,7 +726,11 @@ export class QQBridge {
     if (this.recent.length > 50) this.recent.length = 50
   }
 
-  async _handle(msg) {
+  /**
+   * @param {object} msg 规范化后的消息
+   * @param {number} [seq] 本条在 scope 内的入站序号（由 onEvent 分配）
+   */
+  async _handle(msg, seq) {
     const mem = this.memory.get(msg.scope)
     const now = Date.now()
 
@@ -764,7 +850,7 @@ export class QQBridge {
     //   · 这段时间里别人至少说了 2 条，**且**
     //   · 这些新消息里没有任何一条提到我（没人在等我这个答案）
     // 满足就放弃发送，交给后面的消息自己触发新一轮判断。
-    const superseded = this._checkSuperseded(msg, mem)
+    const superseded = this._checkSuperseded(msg, mem, { afterSeq: seq })
     if (superseded) {
       this.stats.superseded = (this.stats.superseded ?? 0) + 1
       this.log.info?.(`bridge：等待期间群里又说了 ${superseded.count} 条且没叫我，放弃本条回复（避免答非所问）`)
@@ -792,8 +878,13 @@ export class QQBridge {
     //
     // 生成往往是最慢的一步（推理模型几十秒）。这段时间里如果别人已经
     // 把话题岔开、或者**已经有人替它回答了**，再发就是刷屏。
-    // 同 `_checkSuperseded`，但阈值放宽到 3 条（生成期比延迟期长）。
-    const stale = this._checkSuperseded(msg, mem, { minNew: 3 })
+    //
+    // ⚠️ 阈值和延迟后那次**保持一致（都是 2）**，不能用更大的数：
+    //    `_inboundAfter(seq)` 数的是「本条之后到达的全部消息」，
+    //    不是「生成期间新增的」。两处用不同阈值会让「延迟期到 2 条、
+    //    生成期 0 条」这种情况在最后一道闸被放过去 —— 实测就是这么漏的。
+    //    这已经是发送前最后一道闸，口径统一才不会漏。
+    const stale = this._checkSuperseded(msg, mem, { afterSeq: seq })
     if (stale) {
       this.stats.superseded = (this.stats.superseded ?? 0) + 1
       this.log.info?.(`bridge：生成期间群里又说了 ${stale.count} 条且没叫我，本条回复已过时，丢弃`)
@@ -845,6 +936,9 @@ export class QQBridge {
         model: this._lastRoute?.model ?? null,
       }))
       this._record(msg, d, text, 'sent')
+      // 记下自己发出的 message_id —— 过时检测要靠它认出
+      // 「后续消息引用了我的回复」= 有人在追问我，不能判过时。
+      this._rememberMyReplyIds(msg.scope, sentIds)
     } catch (e) {
       this.stats.failed++
       this.log.warn?.(`bridge：发送失败 — ${String(e?.message ?? e)}`)
@@ -920,51 +1014,104 @@ export class QQBridge {
    * 用途：延迟/生成期间如果群里又聊开了，原来那条回复可能已经过时。
    * 直接发出去就是"答非所问"，比沉默更伤。
    *
+   * ## 为什么读 `_inbound` 而不是 `mem`
+   *
+   * ⚠️ 这是 2026-10-23 修的一个真 bug。
+   *
+   * 同会话是**串行**的：第一条在 sleep/生成时，第二条的 `_handle` 还没
+   * 开始跑，所以**还没写进 mem**。原来这里读 `mem.recent()`，于是
+   * 「已经到达、正在排队」的消息对检测完全不可见 —— 过时检测永远返回
+   * null，等于没做。
+   *
+   * 实测（tests/_probe-concurrency.mjs）：第一条生成期间连发两条，
+   * mem 里只有 1 条，检测返回 null，三条全部照发。
+   *
+   * 现在读 `_inbound`（入口即写、不受串行队列阻塞），能看到排队中的消息。
+   *
    * ## 判据（必须**同时**满足，避免误伤）
    *
-   *   ① 我这条消息之后，别人又说了 ≥ minNew 条
+   *   ① 我这条之后，别人又来了 ≥ minNew 条
    *   ② 这些新消息里**没有任何一条提到我**（没人在等这个答案）
    *   ③ 这些新消息里**没有对我的引用回复**（那说明有人在追问我）
    *
    * 只要有人提到我或引用我，就照常发送 —— 说明这个答案还有人在等。
    *
    * @param {object} msg   触发本次回复的消息
-   * @param {object} mem   ConversationMemory
+   * @param {object} mem   ConversationMemory（保留参数以兼容旧调用，本函数不再读它）
    * @param {object} [opts]
    * @param {number} [opts.minNew] 至少几条新消息才算过时（默认 2）
+   * @param {number} [opts.afterSeq] 本条消息的入站序号；缺省时按 messageId 反查
    * @returns {null|{count:number}} null = 没过时
    */
   _checkSuperseded(msg, mem, opts = {}) {
     const minNew = Number(opts.minNew ?? 2)
-    const all = mem?.recent?.() ?? []
-    if (all.length === 0) return null
+    const scope = String(msg?.scope ?? 'unknown')
 
-    // 找到触发本条回复的那条消息在记忆里的位置（按 messageId 或内容+时间）
-    const myId = msg?.messageId != null ? String(msg.messageId) : null
-    let idx = -1
-    if (myId) {
-      for (let i = all.length - 1; i >= 0; i--) {
-        if (String(all[i]?.id ?? '') === myId) { idx = i; break }
-      }
+    // 本条的入站序号：优先用调用方传的（_handle 里一定知道），
+    // 否则按 messageId 反查 —— 兼容直接调用（如测试）。
+    let seq = Number(opts.afterSeq)
+    if (!Number.isFinite(seq)) {
+      const myId = msg?.messageId != null ? String(msg.messageId) : null
+      const rec = this._inbound?.get(scope)
+      const hit = myId && rec ? rec.entries.find((e) => e.messageId === myId) : null
+      if (!hit) return null        // 查不到序号 → 无法判断，宁可不过时
+      seq = hit.seq
     }
-    // 找不到就按"最后一条非我发的"兜底 —— 宁可少判过时，也不要误丢回复
-    if (idx === -1) {
-      for (let i = all.length - 1; i >= 0; i--) {
-        if (!all[i]?.isMe) { idx = i; break }
-      }
-    }
-    if (idx === -1 || idx >= all.length - 1) return null
 
-    const newer = all.slice(idx + 1).filter((m) => !m?.isMe)
+    const newer = this._inboundAfter(scope, seq)
     if (newer.length < minNew) return null
 
     // 有人提到我 / 引用我 → 这个答案还有人在等，照常发
-    for (const m of newer) {
-      if (m?.mentionsMe) return null
-      if (myId && m?.replyTo != null && String(m.replyTo) === myId) return null
+    for (const e of newer) {
+      if (e.mentionsMe) return null
+      // 引用的如果是**我的回复**，说明在追问我
+      // （e.replyTo 指向自己那条消息也算：他在追问自己刚问的那句）
+      if (e.replyTo != null && (e.replyTo === (msg?.messageId != null ? String(msg.messageId) : null))) return null
+      if (e.replyTo != null && this._isMyReplyId(scope, e.replyTo)) return null
     }
 
     return { count: newer.length }
+  }
+
+  /**
+   * 这个 messageId 是不是**我发出去的**回复？
+   *
+   * 用途：判断后续消息里的引用回复是不是在追问我。
+   * 我自己发的消息 id 记在 mem 里（isMe 那条的 id）。
+   *
+   * @param {string} scope
+   * @param {string} id
+   * @returns {boolean}
+   */
+  _isMyReplyId(scope, id) {
+    if (!this._myReplyIds) this._myReplyIds = new Map()
+    const set = this._myReplyIds.get(String(scope))
+    return Boolean(set && set.has(String(id)))
+  }
+
+  /**
+   * 记下自己发出的回复 id（按 scope 分组）。
+   *
+   * 只需要最近一小段：过时检测只看「我这条之后」的消息，
+   * 而它们能引用到的我的回复必然是最近的。
+   *
+   * @param {string} scope
+   * @param {string[]} ids
+   */
+  _rememberMyReplyIds(scope, ids) {
+    if (!Array.isArray(ids) || ids.length === 0) return
+    if (!this._myReplyIds) this._myReplyIds = new Map()
+    const key = String(scope ?? 'unknown')
+    let set = this._myReplyIds.get(key)
+    if (!set) { set = new Set(); this._myReplyIds.set(key, set) }
+    for (const id of ids) {
+      if (id != null) set.add(String(id))
+    }
+    // 只留最近 50 个
+    if (set.size > 50) {
+      const arr = [...set]
+      this._myReplyIds.set(key, new Set(arr.slice(arr.length - 50)))
+    }
   }
 
   /** 组装场景描述（群名走缓存）。 */
