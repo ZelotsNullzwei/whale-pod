@@ -21,7 +21,7 @@
  */
 export function makeMessage({
   id, sender, senderName, text, at, mentionsMe = false, isMe = false, images = [],
-  provider = null, model = null,
+  provider = null, model = null, replyTo = null,
 }) {
   return {
     id: String(id ?? `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`),
@@ -35,6 +35,14 @@ export function makeMessage({
     /** 这条回复是哪个渠道/模型生成的（仅 isMe 时有值） */
     provider: provider ?? null,
     model: model ?? null,
+    /**
+     * 这条消息**引用/回复**了哪条消息的 id（QQ 的引用回复）。
+     *
+     * 决策层靠它判断「这句话是在对我说，还是在跟别的群友说」——
+     * 引用对象是别人时，第二人称指的就不是机器人（见 rule.js
+     * `resolveAddressee`）。为 null 表示普通发言、没有引用。
+     */
+    replyTo: replyTo != null ? String(replyTo) : null,
   }
 }
 
