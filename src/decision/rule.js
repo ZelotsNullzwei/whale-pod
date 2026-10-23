@@ -146,7 +146,24 @@ export class RuleDecisionProvider extends DecisionProvider {
     }
 
     // ── 5. 冷却期内不回（防刷屏） ───────────────────────────
-    if (input.sinceMyLastMessage < this.cfg.cooldownMs) {
+    //
+    // ⚠️ 但**「明确在问它」要豁免冷却**（2026-10-23 加，实测驱动）。
+    //
+    //    数据：群 704291282 历史上「冷却中」179 次，其中 21 次是带问句特征的。
+    //    典型误伤（日志原文）：
+    //      「肥鱼还活着吗」  距上次发言 2s  → 被拦
+    //      「你能看到？」    距上次发言 ?s  → 被拦
+    //    这些明显是在叫它，冷却不该拦 —— 用户看到的是「叫了它不应」。
+    //
+    //    但**不能直接调小 cooldownMs**：被拦的 179 条里 70 条是图片/表情、
+    //    51 条是 ≤4 字短句，这些本来就不值得接，冷却在这里是**帮了忙**。
+    //    所以只豁免「问句 + 在说它」这一种，其余照旧。
+    //
+    //    判据收得紧（两个条件都要满足），避免把普通闲聊也放进来：
+    //      ① 在说它：mentionsSelf（名字/别名/@）或 detectFollowUp 命中
+    //      ② 是问句：问号，或句尾疑问词
+    const cooldownExempt = this._isAskingMe(last, msgs, input)
+    if (input.sinceMyLastMessage < this.cfg.cooldownMs && !cooldownExempt) {
       const secs = Math.round(input.sinceMyLastMessage / 1000)
       const wait = Math.max(0, this.cfg.cooldownMs - input.sinceMyLastMessage)
       return {
@@ -156,6 +173,9 @@ export class RuleDecisionProvider extends DecisionProvider {
         // 同私聊：冷却不是"不理"，只是"晚点理"。见上面 defer 的说明。
         defer: { waitMs: wait },
       }
+    }
+    if (cooldownExempt && input.sinceMyLastMessage < this.cfg.cooldownMs) {
+      this._logCooldownExempt = (this._logCooldownExempt ?? 0) + 1
     }
 
     // ── 6. 群聊里没人 @ 我 → 判断"这话值不值得接" ────────────
@@ -329,6 +349,114 @@ export class RuleDecisionProvider extends DecisionProvider {
     }
   }
 
+
+  /**
+   * 这句话是不是**明确在问它**？（用于冷却豁免）
+   *
+   * ## 为什么需要
+   *
+   * 实测（群 704291282，日志 179 次「冷却中」）：
+   *
+   *   「肥鱼还活着吗」  距上次发言 2s  → 被冷却拦住 → 用户看到「叫了它不应」
+   *   「你能看到？」    同样被拦
+   *
+   * 这类消息**明显是在叫它**，冷却拦下来是纯误伤。
+   *
+   * ## 但为什么不能直接调小冷却
+   *
+   * 同一批 179 条里，70 条是图片/表情、51 条是 ≤4 字短句 ——
+   * 这些本来就不值得接，冷却在这里是**帮了忙**。
+   * 缩短冷却会让机器人开始回每张表情包。
+   *
+   * 所以只豁免「**问句 + 在说它**」这一种，两个条件都要满足。
+   *
+   * ## 判据（收得紧）
+   *
+   *   ① 在说它：`mentionsSelf`（名字/别名/QQ号）**或** `detectFollowUp` 命中
+   *      —— 后者覆盖「刚答完话、紧接着有人追问」这种没叫名字的情况
+   *   ② 是问句：问号，或句尾疑问词（呢/吗/吧/啥/怎么/为什么…）
+   *
+   * 任一条件不满足 → 不豁免，照常冷却。
+   *
+   * @param {object} last  最后一条消息
+   * @param {Array} msgs   历史消息
+   * @param {object} input DecisionInput
+   * @returns {boolean}
+   */
+  _isAskingMe(last, msgs, input) {
+    const text = String(last?.text ?? '').trim()
+    if (!text) return false
+
+    /**
+     * ① 在说它？
+     *
+     * ⚠️ 这里**不能直接用 `detectFollowUp().hit`** —— 两者的尺度不同：
+     *
+     *   · `detectFollowUp` 服务于「要不要主动插话」，所以证据不足时返回
+     *     `unclear`（宁可少说，避免抢话）。
+     *   · 冷却豁免服务于「本来该回的被冷却挡了」，方向相反 ——
+     *     这里应该**宁可多放行**，因为漏掉一个明确召唤比多回一句更伤。
+     *
+     * 实测踩到：「你能看到？」（刚答完话紧接着问）被判 `unclear`，
+     * 于是豁免不生效、仍被冷却拦住 —— 而这正是要修的那类误伤。
+     *
+     * 所以判据放宽为「**在说它**」的两种任一：
+     *   a) 提到名字/别名/QQ号（最硬）
+     *   b) 紧接在我发言之后（中间没人插话）+ 是问句
+     *      —— 这就是「刚说完话，紧接着有人问我」，中文群里最常见的追问形态
+     */
+    const named = mentionsSelf(text, input.self)
+
+    // ② 是问句？
+    const isQuestion = /[?？]/.test(text)
+      || /(呢|吗|吧|么|啥|怎么|为什么|为啥|哪个|哪里|多少|咋)\s*[啊呀哦噢诶]?\s*[。.!！~～]?$/.test(text)
+
+    if (named) return isQuestion
+
+    // 没叫名字：要求「紧接着我」+「是问句」+「有指向我的痕迹」三个都成立
+    //
+    // ⚠️ 只靠「紧接着 + 问句」太松了（实测反例：「吃啥？」紧接在我之后
+    //    也被判成在问我）。必须再有一条**指向我**的痕迹：
+    //      · 第二人称（你/您/你们）—— 中文里最直接的"对你说"
+    //      · 承接词（那/所以/为什么…）—— 在接我上一句
+    if (!isQuestion) return false
+    const pointsAtMe = /(你|您|你们)/.test(text) || REFERENTIAL_OPENING.test(text)
+    if (!pointsAtMe) return false
+
+    /**
+     * ⚠️ 还要排除「**在跟别人说话**」。
+     *
+     * 实测反例：「小红你今天怎么了？」—— 有第二人称「你」、紧接在我之后、
+     * 是问句，三条都满足，于是被豁免。但它明明在问另一个群友。
+     *
+     * 判据同 `resolveAddressee`：句中出现了别的群友名字、且没提我 → 不是问我。
+     */
+    for (const peer of input.peers ?? []) {
+      const name = String(peer?.name ?? '').trim()
+      if (name.length < 2) continue
+      if (String(peer?.id ?? '') === String(last?.sender ?? '')) continue  // 自己的名字不算
+      if (text.includes(name)) return false
+    }
+
+    const list = msgs ?? []
+    // 找「我」最后一条发言的位置（排除当前这条）
+    let myIdx = -1
+    for (let i = list.length - 2; i >= 0; i--) {
+      if (list[i]?.isMe === true) { myIdx = i; break }
+    }
+    if (myIdx === -1) return false
+
+    // 我发言之后到当前这条之间必须**没有人插话**
+    const between = list.slice(myIdx + 1, list.length - 1)
+    if (between.length > 0) return false
+
+    // 间隔太久就不算「紧接着」（默认 5 分钟，与 detectFollowUp 一致）
+    const myAt = Number(list[myIdx]?.at ?? NaN)
+    const lastAt = Number(last?.at ?? NaN)
+    if (Number.isFinite(myAt) && Number.isFinite(lastAt) && lastAt - myAt > 5 * 60_000) return false
+
+    return true
+  }
 
 /** 生成一个随机延迟（像人一样别秒回）。 */
   _delay(min, max, rnd) {
