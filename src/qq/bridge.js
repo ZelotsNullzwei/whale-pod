@@ -1047,6 +1047,25 @@ export class QQBridge {
     const minNew = Number(opts.minNew ?? 2)
     const scope = String(msg?.scope ?? 'unknown')
 
+    /**
+     * ⚠️ **私聊永远不过时**（2026-10-23 补，实测踩过）。
+     *
+     * 过时检测的前提是「群聊里话题可能被岔开、别人可能替它答了」。
+     * 私聊里根本不存在这种情况：
+     *
+     *   · 所有消息都是**对我一个人说的**，没有"别人在聊"
+     *   · 用户连发几条是常态（补充、追问、改口）
+     *   · 丢弃回复 = 用户看到「问了它不理我」
+     *
+     * 实测（tests/_probe-private.mjs）：私聊连发 3 条，
+     * 第一条被判 superseded 丢掉，只剩 2 条回复。
+     * 越活跃的用户越容易被丢消息 —— 纯粹误伤。
+     *
+     * 判据优先用 `msg.kind`，缺失时退回 scope 前缀。
+     */
+    const kind = msg?.kind ?? (scope.startsWith('private:') ? 'private' : (scope.startsWith('group:') ? 'group' : ''))
+    if (kind === 'private') return null
+
     // 本条的入站序号：优先用调用方传的（_handle 里一定知道），
     // 否则按 messageId 反查 —— 兼容直接调用（如测试）。
     let seq = Number(opts.afterSeq)

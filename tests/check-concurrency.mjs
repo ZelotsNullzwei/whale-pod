@@ -63,7 +63,16 @@ function makeBridge(opts = {}) {
       streamLog.push(streamCalls)
       // 只有**第一次**生成卡住，后面的立刻返回 —— 让测试可控
       if (streamCalls === 1) await gate.promise
-      yield { type: 'text-delta', index: 0, text: opts.replyText ?? '好的' }
+      /**
+       * ⚠️ 每次生成**带上序号**，让不同消息的回复文本可区分（2026-10-23 修）。
+       *
+       * 原来所有消息都返回同一个 `replyText`，于是第 1 项断言
+       * 「第一条的回复没被发出」时，p2/p3 生成的同名文本会被误认成
+       * 「第一条发出去了」—— 测试偶发假失败（整套跑时出现过）。
+       * 用序号前缀后，`sent` 里哪条属于哪次生成一目了然。
+       */
+      const base = opts.replyText ?? '好的'
+      yield { type: 'text-delta', index: 0, text: `${base}#${streamCalls}` }
       yield { type: 'finish', reason: { kind: 'stop' } }
     })(),
   }
@@ -167,7 +176,7 @@ console.log('=== 1. 生成期间连发两条（都没提我）→ 第一条应�
   b.gate.release()
   await Promise.all([p1, p2, p3])
 
-  check('第一条的回复没有被发出（过时被拦）', !b.sent.some((s) => s.text === '第一条的回复'), JSON.stringify(b.sent))
+  check('第一条的回复没有被发出（过时被拦）', !b.sent.some((s) => s.text === '第一条的回复#1'), JSON.stringify(b.sent))
   check('superseded 计数为 1', b.bridge.stats.superseded === 1, String(b.bridge.stats.superseded))
 }
 
@@ -190,7 +199,7 @@ console.log('\n=== 2. 生成期间有人 @ 我 → 不能错误丢弃 ===')
   b.gate.release()
   await Promise.all([p1, p2, p3])
 
-  check('第一条的回复正常发出', b.sent.some((s) => s.text === '第一条的回复'), JSON.stringify(b.sent))
+  check('第一条的回复正常发出', b.sent.some((s) => s.text === '第一条的回复#1'), JSON.stringify(b.sent))
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -255,7 +264,7 @@ console.log('\n=== 4. 多群隔离：A 群的消息不影响 B 群的过时判�
 
   b.gate.release()
   await Promise.all([p1, q2, q3])
-  check('A 群回复正常发出', b.sent.some((s) => s.text === 'A群的回复'), JSON.stringify(b.sent))
+  check('A 群回复正常发出', b.sent.some((s) => s.text.startsWith('A群的回复')), JSON.stringify(b.sent))
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -272,7 +281,7 @@ console.log('\n=== 5. 只有 1 条新消息 → 不到阈值，不误伤 ===')
 
   b.gate.release()
   await Promise.all([p1, p2])
-  check('回复正常发出', b.sent.some((s) => s.text === '正常回复'), JSON.stringify(b.sent))
+  check('回复正常发出', b.sent.some((s) => s.text.startsWith('正常回复')), JSON.stringify(b.sent))
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -377,7 +386,71 @@ console.log('\n=== 10. 异常恢复：某条生成抛错，后续消息仍能处
   check('失败被计数', b.bridge.stats.failed >= 1, String(b.bridge.stats.failed))
 
   await b.bridge.onEvent(mkEv({ mid: 'k2', text: '之后的消息', at: true }))
-  check('后续消息仍能正常回复（队列没卡死）', b.sent.some((s) => s.text === '后续正常'), JSON.stringify(b.sent))
+  check('后续消息仍能正常回复（队列没卡死）', b.sent.some((s) => s.text.startsWith('后续正常')), JSON.stringify(b.sent))
+}
+
+// ══════════════════════════════════════════════════════════════
+console.log('\n=== 11. 私聊：连发多条也不能判过时 ===')
+//
+// ⚠️ 踩过的坑（2026-10-23，实测）：_checkSuperseded 原来无条件跑，
+//    没排除私聊。私聊里用户连发 3 条（补充/追问/改口都是常态），
+//    第一条回复就被判 superseded 丢掉 —— 越活跃的用户越容易丢消息。
+//    过时检测的前提是「群里话题可能被岔开、别人可能替它答了」，
+//    私聊里根本不存在这种情况。
+{
+  const sent = []
+  const gate = makeGate()
+  let calls = 0
+  const persona = new PersonaStore({ home: path.join(root, '.test-home-qq'), active: 'default' })
+  persona.init()
+  const bridge = new QQBridge({
+    cfg: { enabled: true, allow: { private: ['111'], groups: [], allowAllWhenEmpty: false } },
+    onebot: {
+      connected: true, on() { return this },
+      sendPrivate: async (u, t) => { sent.push(String(t)); return { status: 'ok', retcode: 0 } },
+    },
+    gateway: {
+      providers: ['gemini'], catalog: [{ provider: 'gemini', id: 'g' }],
+      stream: () => (async function* () {
+        calls++
+        if (calls === 1) await gate.promise
+        yield { type: 'text-delta', index: 0, text: '私聊回复' }
+        yield { type: 'finish', reason: { kind: 'stop' } }
+      })(),
+    },
+    decision: createDecisionLayer(
+      { provider: 'rule', threshold: 0.5, delay: { min: 0, max: 0 }, rule: { cooldownMs: 0, mentionProbability: 1 } },
+      { log: {} },
+    ),
+    memory: new MemoryStore({}), persona, log: {},
+  })
+  bridge.selfId = '10001'
+
+  const mkPriv = (mid, text) => {
+    const ev = normalizeEvent({
+      post_type: 'message', message_type: 'private', user_id: 111,
+      message_id: mid, time: Math.floor(Date.now() / 1000), sender: { card: '我' },
+      message: [{ type: 'text', data: { text } }],
+    })
+    ev.__normalized = ev
+    return ev
+  }
+
+  const p1 = bridge.onEvent(mkPriv('q1', '在吗'))
+  const t0 = Date.now()
+  while (calls === 0 && Date.now() - t0 < 3000) await sleep(5)
+
+  const p2 = bridge.onEvent(mkPriv('q2', '补充一下'))
+  const p3 = bridge.onEvent(mkPriv('q3', '算了你先说'))
+  await waitForInbound(bridge, 'private:111', 3)
+
+  check('私聊判定不过时', bridge._checkSuperseded({ scope: 'private:111', messageId: 'q1' }, null) === null)
+
+  gate.release()
+  await Promise.all([p1, p2, p3])
+
+  check('私聊 3 条都回复了（一条都没丢）', sent.length === 3, `${sent.length} 条：${JSON.stringify(sent)}`)
+  check('私聊 superseded 计数为 0', (bridge.stats.superseded ?? 0) === 0, String(bridge.stats.superseded))
 }
 
 console.log(`\n${'='.repeat(44)}`)
