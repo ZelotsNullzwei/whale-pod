@@ -68,12 +68,32 @@ export class ConversationMemory {
     this.consecutiveTurns = 0
     /** 自上次发言以来累积的他人消息数（用于判断「该不该接话」） */
     this.pendingSinceMyLast = 0
+    /**
+     * **累计**推入过的消息总数（单调递增，不随裁剪回退）。
+     *
+     * ## 为什么需要它（2026-10-23 修）
+     *
+     * 长期记忆原来用 `msgs.length` 当「累计条数」：
+     *
+     *   unsummarized = msgs.length - summarizedCount
+     *
+     * 但 `msgs` 是**滑动窗口**，`_trim()` 会按条数/字符/年龄裁剪。
+     * 于是窗口一满（`maxMessages = 30`），`msgs.length` 恒等于 30，
+     * `summarizedCount` 也变成 30，`unsummarized` **永远为 0** ——
+     * 摘要只可能发生一次，之后再也不触发。
+     *
+     * 实测表现：`memory-long.json` 从未生成，用户反馈「记忆没生效」。
+     *
+     * 现在改用这个单调计数器算「新增了多少条」，窗口怎么滚都不影响。
+     */
+    this.totalPushed = 0
   }
 
   /** 追加一条消息。 */
   push(msg) {
     const m = makeMessage(msg)
     this.messages.push(m)
+    this.totalPushed++
     if (m.isMe) {
       this.myLastAt = m.at
       this.consecutiveTurns++
@@ -135,6 +155,19 @@ export class ConversationMemory {
     this.myLastAt = 0
     this.consecutiveTurns = 0
     this.pendingSinceMyLast = 0
+    /**
+     * ⚠️ 累计计数也要归零（2026-10-23）。
+     *
+     * `clear()` 的语义是「这个会话从头开始」——比如用户手动清空记忆。
+     * 如果 `totalPushed` 不清零，而长期记忆那边的 `summarizedTotal` 还留着
+     * 旧值（或者反过来），两边的基准就错位了：
+     * 要么永远算不出增量、要么一上来就误判「攒够了该摘要」。
+     *
+     * 注意：**长期记忆的 `summarizedTotal` 不会自动跟着归零**
+     * （它在另一个对象里）。`clear()` 只负责短期窗口这一侧，
+     * 调用方如果要彻底重置，应该同时清长期记忆（`LongTermStore.clear`）。
+     */
+    this.totalPushed = 0
   }
 
   /** 导出成决策层要的 DecisionInput 片段。 */

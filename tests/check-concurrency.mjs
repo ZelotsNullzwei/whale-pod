@@ -419,7 +419,10 @@ console.log('\n=== 11. 私聊：连发多条也不能判过时 ===')
       })(),
     },
     decision: createDecisionLayer(
-      { provider: 'rule', threshold: 0.5, delay: { min: 0, max: 0 }, rule: { cooldownMs: 0, mentionProbability: 1 } },
+      // ⚠️ 私聊现在用 privateCooldownMs（2026-10-23 起），不再共用 cooldownMs。
+      //    这项测的是「连发不丢消息」，所以私聊冷却要显式关掉（0），
+      //    否则第 2、3 条会被 1.5s 冷却拦下 —— 那是正确行为，不是 bug。
+      { provider: 'rule', threshold: 0.5, delay: { min: 0, max: 0 }, rule: { cooldownMs: 0, privateCooldownMs: 0, mentionProbability: 1 } },
       { log: {} },
     ),
     memory: new MemoryStore({}), persona, log: {},

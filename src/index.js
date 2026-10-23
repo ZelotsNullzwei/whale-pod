@@ -405,6 +405,32 @@ export async function main(argv = process.argv.slice(2)) {
       },
     })
     longMemory.load()
+
+    /**
+     * ⚠️ 启动时校验长期记忆配置（2026-10-23 加）。
+     *
+     * `summarizeAfter` 必须**小于** `short.maxMessages`，否则摘要永远不会触发：
+     * 判断依据是「距上次摘要新增了多少条」，而短期窗口本身有上限，
+     * 攒不到阈值。原来是 `summarizeAfter: 200` + 窗口 `30`，
+     * 结果 `memory-long.json` 从来没生成过，用户只觉得「记忆没生效」。
+     *
+     * 这类配置死锁**不会报错、只会静默失效**，所以必须在启动时喊出来。
+     */
+    if (longMemory.enabled) {
+      const win = Number(cfg.memory?.short?.maxMessages ?? 30)
+      const after = Number(longMemory.summarizeAfter)
+      if (after >= win) {
+        log.warn(
+          `记忆：长期记忆的 summarizeAfter=${after} 不小于短期窗口 maxMessages=${win}，` +
+          `摘要将**永远不会触发**。建议把 summarizeAfter 调到 ${Math.max(1, Math.floor(win * 0.6))} 左右。`,
+        )
+      } else {
+        log.info(`记忆：长期记忆已启用（每 ${after} 条摘要一次，窗口 ${win} 条）`)
+      }
+    } else {
+      log.info('记忆：长期记忆未启用 —— 超出短期窗口（30 条）的对话不会被记住')
+    }
+
     state.memory = memory
     state.persona = persona
     state.longMemory = longMemory

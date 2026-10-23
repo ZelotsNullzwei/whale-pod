@@ -27,7 +27,18 @@ export class LongTermMemory {
     this.scope = scope
     /** 累积摘要（自然语言段落） */
     this.summary = ''
-    /** 摘要覆盖的消息数（用于判断何时再触发） */
+    /**
+     * 已摘要到的**累计消息总数**（单调递增）。
+     *
+     * ⚠️ 2026-10-23 新增。原来是 `summarizedCount`，存的是**窗口长度**，
+     *    而窗口有上限，导致「摘要过一次就再也不触发」。
+     *    这个字段替代它作为判断依据。
+     */
+    this.summarizedTotal = 0
+    /**
+     * 兼容字段：上次摘要时短期窗口里有多少条。
+     * 只用于展示/调试，**不再参与触发判断**。
+     */
     this.summarizedCount = 0
     /** 上次摘要时间 */
     this.updatedAt = 0
@@ -90,6 +101,18 @@ export class LongTermStore {
         const m = new LongTermMemory(scope)
         m.summary = String(v.summary ?? '')
         m.summarizedCount = Number(v.summarizedCount ?? 0)
+        /**
+         * 老文件里没有 `summarizedTotal`（这个字段是 2026-10-23 才加的）。
+         *
+         * 迁移策略：老文件里 `summarizedCount` 存的是**当时的窗口长度**，
+         * 不是累计总数。直接拿它当 `summarizedTotal` 会**低估**已摘要量
+         * （窗口最多 30，而真实累计可能已经几百条），于是加载后立刻
+         * 触发一次多余的摘要 —— 不算致命，但会白花一次 LLM 调用。
+         *
+         * 这里取两者较大值：老文件按 `summarizedCount` 兜底，
+         * 至少不会重复摘要**同一批**已经进过摘要的消息。
+         */
+        m.summarizedTotal = Number(v.summarizedTotal ?? v.summarizedCount ?? 0)
         m.updatedAt = Number(v.updatedAt ?? 0)
         this.memories.set(scope, m)
       }
@@ -106,7 +129,12 @@ export class LongTermStore {
       const sessions = {}
       for (const [scope, m] of this.memories) {
         if (!m.summary) continue
-        sessions[scope] = { summary: m.summary, summarizedCount: m.summarizedCount, updatedAt: m.updatedAt }
+        sessions[scope] = {
+          summary: m.summary,
+          summarizedTotal: m.summarizedTotal,
+          summarizedCount: m.summarizedCount,
+          updatedAt: m.updatedAt,
+        }
       }
       const tmp = `${this.file}.${process.pid}.tmp`
       fs.writeFileSync(tmp, JSON.stringify({ version: 1, sessions }, null, 2) + '\n', { mode: 0o600 })
@@ -126,11 +154,27 @@ export class LongTermStore {
   /**
    * 也许该做一次摘要了。
    *
-   * 条件是「短期窗口里累积的消息数」超过阈值 —— 用短期窗口的长度
-   * 而不是总消息数，因为短期窗口本身有上限，这样触发频率自然受控。
+   * ## 触发条件（2026-10-23 修正）
+   *
+   * 判断的是「**距上次摘要新增了多少条消息**」，不是「当前窗口有多长」。
+   *
+   * ⚠️ 原来写的是 `msgs.length - summarizedCount`，而 `msgs` 是滑动窗口：
+   *    窗口一满（`maxMessages = 30`），`msgs.length` 恒为 30，
+   *    第一次摘要后 `summarizedCount` 也是 30 → `unsummarized` 永远为 0，
+   *    **摘要只可能发生一次**，之后再也不触发。
+   *
+   *    实测表现：`memory-long.json` 从未生成，用户反馈「记忆没生效」。
+   *
+   * 现在用 `totalPushed`（单调递增的累计入队数）算增量：
+   *   unsummarized = totalPushed - summarizedTotal
+   * 窗口怎么滚动都不影响这个差值。
+   *
+   * 调用方需要传 `total`（即 `ConversationMemory.totalPushed`）。
+   * 没传时退回用 `messages.length` —— 保持对老调用方兼容，
+   * 但那种情况下仍然会有原来的问题（所以 bridge 里一定要传）。
    *
    * @param {string} scope
-   * @param {object} ctx  { messages, scene, self }
+   * @param {object} ctx  { messages, total?, scene, self }
    * @returns {Promise<boolean>} 是否真的做了摘要
    */
   async maybeSummarize(scope, ctx) {
@@ -139,8 +183,14 @@ export class LongTermStore {
 
     const mem = this.get(scope)
     const msgs = ctx.messages ?? []
-    const unsummarized = msgs.length - (mem.summarizedCount ?? 0)
+
+    // 累计口径优先；没传就退回窗口长度（兼容老调用，但会退化）
+    const total = Number.isFinite(ctx.total) ? ctx.total : msgs.length
+    const unsummarized = total - (mem.summarizedTotal ?? 0)
     if (unsummarized < this.summarizeAfter) return false
+
+    // 没有消息可摘要就别白跑一次 LLM
+    if (msgs.length === 0) return false
 
     this._busy.add(scope)
     try {
@@ -152,10 +202,13 @@ export class LongTermStore {
       })
       if (typeof text === 'string' && text.trim()) {
         mem.merge(text.trim())
+        // ⚠️ 记的是**累计总数**，不是窗口长度 —— 这是本次修的核心
+        mem.summarizedTotal = total
+        // 兼容字段：老代码/老文件里可能只有 summarizedCount
         mem.summarizedCount = msgs.length
         this._dirty = true
         this.save()
-        this.log.info?.(`长期记忆：${scope} 已更新摘要（${text.length} 字）`)
+        this.log.info?.(`长期记忆：${scope} 已更新摘要（${text.length} 字，累计 ${total} 条）`)
         return true
       }
     } catch (e) {

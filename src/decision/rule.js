@@ -31,6 +31,22 @@ export class RuleDecisionProvider extends DecisionProvider {
     super()
     this.cfg = {
       cooldownMs: cfg.cooldownMs ?? 15000,
+      /**
+       * 私聊专用的冷却（ms）。
+       *
+       * ## 为什么私聊要单独一个（2026-10-23 实机测试发现）
+       *
+       * 群聊冷却的目的是**防刷屏**：群里别人在聊，机器人别一直插嘴。
+       * 但私聊里**所有消息都是对机器人一个人说的**，不存在"刷屏"——
+       * 用户连发几条（补充、追问、改口）是再正常不过的对话方式。
+       *
+       * 实测症状：沿用 15000ms 后，全日志「冷却中」出现 **193 次**，
+       * 用户每发一句都要等十几秒才回，感受到的是「它答的是我上一条」。
+       *
+       * 所以私聊默认给一个很短的冷却（1500ms），只防「同一句话被连点」，
+       * 正常连发完全不受影响。设成 0 则私聊完全不冷却。
+       */
+      privateCooldownMs: cfg.privateCooldownMs ?? 1500,
       maxConsecutiveTurns: cfg.maxConsecutiveTurns ?? 3,
       mentionProbability: cfg.mentionProbability ?? 0.95,
       idleChatterProbability: cfg.idleChatterProbability ?? 0.04,
@@ -92,10 +108,20 @@ export class RuleDecisionProvider extends DecisionProvider {
       }
     }
 
-    // ── 3. 私聊 → 默认要回（除非冷却） ──────────────────────
+    // ── 3. 私聊 → 默认要回（用**独立**的短冷却） ──────────────
+    //
+    // ⚠️ 2026-10-23：私聊不再共用群聊的 cooldownMs（15s）。
+    //
+    //    群聊冷却防的是「别人在聊，别一直插嘴」；私聊里所有消息都是
+    //    对机器人一个人说的，连发几条（补充、追问、改口）是正常对话，
+    //    不存在刷屏问题。实测沿用 15s 后全日志「冷却中」出现 193 次，
+    //    用户每句都要等十几秒，感受到的是「它答的是我上一条」。
+    //
+    //    现在用 privateCooldownMs（默认 1500ms），只防「同一句被连点」。
     if (input.scene?.kind === 'private') {
-      if (input.sinceMyLastMessage < this.cfg.cooldownMs) {
-        const wait = Math.max(0, this.cfg.cooldownMs - input.sinceMyLastMessage)
+      const pc = Number(this.cfg.privateCooldownMs ?? 1500)
+      if (pc > 0 && input.sinceMyLastMessage < pc) {
+        const wait = Math.max(0, pc - input.sinceMyLastMessage)
         return {
           reply: false,
           probability: 0.1,

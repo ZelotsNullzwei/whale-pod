@@ -1939,6 +1939,15 @@ export class QQBridge {
     if (!this.longMemory?.enabled) return
     this.longMemory.maybeSummarize(scope, {
       messages: mem.recent(),
+      /**
+       * ⚠️ **必须传累计总数**（2026-10-23）。
+       *
+       * 长期记忆靠 `total - summarizedTotal >= summarizeAfter` 判断该不该摘要。
+       * 只传 `messages` 的话，long.js 会退回用 `messages.length`（窗口长度），
+       * 而窗口有上限 —— 满 30 条后长度恒为 30，摘要就再也不触发了。
+       * 这正是「记忆没生效」的根因。
+       */
+      total: mem.totalPushed,
       scene,
       self: { qq: this.selfId, nickname: this.selfName },
     }).catch(() => { })
