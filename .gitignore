@@ -30,3 +30,6 @@ vendor-backup/
 
 # 用户个人数据：表情包索引由 scripts/extract-stickers.mjs 从本机 QQ 生成
 src/qq/stickers.json
+
+# 临时启动脚本（重启调试用）
+.restart-tmp.bat
