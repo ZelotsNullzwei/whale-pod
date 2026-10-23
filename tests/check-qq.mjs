@@ -355,6 +355,93 @@ console.log('\n=== 11. 长期记忆：摘要触发 ===')
   check('未超过新阈值 → 不再触发', did2 === false)
 }
 
+// ── 12. 重复事件去重（平台重推同一条消息）────────────────────
+//
+// ⚠️ 踩过的坑：协议端重连/重试时会把同一条消息再推一遍。
+//    原来只在写记忆时判重，**决策和发送照样跑第二遍** ——
+//    群里看到的就是机器人把同一句话回了两次。
+console.log('\n=== 12. 重复事件去重 ===')
+{
+  const sent = []
+  const fakeGateway = {
+    providers: ['gemini'], catalog: [],
+    stream: () => (async function* () {
+      yield { type: 'text-delta', index: 0, text: '好的' }
+      yield { type: 'finish', reason: { kind: 'stop' } }
+    })(),
+  }
+  const memory = new MemoryStore({})
+  const persona = new PersonaStore({ home: path.join(root, '.test-home-qq'), active: 'default' })
+  persona.init()
+  const decision = createDecisionLayer(
+    { provider: 'rule', threshold: 0.5, delay: { min: 0, max: 0 }, rule: { cooldownMs: 0, mentionProbability: 1 } },
+    { log: {} },
+  )
+  const bridge = new QQBridge({
+    cfg: { enabled: true, allow: { private: [], groups: ['999'], allowAllWhenEmpty: false } },
+    onebot: {
+      connected: true, on() { return this },
+      sendGroup: async (g, t) => { sent.push(t); return { status: 'ok', retcode: 0 } },
+    },
+    gateway: fakeGateway, decision, memory, persona, log: {},
+  })
+  bridge.selfId = '10001'
+
+  const mkEv = (mid) => {
+    const ev = normalizeEvent({
+      post_type: 'message', message_type: 'group', group_id: 999, user_id: 111,
+      message_id: mid, time: Math.floor(Date.now() / 1000), sender: { card: '小明' },
+      message: [{ type: 'at', data: { qq: '10001' } }, { type: 'text', data: { text: ' 说点啥' } }],
+    })
+    ev.__normalized = ev
+    return ev
+  }
+
+  await bridge.onEvent(mkEv('dup-1'))
+  const afterFirst = sent.length
+  check('第一条正常回复', afterFirst >= 1, String(afterFirst))
+
+  // 同一个 messageId 再来一次（平台重推）
+  await bridge.onEvent(mkEv('dup-1'))
+  check('重推同一条 → 不再发送', sent.length === afterFirst, `第一次 ${afterFirst}，现在 ${sent.length}`)
+  check('重复计数 +1', bridge.stats.duplicate === 1, String(bridge.stats.duplicate))
+
+  // 不同 messageId 正常放行
+  await bridge.onEvent(mkEv('dup-2'))
+  check('新 messageId → 正常处理', sent.length > afterFirst, String(sent.length))
+
+  // 不同群 + 相同 messageId 不该被误杀（messageId 按群各自编号）
+  const ev2 = normalizeEvent({
+    post_type: 'message', message_type: 'group', group_id: 777, user_id: 222,
+    message_id: 'dup-1', time: Math.floor(Date.now() / 1000), sender: { card: '小红' },
+    message: [{ type: 'at', data: { qq: '10001' } }, { type: 'text', data: { text: ' 在吗' } }],
+  })
+  ev2.__normalized = ev2
+  bridge.cfg.allow.groups.push('777')
+  const before = sent.length
+  await bridge.onEvent(ev2)
+  check('别的群用相同 messageId → 不被误杀', sent.length > before, String(sent.length))
+}
+
+// ── 13. 过时回复：群里聊开了、没人等我 → 放弃发送 ─────────────
+//
+// ⚠️ 真人遇到这种情况会先看一眼新内容再开口。原来不管，
+//    延迟+生成几十秒后照发，群友看到的就是答非所问。
+//
+// ⚠️ 2026-10-23：这一节原来的 5 个用例是**直接往 mem.push()** 造消息，
+//    绕过了同会话串行队列 —— 恰好掩盖了真实 bug：
+//
+//      第一条在 sleep/生成时，第二条的 `_handle` 还没跑、还没写进 mem，
+//      所以读 mem 的过时检测**永远看不到排队中的消息**，等于没做。
+//
+//    那种写法证明不了任何东西，已经删掉。过时检测的完整测试（走真实
+//    `onEvent()` 路径、含生成期并发、多群隔离、@ 与引用不被误丢）
+//    见 **tests/check-concurrency.mjs**。
+console.log('\n=== 13. 过时回复检测（已移至 check-concurrency.mjs）===')
+{
+  check('过时检测改由 tests/check-concurrency.mjs 用真实 onEvent 路径覆盖', true)
+}
+
 console.log(`\n${'='.repeat(40)}`)
 console.log(`通过 ${pass} / 失败 ${fail}`)
 process.exit(fail === 0 ? 0 : 1)

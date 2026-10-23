@@ -142,6 +142,23 @@ export class DecisionRegistry {
           // 外层 shouldReply 看到它就不再套阈值，避免二次过滤造成
           // 「概率 0.8 却沉默」这种自相矛盾的界面。见 decision/index.js。
           decided: d?.decided === true,
+          /**
+           * ⚠️ `defer` **必须透传**（2026-10-23 修）。
+           *
+           * 它是「冷却中，晚点补回」的标记 —— rule 在冷却分支返回
+           * `defer:{waitMs}`，bridge 看到它就排队重试而不是丢弃。
+           *
+           * 这里原来没有这个字段，于是**整条链路把它吃掉了**：
+           * 决策层明明算出「冷却中，59 秒后补回」，bridge 收到的
+           * 结果里却没有 defer，走到「真的不想回」那条分支把消息丢掉。
+           * 症状：冷却期内问它的话永久丢失，用户看到的是「问了不理我」，
+           * 而设计意图明明是「晚几秒再回」。
+           *
+           * 这个 bug 从 rule.js 引入 defer 那天就在，一直没被发现 ——
+           * 因为原来没有任何测试覆盖「决策结果经注册表后 defer 还在不在」。
+           * 现在 tests/check-concurrency.mjs 第 8 项会盯着它。
+           */
+          defer: d?.defer,
         }
         this.stats.byProvider[p.id] = (this.stats.byProvider[p.id] ?? 0) + 1
         if (errors.length > 0) {
