@@ -633,8 +633,28 @@ window.__ModuleLoader__.load({
  *
  *   改成 min-height:0（=.min-height:auto 语义）让内容自己撑开；
  *   滚动交给外层容器，这里只在"内容确实超高"时兜底滚动。
+ *
+ * ⚠️ 2026-10-23 又删掉了 overscroll-behavior:contain（实测踩过）：
+ *
+ *   它和上面那句「滚动交给外层容器」**直接冲突** —— contain 会阻止
+ *   滚动向父级链式传递。
+ *
+ *   而且 .gd_root 在设置页里**没有高度约束**（height/max-height/flex 都没设），
+ *   高度就撑到内容高 → 自己永远滚不动（实测 scrollHeight === clientHeight
+ *   === 2578）→ 于是它成了「滚不动的 scroll container」：
+ *
+ *     滚轮落在 .gd_root 上 → 它自己滚不动，contain 又不让父级滚 → 谁都不滚
+ *     只有落在它外面（宿主那 24px 左右内边距、或滚动条）才滚得到
+ *
+ *   用户的原话是「滚动只有边上能用」，就是这个现象。
+ *   用真实滚轮事件验证过：去掉 contain 后，父容器 scrollTop 0 → 360。
+ *
+ *   overflow-y:auto 保留 —— 那是侧栏面板（父容器高度确定）下的兜底滚动。
+ *
+ *   ⚠️ 本注释不能写反引号：这段 CSS 本身在模板字符串里，裸反引号会截断它
+ *      （这个坑历史上踩过 4 次，2026-10-23 写上面这段时又踩了一次）。
  * ──────────────────────────────────────────────────────────────── */
-.gd_root{display:flex;flex-direction:column;gap:14px;padding:4px 2px 28px;color:var(--dsw-alias-label-primary);font-size:13px;line-height:1.6;overflow-y:auto;overscroll-behavior:contain}
+.gd_root{display:flex;flex-direction:column;gap:14px;padding:4px 2px 28px;color:var(--dsw-alias-label-primary);font-size:13px;line-height:1.6;overflow-y:auto}
 /* 整页视图（main 槽位）下内容会被拉到一千多像素宽，而侧栏只有 ~300px。
    同一份 CSS 要同时服务两种宽度，所以用容器查询分别调布局：
      · 宽（整页）→ 限宽 + 两栏网格，不把按钮/卡片拉满
