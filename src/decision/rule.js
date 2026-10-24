@@ -51,6 +51,16 @@ export class RuleDecisionProvider extends DecisionProvider {
       mentionProbability: cfg.mentionProbability ?? 0.95,
       idleChatterProbability: cfg.idleChatterProbability ?? 0.04,
       shortMessagePenalty: cfg.shortMessagePenalty ?? 0.25,
+      /**
+       * 群友发纯表情/纯图片时，回一个表情的概率（0 = 完全关闭）。
+       *
+       * ⚠️ 这个字段必须在这里显式登记 —— 构造函数是**白名单**，
+       *    没登记的配置项在 this.cfg 里永远是 undefined，
+       *    下游的 `?? 0.25` 会把用户的设置（包括 0）整个吞掉。
+       *    （2026-10-24 就是漏了这一条，导致 mediaEmojiProbability=0
+       *      关不掉、maxConsecutiveTurns 的门槛也读不到。）
+       */
+      mediaEmojiProbability: cfg.mediaEmojiProbability ?? 0.25,
       // 延迟区间：由上层按人格配置传入（注意 0 是合法值，不能用 ?? 兜底）
       delayMin: cfg.delayMin,
       delayMax: cfg.delayMax,
@@ -282,11 +292,83 @@ export class RuleDecisionProvider extends DecisionProvider {
       p = Math.max(p, pFollow)
     }
 
+    // ── 纯媒体消息（只有图/表情包/语音/视频，没有任何实际文字）──────────
+    //
+    // ⚠️ 2026-10-24 修 bug：群里每发一个表情包它就回话。
+    //
+    // 踩过的坑：parseMessage 会把非文本 segment 归一化成占位标记
+    // （[图片] / [表情包] / [表情包:名字] / [表情:N] / [表情] / [语音] / [视频]），
+    // 于是 "「[表情包]」图×1" 这种文本**既不是 Emoji 也不是语气词**，
+    // 下面那条 isPureFiller 正则完全匹配不到 —— 压制规则形同虚设，
+    // 紧接着又被「带图片 → 抬高意愿」那条乘 4 抬到 0.65~0.9。
+    //
+    // 日志实证（群 704291282）：表情包 255 次决策里 100 次走了「随机插话命中」
+    // = 39.2%，而普通文本只有 13.4%，是 2.9 倍。
+    //
+    // 判据：把占位标记全部剥掉后，若**剩下的实际文字 ≤ 4 个字符**，
+    // 就算纯媒体消息 —— 和 isPureFiller 的口径保持一致。
+    const MEDIA_MARKER_RE = /\[(?:图片|表情包(?::[^\]]*)?|表情(?::\d+)?|语音|视频)\]/g
+    const rawText = String(text ?? '')
+    // ⚠️ 带 g 的正则用 test() 会保留 lastIndex，第二次调用结果会错。
+    //    这里用 match() 一次拿到全部匹配，避免状态污染。
+    const mediaMatches = rawText.match(MEDIA_MARKER_RE)
+    const hasMediaMarker = (mediaMatches?.length ?? 0) > 0
+    const textWithoutMedia = rawText.replace(MEDIA_MARKER_RE, '').trim()
+    const isPureMedia = hasMediaMarker && textWithoutMedia.length <= 4
+
+    // ── 纯媒体消息 → **用表情回应**，而不是用文字接话 ─────────────
+    //
+    // ⚠️ 2026-10-24 改：原来这里是「压制概率」（让它沉默），
+    //    但用户提出更符合群聊习惯的做法 —— **别人发梗图，回个表情**。
+    //
+    //    为什么这个更好：
+    //      · 回文字 = 插嘴（抢了别人的话，还要调模型烧 token）
+    //      · 回表情 = 附和（和真人刷梗图一样，零 token 成本）
+    //      · 群聊里真人就是这么参与的：发图 → 回个表情，谁也不觉得被打扰
+    //
+    //    所以这里不再走「发言/沉默」的二选一，而是给出第三个结果：
+    //    `emojiReply: true` —— 由 bridge 直接发一个收藏表情，**不调模型**。
+    //
+    //    仍然保留门槛，不能变成群里最爱发表情的人：
+    //      · 被点名 → 不走这条路（要正常说话，见上面的 @ 分支）
+    //      · 追问中 → 不走（有人在等它回话）
+    //      · 话题连续 / 已经连续发过言 → 不走（避免刷屏）
+    //      · 冷却中 → 不走（交给冷却逻辑）
+    //      · 概率：mediaEmojiProbability（默认 0.25）
+    if (isPureMedia
+      && !last.mentionsMe
+      && !followUp.hit
+      && !thread.hit
+      && input.consecutiveTurns < (this.cfg.maxConsecutiveTurns ?? 3)
+      && !(input.sinceMyLastMessage < (this.cfg.cooldownMs ?? 15000))) {
+      const pEmoji = Number(this.cfg.mediaEmojiProbability ?? 0.25)
+      if (rnd() < pEmoji) {
+        return {
+          reply: true,
+          emojiReply: true,
+          probability: pEmoji,
+          reason: '纯表情/图片 → 回一个表情（不调模型）',
+          // 表情回应要更快 —— 真人在群里刷表情是即时的，等 3 秒就错过了
+          delayMs: this._delay(400, 1400, rnd),
+        }
+      }
+      // 没掷中 → 沉默（不再走后面的随机插话，纯媒体消息不该用文字接）
+      return {
+        reply: false,
+        probability: pEmoji,
+        reason: '纯表情/图片 → 本次不回应（避免刷表情）',
+      }
+    }
+
     // 纯语气词/表情符号：确实没什么可接的。
     // 这里用**直接封顶**而不是乘系数 —— 系数法只降 15%，和正常短句
     // 几乎拉不开差距（实测 28% vs 40%，区分度不足）。
-    const isPureFiller = /^[\s\p{Emoji_Presentation}\p{Extended_Pictographic}哈哈嘿嗯哦喔噢额呃唉诶草6啊?？!！。.~～]+$/u.test(text)
-      && text.replace(/[\s\p{Emoji_Presentation}\p{Extended_Pictographic}]/gu, '').length <= 4
+    //
+    // ⚠️ 2026-10-24：把 isPureMedia 也并进来 —— 纯表情包消息和纯语气词
+    //    在「没什么可接的」这件事上是同一类，之前漏掉了。
+    const isPureFiller = (/^[\s\p{Emoji_Presentation}\p{Extended_Pictographic}哈哈嘿嗯哦喔噢额呃唉诶草6啊?？!！。.~～]+$/u.test(text)
+      && text.replace(/[\s\p{Emoji_Presentation}\p{Extended_Pictographic}]/gu, '').length <= 4)
+      || isPureMedia
     // ⚠️ 话题连续 / 正在追问我时不压 —— 大家都在发梗图，单看一条是"纯表情"，
     //    放在连续语境里恰恰是"该接话"的信号；追问时发的表情也是如此。
     if (isPureFiller && !nickHit && !thread.hit && !followUp.hit) {
@@ -310,7 +392,23 @@ export class RuleDecisionProvider extends DecisionProvider {
     //    只看到 "[图片]" 三个字。不特判的话，别人发图它一律沉默 ——
     //    而"看图说话"恰恰是它最该表现的场景。
     //    （注意 text 里的 [图片]/[表情包]/[表情:N] 是 parseMessage 填的标记）
-    if (/\[图片\]|\[表情包|\[表情:/.test(text) || (last.images ?? []).length > 0) {
+    //
+    // ⚠️⚠️ 2026-10-24 修 bug：**纯媒体消息不再享受这个加成**。
+    //
+    //    这条规则的本意是「别人发了图 + 说了话，机器人可以就着话和图接一句」，
+    //    但之前它连「只有图、一个字没有」的消息也一起抬到 0.65~0.9，
+    //    等于把上面 isPureFiller 的压制整个推翻。
+    //
+    //    为什么纯图不该接：
+    //      · 表情包在群聊里主要是"情绪回声"，不是"求回应"。连发表情包时
+    //        每张都接一句，观感就是刷屏。
+    //      · 模型有视觉能力（实测能准确描述青蛙/鲸鱼娘/猫的睡姿），
+    //        所以一旦放行就会给出很贴切的吐槽 —— 质量越高越显得"它又在插嘴"。
+    //      · 产品卖点就是「分得清在跟谁说话」，纯图没有任何指向它的信号。
+    //
+    //    保留的情形：带文字 + 带图（"看我这张图"）、被点名、追问、话题连续。
+    if (!isPureMedia
+      && (/\[图片\]|\[表情包|\[表情:/.test(text) || (last.images ?? []).length > 0)) {
       p = Math.max(p * 4.0, 0.65)
     }
 

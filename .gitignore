@@ -33,3 +33,6 @@ src/qq/stickers.json
 
 # 临时启动脚本（重启调试用）
 .restart-tmp.bat
+
+# 图标方案比对的临时产物（一次性的候选图与对照页，不是正式资源）
+docs/icon-candidates/

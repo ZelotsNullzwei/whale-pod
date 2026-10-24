@@ -840,6 +840,61 @@ export class QQBridge {
       await sleep(d.delayMs)
     }
 
+    // ── 3a. 纯表情回应：跳过模型，直接发一个收藏表情 ──────────────
+    //
+    // ⚠️ 2026-10-24 新增（修「每发一个表情包它就回话」）。
+    //
+    // 决策层对「纯表情/纯图片」消息不再给「发言/沉默」二选一，而是返回
+    // `emojiReply: true` —— 含义是「**用表情附和，别用文字接**」。
+    //
+    // 为什么放在延迟之后、生成之前：
+    //   · 延迟之后：表情回应也要有人味，不能零延迟秒回
+    //   · 生成之前：这正是要跳过的部分 —— 不调模型，零 token 成本
+    //
+    // 为什么不是每张都回：概率由 mediaEmojiProbability 控制（默认 0.25），
+    // 否则它会变成群里最爱发表情的人。具体门槛在 decision/rule.js 里。
+    //
+    // ⚠️ 不发文本：群友发的是梗图，配一句"哈哈"反而显得刻意。
+    //    纯表情才像真人。
+    if (d.emojiReply) {
+      // 过时检测同样适用 —— 等了几秒后群里可能已经翻篇了
+      const emojiStale = this._checkSuperseded(msg, mem, { afterSeq: seq })
+      if (emojiStale) {
+        this.stats.superseded = (this.stats.superseded ?? 0) + 1
+        this.log.info?.(`bridge：等待期间群里又说了 ${emojiStale.count} 条，表情回应已过时，丢弃`)
+        this._record(msg, d, null, 'emoji-superseded')
+        this._maybeSummarize(msg.scope, mem, scene)
+        return
+      }
+      try {
+        // `[表情包]` 走 splitFaceMarkers → _pickMface 随机挑一张收藏表情
+        const sentIds = await this._send(msg, '[表情包]')
+        this.stats.replied++
+        this.stats.emojiReplied = (this.stats.emojiReplied ?? 0) + 1
+        mem.push(makeMessage({
+          id: sentIds.length ? sentIds[sentIds.length - 1] : undefined,
+          sender: this.selfId ?? '0',
+          senderName: this.selfName,
+          // ⚠️ 记成 [表情包] 而不是空 —— 让后续的「连续发言」和
+          //    "我上一条是什么"判断知道它刚发过东西。
+          text: '[表情包]',
+          at: Date.now(),
+          isMe: true,
+          provider: null,
+          model: null,
+        }))
+        this.log.info?.(`bridge：纯表情回应 → 发了一张收藏表情（未调模型）`)
+        this._record(msg, d, '[表情包]', 'emoji-sent')
+        this._rememberMyReplyIds(msg.scope, sentIds)
+      } catch (e) {
+        this.stats.failed++
+        this.log.warn?.(`bridge：表情回应发送失败 — ${String(e?.message ?? e)}`)
+        this._record(msg, d, null, 'emoji-send-error:' + String(e?.message ?? e))
+      }
+      this._maybeSummarize(msg.scope, mem, scene)
+      return
+    }
+
     // ⚠️ 3b. 延迟/生成期间群里可能又来了新消息（2026-10-23 补）
     //
     // 真人遇到这种情况会先看一眼新内容再开口；原来这边完全不管 ——

@@ -309,6 +309,125 @@ console.log('\n=== 17. 概率上限留出加成空间 ===')
   check('且不超过 0.9', r.probability <= 0.9, String(r.probability))
 }
 
+// ── 18. 纯媒体消息 → 用表情回应，不用文字插话 ──────────────────
+//
+// ⚠️ 2026-10-23 线上事故：群里每发一个表情包它就回话。
+//    根因：parseMessage 把非文本 segment 归一化成占位标记
+//      [图片] / [表情包] / [表情包:名字] / [表情:N] / [表情] / [语音] / [视频]
+//    这些字符串既不是 Emoji 也不是语气词，isPureFiller 正则匹配不到，
+//    压制规则形同虚设；接着又被「带图片 → 抬意愿」乘 4 抬到 0.65~0.9。
+//
+// ⚠️ 2026-10-24 改方案：从「一律沉默」改成「用表情附和」
+//    回文字 = 插嘴（还要烧 token）；回表情 = 附和（零成本，像真人刷梗图）。
+//    决策层对纯媒体消息返回 emojiReply:true，bridge 直接发收藏表情，不调模型。
+console.log('\n=== 18. 纯媒体消息 → 表情回应 ===')
+{
+  const SELF = { qq: '9', nickname: 'Bot' }
+  const mk = (text, extra = {}) => ({
+    messages: [{ sender: '1', senderName: '甲', text, isMe: false, mentionsMe: false, ...extra }],
+    self: SELF, scene: { kind: 'group' }, sinceMyLastMessage: 999999, consecutiveTurns: 0,
+  })
+  const decideWith = async (input, rv, cfg = {}) => {
+    const p = new RuleDecisionProvider(
+      { cooldownMs: 0, maxConsecutiveTurns: 99, idleChatterProbability: 0.5, mediaEmojiProbability: 0.25, ...cfg },
+      { random: () => rv },
+    )
+    return p.decide(input)
+  }
+
+  // ① 随机值 < 0.25 → 走 emojiReply（不调模型）
+  for (const t of ['[表情包]', '[表情包:猫猫]', '[图片]', '[表情:178]', '[表情]', '[语音]', '[视频]']) {
+    const d = await decideWith(mk(t), 0.1)
+    check(`「${t}」→ emojiReply`, d.emojiReply === true && d.reply === true, JSON.stringify(d))
+  }
+
+  // ② 随机值 ≥ 0.25 → 沉默，且**不能**落到随机插话
+  for (const t of ['[表情包]', '[图片]']) {
+    const d = await decideWith(mk(t), 0.9)
+    check(`「${t}」→ 不回应且不是文字插话`,
+      d.reply === false && d.emojiReply === undefined,
+      JSON.stringify(d))
+  }
+
+  // ③ 表情回应要快 —— 真人刷表情是即时的
+  {
+    const d = await decideWith(mk('[表情包]'), 0.1)
+    check('表情回应有延迟但很快（≤1400ms）', d.delayMs <= 1400, String(d.delayMs))
+  }
+
+  // ④ 被点名 → 走正常回复，不是表情回应
+  {
+    const d = await decideWith(mk('[表情包]', { mentionsMe: true }), 0.1)
+    check('被 @ + 表情包 → 正常回复（非 emojiReply）',
+      d.emojiReply === undefined && d.reply === true, JSON.stringify(d))
+    check('被 @ + 表情包 → 概率 0.95', d.probability === 0.95, String(d.probability))
+  }
+
+  // ⑤ 带文字的图 → 不走表情回应（这是原规则要保护的真实场景）
+  {
+    const d = await decideWith(mk('看我这张图 笑死我了 [图片]'), 0.1)
+    check('带文字+图 → 不走 emojiReply', d.emojiReply === undefined, JSON.stringify(d))
+    check('带文字+图 → 概率被抬高（>0.5）', d.probability > 0.5, `p=${d.probability}`)
+  }
+
+  // ⑥ 连续发言已达上限 → 不许再回表情（防刷屏）
+  //
+  // ⚠️ 这里必须**单独给 maxConsecutiveTurns: 3**。
+  //    前面几组的 decideWith 默认传 99（为了绕开连发限制），
+  //    拿那套配置去测连发是自相矛盾的 —— 3 < 99 自然拦不住。
+  {
+    const d = await decideWith(
+      { ...mk('[表情包]'), consecutiveTurns: 3 },
+      0.1,
+      { maxConsecutiveTurns: 3 },
+    )
+    check('连续发言已满 3 轮 → 不回表情', d.emojiReply === undefined, JSON.stringify(d))
+  }
+
+  // ⑦ 冷却中 → 不回表情
+  {
+    const d = await decideWith(
+      { ...mk('[表情包]'), sinceMyLastMessage: 1000 },
+      0.1,
+      { cooldownMs: 15000 },
+    )
+    check('冷却中 → 不回表情', d.emojiReply === undefined, JSON.stringify(d))
+  }
+
+  // ⑧ mediaEmojiProbability = 0 → 完全关闭
+  {
+    const d = await decideWith(mk('[表情包]'), 0.01, { mediaEmojiProbability: 0 })
+    check('概率设为 0 → 不回表情', d.emojiReply === undefined, JSON.stringify(d))
+  }
+
+  // ⑨ 表情包后紧跟文字提问 → 走正常判断，不被当成纯媒体
+  {
+    const p = new RuleDecisionProvider(
+      { cooldownMs: 0, maxConsecutiveTurns: 99, idleChatterProbability: 0.5, mediaEmojiProbability: 0.25 },
+      { random: () => 0.1 },
+    )
+    const d = await p.decide({
+      messages: [
+        { sender: '1', senderName: '甲', text: '[表情包]', isMe: false, at: Date.now() - 1000 },
+        { sender: '1', senderName: '甲', text: '这个表情包是什么意思', isMe: false, at: Date.now() },
+      ],
+      self: SELF, scene: { kind: 'group' }, sinceMyLastMessage: 999999, consecutiveTurns: 0,
+    })
+    check('表情包后紧跟文字提问 → 不走 emojiReply', d.emojiReply === undefined, JSON.stringify(d))
+  }
+
+  // ⑩ 统计：25% 概率下调 100 次，命中次数应落在合理区间
+  {
+    let hits = 0
+    for (let i = 0; i < 100; i++) {
+      const rv = (i + 0.5) / 100        // 0.005, 0.015 ... 0.995 均匀铺开
+      const d = await decideWith(mk('[表情包]'), rv)
+      if (d.emojiReply) hits++
+    }
+    check('100 次里约 25% 命中（20~30）', hits >= 20 && hits <= 30, `hits=${hits}`)
+  }
+}
+
 console.log(`\n${'='.repeat(40)}`)
 console.log(`通过 ${pass} / 失败 ${fail}`)
 process.exit(fail === 0 ? 0 : 1)
