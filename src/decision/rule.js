@@ -332,22 +332,37 @@ export class RuleDecisionProvider extends DecisionProvider {
     //    仍然保留门槛，不能变成群里最爱发表情的人：
     //      · 被点名 → 不走这条路（要正常说话，见上面的 @ 分支）
     //      · 追问中 → 不走（有人在等它回话）
-    //      · 话题连续 / 已经连续发过言 → 不走（避免刷屏）
+    //      · 已经连续发过言 → 不走（避免刷屏）
     //      · 冷却中 → 不走（交给冷却逻辑）
     //      · 概率：mediaEmojiProbability（默认 0.25）
+    //
+    // ⚠️⚠️ 2026-10-24 第二次修：**去掉了原来的 `&& !thread.hit`**。
+    //
+    //    原来的想法是「话题连续时别打断，交给正常流程」，方向搞反了：
+    //    话题连续 = 群里正连着刷梗图，**这恰恰是最容易刷屏的场景**。
+    //    实测（重启后 30 条表情包决策）有 8 条绕过了这里，落到下面的
+    //    「话题连续加成」：
+    //        p = Math.max(p * 2.5, 0.8)   → p=0.80
+    //    然后用**文字**接了表情包 —— 正是这次要修的那个 bug。
+    //
+    //    现在：纯媒体消息**永远不走文字路**。要么 emojiReply，要么沉默。
+    //    话题连续时反而**提高**表情概率（大家都刷图，跟着附和张表情最自然）。
     if (isPureMedia
       && !last.mentionsMe
       && !followUp.hit
-      && !thread.hit
       && input.consecutiveTurns < (this.cfg.maxConsecutiveTurns ?? 3)
       && !(input.sinceMyLastMessage < (this.cfg.cooldownMs ?? 15000))) {
-      const pEmoji = Number(this.cfg.mediaEmojiProbability ?? 0.25)
+      const base = Number(this.cfg.mediaEmojiProbability ?? 0.25)
+      // 话题连续（在刷梗图）→ 参与意愿更高，但上限 0.6，别喧宾夺主
+      const pEmoji = thread.hit ? Math.min(base * 1.5, 0.6) : base
       if (rnd() < pEmoji) {
         return {
           reply: true,
           emojiReply: true,
           probability: pEmoji,
-          reason: '纯表情/图片 → 回一个表情（不调模型）',
+          reason: thread.hit
+            ? '纯表情/图片（在刷梗图）→ 回一个表情（不调模型）'
+            : '纯表情/图片 → 回一个表情（不调模型）',
           // 表情回应要更快 —— 真人在群里刷表情是即时的，等 3 秒就错过了
           delayMs: this._delay(400, 1400, rnd),
         }
@@ -431,14 +446,44 @@ export class RuleDecisionProvider extends DecisionProvider {
     p = followUp.hit
       ? Math.min(p, followUp.strength === 'strong' ? 0.97 : 0.85)
       : (nickHit ? Math.min(p, 0.95) : Math.min(p, 0.9))
+
+    // ── @ 了**别人** → 几乎必定是在跟别人说话，压到近乎沉默 ──────────
+    //
+    // ⚠️ 2026-10-24 修 bug：实测机器人在别人 @ 别人时抢答。
+    //
+    //    日志证据（群 704291282）：
+    //      「@2854197266 /国际服千里眼」
+    //        → 决策 → 发言 (p=0.06, 来源=rule, 群聊中随机插话命中)
+    //      LYFan 是在 @ 另一个 bot 问卡池，我们的机器人却接了话。
+    //      群历史原文：机器人随后说「千里眼？本鱼要是有这本事，早自己去抽卡了」
+    //
+    //    统计：12 条「@ 别人」的消息里 2 条抢答（另一条是 followUp，判对了）。
+    //
+    //    这正是 v0.2.5 的卖点「分得清在跟谁说话」—— 视频 n2 那个场景
+    //    （小红问小明，机器人在线但不动）讲的就是这个。
+    //    但代码里**一直缺这条规则**：原来只知道「mentionsMe=false → 当普通群聊」，
+    //    于是 @ 别人的消息走进了随机插话。
+    //
+    //    判据：消息里有 `@<QQ号>`，但 mentionsMe 为 false（= @ 的不是我）。
+    //
+    //    两个例外（实测都判对过，不能一刀切）：
+    //      · followUp.hit —— 接着我的话 + 用了第二人称。实测
+    //        「@3604321136 你要玩吗」→ p=0.97「接话（接着我的话，用了第二人称）」，
+    //        虽然 @ 了别人，但那句确实是在问我，该接。
+    //      · nickHit —— 同时 @ 了别人又明确叫了我的名字（罕见但存在）。
+    const atOthers = !last.mentionsMe && !nickHit && /@\d{5,}/.test(text)
+    if (atOthers && !followUp.hit) {
+      p = Math.min(p, 0.02)
+    }
+
     const reply = rnd() < p
     // 原因文案要能区分几种典型场景，否则调日志时只能看到一句
-    // "无 @，保持沉默"，分不出是"没叫我"还是"我正在被追问"。
+    // "无 @，保持沉默"，分不出是"没叫我"还是"我正在被追问"，还是"在叫别人"。
     const why = reply
       ? (followUp.hit ? `接话（${followUp.why}）` : '群聊中随机插话命中')
       : (followUp.hit
         ? `本该接话（${followUp.why}）但本次随机放弃`
-        : '群聊中无 @，本次保持沉默')
+        : (atOthers ? '这条 @ 的是别人，不是叫我' : '群聊中无 @，本次保持沉默'))
     return {
       reply,
       probability: Number(p.toFixed(3)),
@@ -851,7 +896,23 @@ export function mentionsSelf(text, self) {
   if (!t) return false
 
   // 直接叫 QQ 号
-  if (self?.qq && t.includes(String(self.qq))) return true
+  //
+  // ⚠️ 2026-10-24 修：原来是无条件 `t.includes(qq)` —— 只要 QQ 号是
+  //    文本里**任意位置的子串**就算「在叫我」。短号会严重误伤：
+  //    假设 bot 的 QQ 是 9，则「@2854197266」里的 '9' 也算在叫它，
+  //    于是它把 @ 别人的消息当成 @ 自己。
+  //    （测试用 self.qq='9' 时，三条「@别人」用例全部误判成 nickHit，
+  //      这个缺陷就是这么暴露出来的。）
+  //
+  //    现在要求 QQ 号**前面不是数字**，即必须是一段完整的数字，
+  //    而不是更长数字里的一截。生产环境 QQ 是 10 位数，
+  //    这样「@2854197266」不再匹配「3039392113」，
+  //    而「@3039392113」和裸写的「3039392113」仍能正常命中。
+  if (self?.qq) {
+    const qq = String(self.qq)
+    const idx = t.indexOf(qq)
+    if (idx >= 0 && !/\d/.test(t[idx - 1] ?? '')) return true
+  }
 
   // 昵称里的有效片段
   for (const token of nicknameTokens(self?.nickname)) {
