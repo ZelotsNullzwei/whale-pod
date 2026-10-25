@@ -27,6 +27,7 @@
  */
 
 import http from 'node:http'
+import { fetchWithProxyFallback } from '../net.js'
 import crypto from 'node:crypto'
 
 /** 一个 OneBot v11 连接。 */
@@ -627,23 +628,40 @@ export class OneBotClient {
     try {
       const ctl = new AbortController()
       const timer = setTimeout(() => ctl.abort(), 15000)
-      const res = await fetch(target, { signal: ctl.signal })
-      clearTimeout(timer)
+      // ⚠️ 用带代理兜底的 fetch：本机装过代理软件时 HTTP_PROXY 会残留在
+      //    环境变量里，代理一关所有请求就 ECONNREFUSED（2026-10-25 实测：
+      //    QQ 图片、联网搜索全挂，而 QQ 连接正常因为走 NO_PROXY）。
+      //    net.js 里会在「连不上本机代理」时自动直连重试一次。
+      let res
+      try {
+        res = await fetchWithProxyFallback(target, {
+          timeoutMs: 15000,
+          log: (m) => this.log.info?.(`onebot：${m}`),
+        })
+      } finally {
+        clearTimeout(timer)
+      }
       if (!res.ok) {
         this.log.warn?.(`onebot：图片下载失败 HTTP ${res.status}（${target.slice(0, 80)}）`)
         return null
       }
-      const len = Number(res.headers.get('content-length') ?? 0)
+      // 兜底通道返回的是 {headers, body}，标准 fetch 返回 Response —— 统一取值
+      const headerOf = (k) => (typeof res.headers?.get === 'function'
+        ? res.headers.get(k)
+        : res.headers?.[k.toLowerCase()] ?? res.headers?.[k] ?? null)
+      const len = Number(headerOf('content-length') ?? 0)
       if (len && len > maxBytes) {
         this.log.warn?.(`onebot：图片超过上限（${len} > ${maxBytes}）`)
         return null
       }
-      const buf = Buffer.from(await res.arrayBuffer())
+      const buf = res.body
+        ? Buffer.from(res.body)
+        : Buffer.from(await res.arrayBuffer())
       if (buf.length > maxBytes) {
         this.log.warn?.(`onebot：图片超过上限（${buf.length} > ${maxBytes}）`)
         return null
       }
-      const mime = (res.headers.get('content-type') ?? '').split(';')[0] || guessMime(target)
+      const mime = String(headerOf('content-type') ?? '').split(';')[0] || guessMime(target)
       if (!/^image\//.test(mime)) {
         this.log.warn?.(`onebot：下载到的不是图片（content-type=${mime || '空'}）`)
         return null
