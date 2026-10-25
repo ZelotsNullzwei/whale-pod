@@ -147,7 +147,12 @@ window.__ModuleLoader__.load({
         // 设置页
         'section.napcat': 'NapCat 协议端',
         'section.napcatHint': '下载、启停与运行日志',
-        'section.qq': 'QQ 配置',
+        'section.startup': '启动行为',
+    'section.startupHint': 'DSH 启动时要不要自动拉起 WhalePod',
+    'startup.autoStart': '随 DSH 自动启动',
+    'startup.autoStartHint': '关掉后不会自动跑，需要时在侧栏点「一键启动」',
+    'startup.note': '关掉只影响「下次 DSH 启动时是否自动拉起」，不会停掉正在运行的进程。',
+    'section.qq': 'QQ 配置',
         'section.qqHint': '启用开关、地址与白名单',
         'section.decision': '决策与人格',
         'section.decisionHint': '什么时候说话、以什么身份说',
@@ -374,7 +379,12 @@ window.__ModuleLoader__.load({
 
         'section.napcat': 'NapCat protocol side',
         'section.napcatHint': 'Install, start/stop, and its run log',
-        'section.qq': 'QQ configuration',
+        'section.startup': 'Startup',
+    'section.startupHint': 'Whether DSH should launch WhalePod on start',
+    'startup.autoStart': 'Auto-start with DSH',
+    'startup.autoStartHint': 'Off = do not launch automatically; use "Start" in the sidebar',
+    'startup.note': 'This only affects the next DSH launch — it does not stop a running process.',
+    'section.qq': 'QQ configuration',
         'section.qqHint': 'Enable switch, endpoints, and allowlists',
         'section.decision': 'Decision and persona',
         'section.decisionHint': 'When to speak and in whose voice',
@@ -2056,6 +2066,23 @@ window.__ModuleLoader__.load({
 
         // ── 模型与渠道（配置在这里；侧栏只显示一行当前模型）──────────────
         h(ModelCards, { t }),
+
+        // ── 启动行为 ────────────────────────────────────────────────────
+        //
+        // 为什么单独一节而不是塞进「QQ 配置」：这个开关管的不是 QQ，
+        // 是**整个 WhalePod 进程**要不要在 DSH 启动时被拉起来。
+        //
+        // 关闭后的语义要说清楚：不是「关掉机器人」，而是「不自动启动」——
+        // 已经跑着的进程不受影响，想用时在侧栏点「一键启动」。
+        // 用户点开关时最容易误解的就是这一点。
+        h(Section, { title: t('section.startup'), hint: t('section.startupHint') },
+          h(Row, { label: t('startup.autoStart'), hint: t('startup.autoStartHint') },
+            h(Toggle, {
+              checked: cfg.autoStart !== false,
+              disabled: busy,
+              onChange: (v) => apply({ autoStart: v }),
+            })),
+          h('p', { className: 'gd_note' }, t('startup.note'))),
 
         // ── QQ 配置 ─────────────────────────────────────────────────────
         h(Section, { title: t('section.qq'), hint: t('section.qqHint') },

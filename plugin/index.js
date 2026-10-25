@@ -228,6 +228,35 @@ export function apply(ctx, config = {}) {
   }
 
   /**
+   * 读 WhalePod 自己的 `autoStart`（是否随 DSH 启动自动拉起）。
+   *
+   * ## 为什么读 config.json 而不是只用插件 config
+   *
+   * 插件 config（cordis.patch.yml 里那段）用户改起来很麻烦 ——
+   * 要手改 YAML、还容易改坏。设置页（`/api/whale-pod/config`）改的是
+   * WhalePod 自己的 `config.json`，那才是用户能点到的入口。
+   *
+   * ## 两个来源怎么合并
+   *
+   * **任一为 false 就手动**。理由：
+   *   · 插件 config 是部署者的意图（「这台机器上默认别自启」）
+   *   · config.json 是使用者的意图（「我现在不想让它自己跑」）
+   *   任何一方说「别自启」，都应该听 —— 否则用户点了开关却关不掉，
+   *   会以为坏了。
+   *
+   * 读不到文件（还没初始化）时返回 undefined，交给调用方按默认处理。
+   *
+   * @returns {boolean|undefined}
+   */
+  const readAutoStart = () => {
+    try {
+      const cfg = JSON.parse(fs.readFileSync(path.join(home, 'config.json'), 'utf8'))
+      if (typeof cfg.autoStart === 'boolean') return cfg.autoStart
+      return undefined
+    } catch { return undefined }
+  }
+
+  /**
    * client.js 的绝对路径。
    *
    * ⚠️ 这行也曾被误删过（同一次删注入块），导致 /dsh-whale-pod/widget.js
@@ -452,15 +481,20 @@ export function apply(ctx, config = {}) {
 
       // ── 确保守护进程活着（按配置：自动启动 / 纯手动）────────────────
       //
-      // 行为由 profile 里这一行的 config 控制（cordis.patch.yml）：
-      //   autoStart: true  → DSH 启动时自动拉起（默认，和以前一样）
-      //   autoStart: false → 什么都不做，只在侧栏点「一键启动」时才起
+      // 两个来源，**任一为 false 就手动**：
+      //   · 插件 config（cordis.patch.yml）—— 部署者意图
+      //   · WhalePod 自己的 config.json 的 autoStart —— 使用者意图（设置页那个开关）
+      //
+      // 为什么两个都要看：设置页改的是 config.json，用户点完开关必须真的生效；
+      // 而部署者在 YAML 里写死 false 时，也不该被默认值覆盖。
       //
       // 为什么要有这个开关：WhalePod 是 detached 进程，会一直占着 QQ 在线、
       // 内存和端口。有人希望它跟着 DSH 生命走（DSH 不开就不跑），
       // 有人希望它常驻（QQ 机器人本来就要 24 小时在线）。两种都合理，
       // 所以做成可选项而不是写死。
-      if (config?.autoStart !== false) {
+      const cfgAutoStart = readAutoStart()
+      const autoStart = config?.autoStart !== false && cfgAutoStart !== false
+      if (autoStart) {
         void ensureRunning({ home, log }).catch((error) => {
           log.error(`WhalePod 守护进程启动失败：${String(error?.message ?? error)}`)
         })
