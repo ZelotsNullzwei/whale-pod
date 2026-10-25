@@ -19,6 +19,8 @@ import { CLIENT_CSS, CLIENT_JS } from './assets.js'
 import { ICONS } from './icons.js'
 import * as fallbackMod from '../gateway/fallback.js'
 import { resolveCandidates, openFirstAvailable, applyFreeOrder, PROVIDER_MODEL_HINTS } from '../gateway/router.js'
+// 决策层热更新要用（改 decision.provider 后不必重启）
+import { createDecisionLayer } from '../decision/index.js'
 
 /** 常量时间比较，避免时序侧信道。 */
 function safeEqual(a, b) {
@@ -2128,6 +2130,35 @@ async function whalePodCompat(o) {  const { sub, method, url, req, res, json, re
           liveBridge.cfg.search = { ...(liveBridge.cfg.search ?? {}), ...store.get().search }
         }
       }
+
+      // ── 决策层热更新 ──────────────────────────────────────────────
+      //
+      // ⚠️ 2026-10-25 补：原来改 `decision.provider` 之类**必须重启**才生效 ——
+      //    设置页保存成功、提示「已保存」，行为却一点没变，用户以为坏了。
+      //
+      //    决策层是 createDecisionLayer() 一次性造出来的对象，挂在
+      //    state.decision 上，bridge 通过它做判断。所以这里重建一个、
+      //    换掉 state.decision，并让正在运行的 bridge 指向新实例。
+      //
+      //    为什么不重建整个 bridge：那会断 QQ 连接、丢 NapCat 子进程，
+      //    只为了换个判断逻辑不值得。换引用就够了。
+      if (nested.decision && decision) {
+        try {
+          const rebuilt = createDecisionLayer(store.get().decision ?? {}, {
+            credentials: creds,
+            log,
+            llm,
+          })
+          state.decision = rebuilt
+          // bridge 里保存的是同一个对象引用；直接换字段让它看到新层
+          if (state.bridge) state.bridge.decision = rebuilt
+          log.info(`[whale-pod] 决策层已热更新：order = [${rebuilt.order.join(' → ')}]`)
+        } catch (e) {
+          // 换失败不能让配置保存失败 —— 旧决策层还能用
+          log.warn?.(`[whale-pod] 决策层热更新失败（继续用旧的）：${String(e?.message ?? e)}`)
+        }
+      }
+
       log.info(`[whale-pod 兼容层] 配置已更新（${Object.keys(patch).join(', ')}）`)
       return json(res, 200, { ok: true, changed: Object.keys(patch) })
     }
