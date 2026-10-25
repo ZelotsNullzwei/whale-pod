@@ -228,6 +228,31 @@ export class LongTermStore {
     return { enabled: this.enabled, sessions: this.memories.size, withSummary, totalChars, summarizeAfter: this.summarizeAfter }
   }
 
+  /**
+   * 有长期记忆的会话明细（供 Web UI 的「长期摘要」列表）。
+   *
+   * ⚠️ 2026-10-25 新增。原来前端读 `mem.data.longScopes`，但接口里
+   * 根本没这个字段（只回了 `longMemory: stats()` 的汇总），
+   * 于是「长期摘要」那块永远显示「暂无长期摘要」——
+   * 哪怕实际有 2 份、901 字的摘要。
+   *
+   * @returns {Array<{scope:string, chars:number, summarizedCount:number, updatedAt:number|null}>}
+   */
+  listScopes() {
+    const out = []
+    for (const [scope, m] of this.memories) {
+      if (!m?.summary) continue
+      out.push({
+        scope,
+        chars: m.summary.length,
+        summarizedCount: Number(m.summarizedCount ?? 0),
+        updatedAt: m.updatedAt ?? null,
+      })
+    }
+    out.sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0))
+    return out
+  }
+
   clear(scope) {
     if (scope) this.memories.delete(scope)
     else this.memories.clear()

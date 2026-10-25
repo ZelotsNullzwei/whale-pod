@@ -963,6 +963,33 @@ window.__ModuleLoader__.load({
       })
     }
 
+    /**
+     * 下拉选择。
+     *
+     * 为什么要有它：决策模式（rule / model）这类字段，用自由文本框
+     * 让用户手打很容易打错（写成 `Model`、`现代化`、`rule ` 带空格），
+     * 打错了不报错、只是行为变得莫名其妙 —— 排查成本极高。
+     *
+     * @param {object} o
+     * @param {Array<{value:string,label:string,hint?:string}>} o.options
+     */
+    function Select({ value, options, onCommit, disabled }) {
+      const list = Array.isArray(options) ? options : []
+      // 当前值不在选项里（比如旧配置写了别的词）时，补一个只读项，
+      // 否则 <select> 会自动跳到第一项，看起来像「被偷偷改了」。
+      const known = list.some((o) => o.value === value)
+      return h('select', {
+        className: 'gd_input',
+        value: known ? value : (value ?? ''),
+        disabled: disabled === true,
+        onChange: (event) => onCommit(event.target.value),
+        style: { cursor: disabled === true ? 'not-allowed' : 'pointer' },
+      },
+        known ? null : h('option', { value: value ?? '' }, `${value ?? '(未设置)'}（当前值）`),
+        ...list.map((o) => h('option', { value: o.value }, o.label)),
+      )
+    }
+
     /** 多行列表编辑（每行一项）。 */
     function ListField({ value, onCommit, disabled, placeholder }) {
       const text = Array.isArray(value) ? value.join('\n') : ''
@@ -1276,8 +1303,22 @@ window.__ModuleLoader__.load({
                   item.scope ? h('span', { className: 'gd_tag' }, item.scope) : null,
                   item.mentionsMe ? h('span', { className: 'gd_tag at' }, '@') : null,
                   item.outcome === 'failed' ? h('span', { className: 'gd_tag fail' }, t('dash.failed')) : null),
-                h('div', { className: 'gd_msgtext' },
-                  `${(item.images ?? []).length > 0 ? `${t('dash.img')} ` : ''}${item.text ?? ''}`.slice(0, 200) || '—'),
+                h('div', { className: 'gd_msgtext' }, (function () {
+                  // ⚠️ 图片标记只能出现一次。
+                  //
+                  // 数据流：parseMessage 已经把图片段变成 `text` 里的
+                  // 「[图片]」占位符（见 src/qq/onebot.js），`_record` 原样存下。
+                  // 而这里早先无条件补了一个 `[图片] ` —— 于是同一条消息
+                  // 显示成「[图片] [图片]是你吗」（2026-10-25 实测反馈）。
+                  //
+                  // 所以：text 里**已经有**占位符就不再补；
+                  // 只有「有图但 text 没占位符」的旧记录才补一个。
+                  const body = String(item.text ?? '')
+                  const hasImgMark = /\[(?:图片|表情包(?::[^\]]*)?|表情(?::\d+)?)\]/.test(body)
+                  const needMark = (item.images ?? []).length > 0 && !hasImgMark
+                  const head = needMark ? `${t('dash.img')} ` : ''
+                  return `${head}${body}`.slice(0, 200) || '—'
+                })()),
                 item.reply ? h('div', { className: 'gd_msgreply' }, String(item.reply).slice(0, 200)) : null))))
           : null)
     }
@@ -2166,8 +2207,50 @@ window.__ModuleLoader__.load({
 
         // ── 决策与人格 ──────────────────────────────────────────────────
         h(Section, { title: t('section.decision'), hint: t('section.decisionHint') },
-          h(Row, { label: t('decision.provider'), hint: 'rule / jev / custom / auto' },
-            h(TextField, { value: dec.provider ?? 'rule', disabled: busy, onCommit: (v) => apply({ 'decision.provider': v }) })),
+          // 决策模式：从自由输入改成下拉。
+          //
+          // 为什么改：这四个值是**枚举**，手打容易写错（`Model`、`rule `、
+          // 甚至中文），而且写错不报错 —— 只会静默落回 rule，用户完全看不出。
+          h(Row, {
+            label: t('decision.provider'),
+            hint: '规则＝零成本零延迟；模型＝更像人，但每条多一次调用',
+          },
+            h(Select, {
+              value: dec.provider ?? 'rule',
+              disabled: busy,
+              options: [
+                { value: 'rule', label: '内置规则（快、省钱、但僵硬）' },
+                { value: 'model', label: '模型判断（像人，慢 1~3 秒、要花 token）' },
+                { value: 'jev', label: 'Jev（TypeSafe，付费）' },
+                { value: 'custom', label: '自定义 HTTP 接口' },
+                { value: 'auto', label: '自动（模型 → jev → custom → 规则）' },
+              ],
+              onCommit: (v) => apply({ 'decision.provider': v }),
+            })),
+
+          // 只有选了 model / auto 才显示这两项 —— 否则是噪音。
+          (dec.provider === 'model' || dec.provider === 'auto')
+            ? h(Row, {
+              label: '判断用哪个模型',
+              hint: '留空＝跟随「模型」页里选的。建议用便宜快的，它每条消息都会调一次',
+            },
+              h(TextField, {
+                value: dec.model?.model ?? '',
+                placeholder: '留空＝用默认模型',
+                disabled: busy,
+                onCommit: (v) => apply({ 'decision.model.model': String(v).trim() }),
+              }))
+            : null,
+          (dec.provider === 'model' || dec.provider === 'auto')
+            ? h(Row, { label: '判断时看多少条上下文', hint: '越多越懂语境，也越费 token' },
+              h(TextField, {
+                value: dec.model?.maxMessages ?? 15,
+                numeric: true,
+                disabled: busy,
+                onCommit: (v) => apply({ 'decision.model.maxMessages': Number(v) || 15 }),
+              }))
+            : null,
+
           h(Row, { label: t('decision.threshold'), hint: '0 ~ 1' },
             h(TextField, {
               value: dec.threshold ?? 0.5,
@@ -2292,7 +2375,17 @@ window.__ModuleLoader__.load({
         } finally { setBusy(false) }
       }
 
-      const scopes = mem.data?.scopes ?? []
+      // ⚠️ 2026-10-25 修：原来读 `mem.data.scopes`，但那是**字符串数组**
+      //    （["group:704291282", ...]）。对字符串取 `.scope` / `.messages`
+      //    全是 undefined，界面就显示成「undefined 条消息」——
+      //    看着像记忆功能没生效，其实 2 个会话 17 条消息都在。
+      //
+      //    接口现在多回一个 `scopeDetails`（对象数组，带消息数）。
+      //    这里优先用它；没有就退回旧字段（老版本 Host 也能跑）。
+      const rawScopes = mem.data?.scopeDetails ?? mem.data?.scopes ?? []
+      const scopes = rawScopes.map((s) => (typeof s === 'string'
+        ? { scope: s, messages: 0 }
+        : s))
       const longs = mem.data?.longScopes ?? []
       return h(Section, { title: t('mem.title'), hint: t('mem.hint') },
         mem.status === 'error'

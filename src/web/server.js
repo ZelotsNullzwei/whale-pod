@@ -2128,6 +2128,7 @@ async function whalePodCompat(o) {  const { sub, method, url, req, res, json, re
           liveBridge.cfg.search = { ...(liveBridge.cfg.search ?? {}), ...store.get().search }
         }
       }
+
       log.info(`[whale-pod 兼容层] 配置已更新（${Object.keys(patch).join(', ')}）`)
       return json(res, 200, { ok: true, changed: Object.keys(patch) })
     }
@@ -2266,11 +2267,23 @@ async function whalePodCompat(o) {  const { sub, method, url, req, res, json, re
 
     // ── 记忆 ─────────────────────────────────────────────────────
     if (sub === '/memory' && method === 'GET') {
+      // ⚠️ 2026-10-25 修：原来只回 `scopes`（字符串数组），
+      //    但前端 MemorySection 读的是 `row.scope` / `row.messages` ——
+      //    对字符串取 `.scope` 得到 undefined，界面显示「undefined 条消息」，
+      //    看着像记忆功能没生效（实际 2 个会话 17 条消息都在）。
+      //
+      //    现在回 `scopeDetails`（对象数组，带消息数）。
+      //    `scopes` 保留原样 —— 别的地方可能还在用，别破坏兼容。
+      const details = memory?.scopeDetails?.() ?? null
       return json(res, 200, {
         ok: true,
         stats: memory?.stats?.() ?? null,
         scopes: memory?.scopes?.() ?? [],
+        // 前端用这个渲染列表（带每条会话的消息数）
+        scopeDetails: details ?? (memory?.scopes?.() ?? []).map((s) => ({ scope: s, messages: 0 })),
         longMemory: longMemory?.stats?.() ?? null,
+        // 长期摘要的会话列表（前端 longs 读这个）
+        longScopes: longMemory?.listScopes?.() ?? [],
       })
     }
     if (sub === '/memory' && method === 'DELETE') {
