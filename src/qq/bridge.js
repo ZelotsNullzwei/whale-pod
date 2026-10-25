@@ -25,6 +25,7 @@ import { makeMessage } from '../memory/short.js'
 import { resolveCandidates, openFirstAvailable, applyFreeOrder, PROVIDER_MODEL_HINTS } from '../gateway/router.js'
 import { needsFreshInfo, webSearch, formatSearchContext, pickCoverImage, checkBalance } from '../gateway/search.js'
 import FACE_TABLE from './faces.json' with { type: 'json' }
+import { InteractionTracker, BegState, decideBeg } from './beg.js'
 
 /** 模型表示"不说话"的标记。 */
 export const SILENT = '[SILENT]'
@@ -365,6 +366,43 @@ export class QQBridge {
      * @type {Map<string, {msg:object, mem:object, scene:object, self:object, at:number, timer:any}>}
      */
     this._deferred = new Map()
+
+    /**
+     * 谁最近跟它说话最多 —— 讨钱要 @ 的人从这里选。
+     *
+     * 为什么要有这个：需求是「@ 最近和机器人互动多的人」，而原来
+     * bridge 里没有任何按人聚合的统计（mem 是消息序列，不是计数）。
+     *
+     * 为什么用滑动窗口：累计次数会让「早期聊得多、现在早就不在群里」的人
+     * 永远排第一 —— 讨钱讨到这种人身上既尴尬又没用。
+     */
+    this._interactions = InteractionTracker.fromJSON(
+      opts.interactions ?? [],
+      { windowMs: 7 * 24 * 3600_000 },
+    )
+
+    /**
+     * 乞讨状态（今天讨了几次、用过哪些话术）。
+     *
+     * 落盘到 <home>/beg.json —— 「每天 3 次」必须跨重启有效，
+     * 否则重启一次就重置，等于没有限制。
+     */
+    this._begState = new BegState({ file: opts.begFile ?? null })
+  }
+
+  /** 记一次「有人跟它说话」（供讨钱选人用）。 */
+  noteInteraction(userId, userName, at = Date.now()) {
+    this._interactions.hit(userId, userName, at)
+  }
+
+  /** 讨钱状态快照（给 Web UI / 调试用）。 */
+  begSnapshot() {
+    return {
+      ...this._begState.snapshot(),
+      balance: this._balance ?? null,
+      low: Boolean(this._balanceLow),
+      candidates: this._interactions.top({ limit: 5, exclude: [this.selfId].filter(Boolean) }),
+    }
   }
 
   /** 绑定 OneBot 事件。 */
@@ -475,6 +513,12 @@ export class QQBridge {
     // 所以这里在**入口处**就登记一条独立记录（不依赖 mem、不受串行队列
     // 阻塞），并给每个 scope 一个单调递增的序号。
     const seq = this._recordInbound(msg)
+
+    // 记一次互动 —— 讨钱时要 @「最近跟它说话最多的人」。
+    // 放在入口处（不受串行队列阻塞），这样排队中的消息也算数。
+    if (!msg.isMe && msg.senderId && String(msg.senderId) !== String(this.selfId)) {
+      this.noteInteraction(msg.senderId, msg.senderName)
+    }
 
     // 同会话串行，避免两条消息同时触发两条回复
     const prev = this._queues.get(msg.scope) ?? Promise.resolve()
@@ -1268,9 +1312,11 @@ export class QQBridge {
                 const b = await checkBalance(this.searchKey, 6000)
                 if (b.ok) {
                   this._balance = b
-                  this._balanceLow = b.cny <= (this.cfg.search?.lowBalanceCny ?? 2)
+                  this._balanceLow = b.cny <= (this.cfg.search?.lowBalanceCny ?? 3)
                   if (this._balanceLow) {
                     this.log.warn?.(`bridge：搜索余额偏低 ¥${b.cny}`)
+                    // 余额见底 —— 顺手讨一次（每天上限、话术不重样由 BegState 管）
+                    await this._maybeBeg(msg, b.cny)
                   }
                 }
               }
@@ -1683,6 +1729,79 @@ export class QQBridge {
    * @param {string} text
    * @param {object|null} [cover] 搜索时抓到的封面图 { url, title }
    */
+  /**
+   * 余额低时开口讨钱。
+   *
+   * ## 需求（2026-10-25 用户定）
+   *
+   *   · 触发：搜索时查余额，< ¥3 就讨
+   *   · 对象：@ **最近跟它互动最多的人**（不是群主 —— 群主不一定在场，
+   *     而最近聊得多的人一定在线、且更可能愿意理它）
+   *   · 频次：每天最多 3 次，跨重启有效（状态落盘到 beg.json）
+   *   · 话术：每次不同（BegState 记当天用过的模板 id）
+   *
+   * ## 为什么用 @ 而不是悄悄念叨
+   *
+   * 之前只会在**正常回复里插一句抱怨** —— 但那条路要求「它本来就要说话」。
+   * 它常常一路沉默，于是余额低这件事永远说不出口。
+   * 这里改成主动发一条：不依赖决策层，说完就完。
+   *
+   * ## 为什么失败不影响主流程
+   *
+   * 讨钱是附带动作。发送失败（被禁言、被风控）不该让刚做完的搜索白费，
+   * 所以整段包在 try 里，出错只记日志。
+   *
+   * @param {object} msg    触发它的那条消息（提供群号/会话）
+   * @param {number} cny    当前余额
+   */
+  async _maybeBeg(msg, cny) {
+    try {
+      const r = decideBeg({
+        cny,
+        threshold: this.cfg.search?.lowBalanceCny ?? 3,
+        state: this._begState,
+        tracker: this._interactions,
+        exclude: [this.selfId].filter(Boolean),
+      })
+
+      if (!r.beg) {
+        this.log.info?.(`bridge：不讨钱 —— ${r.reason}`)
+        return
+      }
+
+      // 只在群里讨：私聊没有「@ 观众」的意义，而且更容易被判骚扰。
+      if (msg.kind !== 'group') {
+        this.log.info?.(`bridge：不在群里（${msg.kind}），跳过讨钱`)
+        return
+      }
+
+      // @ 目标 + 话术。OneBot 的 at 段要求 QQ 号是字符串。
+      const payload = [
+        { type: 'at', data: { qq: String(r.target.id) } },
+        { type: 'text', data: { text: ' ' + r.text } },
+      ]
+
+      const res = await this.onebot.sendGroup(msg.groupId, payload)
+      // sendGroup 的不同实现返回结构不一，有的给 message_id，有的给 {message_id}
+      const ok = res && (res.message_id !== undefined || res.messageId !== undefined || res.ok !== false)
+      if (!ok) {
+        this.log.warn?.(`bridge：讨钱发送失败 — ${JSON.stringify(res).slice(0, 120)}`)
+        return
+      }
+
+      // 只有真的发出去了才记账 —— 否则失败也算进「今天 3 次」里，
+      // 一整天就因为三次网络抖动而再也讨不了。
+      this._begState.commit(r.line)
+      this.log.warn?.(
+        `bridge：余额 ¥${cny} 偏低 → 已 @${r.target.name}(${r.target.id}) 讨钱，` +
+        `今日第 ${this._begState.snapshot().count}/${this._begState.maxPerDay} 次，话术「${r.line.id}」`,
+      )
+      this.stats.begged = (this.stats.begged ?? 0) + 1
+    } catch (e) {
+      this.log.warn?.(`bridge：讨钱流程出错（忽略）— ${String(e?.message ?? e)}`)
+    }
+  }
+
   async _send(msg, text, cover = null) {
     const reply = this.cfg.reply ?? {}
     const maxChars = reply.maxChars ?? 500

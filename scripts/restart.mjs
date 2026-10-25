@@ -123,15 +123,48 @@ const node = findNode()
 const entry = path.join(REPO, 'src', 'index.js')
 if (!fs.existsSync(entry)) { console.error(`❌ 入口不存在：${entry}`); process.exit(1) }
 
+/**
+ * 找 DSH 安装目录。
+ *
+ * ⚠️ 2026-10-25 踩的坑：不传 `--dsh-app` 时，index.js 里的
+ *    `findDshAppDir(undefined)` 自动探测**会失败**（它只认几种固定位置），
+ *    结果是拿不到 DSH 的渠道包 → 日志里没有「DSH：<路径>」那行 →
+ *    接着报「还没有配置供应商 / 没有可用的 LLM 渠道」→ 启动失败。
+ *
+ *    症状极具误导性：看着像用户的 API Key 没了，其实是路径没传。
+ *    成功启动的日志里一定有 `DSH：D:/DSH Desktop/resources/app` 这一行。
+ */
+function findDshApp() {
+  const candidates = [
+    process.env.DSH_APP_DIR,
+    'D:/DSH Desktop/resources/app',
+    'C:/Program Files/DSH Desktop/resources/app',
+    path.join(process.env.LOCALAPPDATA ?? '', 'Programs/DSH Desktop/resources/app'),
+  ].filter(Boolean)
+  for (const c of candidates) {
+    // 认 resources/app 下的 package.json，光有目录不够
+    if (c && fs.existsSync(path.join(c, 'package.json'))) return c
+  }
+  return null
+}
+
+const dshApp = findDshApp()
+if (dshApp) console.log(`  DSH: ${dshApp}`)
+else console.log('  ⚠️ 没找到 DSH 安装目录 —— LLM 渠道可能挂不上（可用 DSH_APP_DIR 环境变量指定）')
+
 // 输出追加到日志文件（和程序自身的日志同一个文件）
 const fd = fs.openSync(LOG, 'a')
 
 console.log('\n  启动（detached + windowsHide + stdio 重定向）…')
-const child = spawn(node, [
+const args = [
   entry,
   '--daemon', '--hosted', '--no-tray',
   '--home', HOME,
-], {
+]
+// 只有真的找到了才传，传个不存在的路径会让 findDshAppDir 直接返回空
+if (dshApp) args.push('--dsh-app', dshApp)
+
+const child = spawn(node, args, {
   cwd: REPO,
   detached: true,
   windowsHide: true,          // ← 窗口问题的关键

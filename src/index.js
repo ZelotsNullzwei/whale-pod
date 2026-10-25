@@ -12,6 +12,7 @@
  *   8. 托盘       ← 可选；失败不影响核心功能
  */
 
+import fs from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
 import { fileURLToPath } from 'node:url'
@@ -36,6 +37,7 @@ import * as runtime from './qq/runtime.js'
 import * as modes from './qq/modes.js'
 import { MODES, astrbotGatewayHint } from './qq/modes.js'
 import { createFallbackLlm } from './gateway/fallback.js'
+import { discoverDshProviders, resolveChannelKey } from './gateway/dsh-providers.js'
 
 /**
  * 把「DSH 渠道」和「自备渠道」合成一个 llm 对象。
@@ -261,9 +263,51 @@ export async function main(argv = process.argv.slice(2)) {
     state.dshPack = pack ?? null
     state.profile = pack?.profile ?? null
     const selfChannels = (cfg.gateway?.channels ?? []).filter((c) => c && c.enabled !== false && c.baseUrl)
-    const fallbackLlm = selfChannels.length > 0
+
+    // ── 自动发现 DSH 设置里的模型提供商 ─────────────────────────
+    //
+    // 用户在 DSH「设置 → 模型」里已经配好了 Magpie / DeepSeek 等提供商，
+    // 这些配置落在 profiles/<name>/cordis.patch.yml 的 llm-pi-ai.providers。
+    // 与其让他在 WhalePod 里再手抄一遍 baseUrl / apiKey / 模型列表，
+    // 不如直接读过来 —— 「DSH 里配了什么，WhalePod 就能用什么」。
+    //
+    // ⚠️ 手填的 gateway.channels **优先**：用户显式配置的意图要尊重。
+    //    自动发现的只在 id 不冲突时补进来，作为兜底。
+    let discovered = []
+    try {
+      const r = await discoverDshProviders({
+        dshHome: process.env.DSH_HOME ?? path.join(process.env.USERPROFILE ?? '', '.dsh'),
+        profile: args.profile ?? 'desktop',
+        appDir,
+        log: (lv, msg) => log[lv]?.(msg),
+      })
+      discovered = r.channels ?? []
+      if (discovered.length > 0) {
+        state.dshProvidersFile = r.file
+        state.dshProvidersSource = r.source
+        log.info(`从 DSH 设置发现 ${discovered.length} 个提供商（${discovered.map((c) => c.id).join(', ')}）`)
+      }
+    } catch (e) {
+      // 读不到不是错误 —— DSH 没装 / 配置没写过都很正常
+      log.warn(`读取 DSH 提供商配置失败（不影响手填渠道）：${String(e?.message ?? e)}`)
+    }
+
+    // 合并：手填优先，自动发现的补空位
+    const seenIds = new Set(selfChannels.map((c) => c.id))
+    const autoChannels = discovered
+      .filter((c) => !seenIds.has(c.id))
+      .map((c) => {
+        // apiKeyEnv 只是变量名，真值要从凭据服务取
+        const key = resolveChannelKey(c, creds)
+        return key ? { ...c, apiKey: key } : c
+      })
+    const allChannels = [...selfChannels, ...autoChannels]
+    // 记到 state，Web UI 的渠道页要显示「这个渠道是怎么来的」
+    state.autoChannels = autoChannels.map((c) => c.id)
+
+    const fallbackLlm = allChannels.length > 0
       ? createFallbackLlm({
-        channels: selfChannels,
+        channels: allChannels,
         log: (lv, msg) => log[lv]?.(msg),
       })
       : null
@@ -275,9 +319,14 @@ export async function main(argv = process.argv.slice(2)) {
       // 找不到宿主渠道包不是错误 —— WhalePod 自己就能跑，只要用户配了供应商。
       // 这里只说清楚「能用什么」，不暗示用户去装别的东西。
       log.info('LLM：使用内置 DeepSeek 账户凭证 + 自定义供应商')
-      log.warn(selfChannels.length > 0
-        ? `已配置自备渠道 ${selfChannels.length} 个：${selfChannels.map((c) => c.id).join(', ')}`
-        : '还没有配置供应商 → 请在「配置」页填入 DeepSeek API Key，或添加一个 OpenAI 兼容端点。')
+      if (allChannels.length > 0) {
+        const parts = []
+        if (selfChannels.length > 0) parts.push(`手填 ${selfChannels.length} 个（${selfChannels.map((c) => c.id).join(', ')}）`)
+        if (autoChannels.length > 0) parts.push(`DSH 自动发现 ${autoChannels.length} 个（${autoChannels.map((c) => c.id).join(', ')}）`)
+        log.warn(`可用渠道：${parts.join(' + ')}`)
+      } else {
+        log.warn('还没有配置供应商 → 请在「配置」页填入 DeepSeek API Key，或添加一个 OpenAI 兼容端点。')
+      }
     }
 
     let llm
@@ -514,6 +563,17 @@ export async function main(argv = process.argv.slice(2)) {
         searchKey: (() => {
           try { return creds.get('DEEPSEEK_API_KEY') ?? null } catch { return null }
         })(),
+        // 讨钱状态落盘：「每天最多 3 次」必须跨重启有效，
+        // 否则重启一次就重置，等于没有限制。
+        begFile: path.join(store.home, 'beg.json'),
+        // 谁最近跟它说话最多 —— 讨钱要 @ 的人。开机时从磁盘恢复。
+        interactions: (() => {
+          try {
+            const f = path.join(store.home, 'interactions.json')
+            if (fs.existsSync(f)) return JSON.parse(fs.readFileSync(f, 'utf8'))
+          } catch { /* 读坏了就从空开始 */ }
+          return []
+        })(),
         log,
       })
       bridge.attach()
@@ -524,6 +584,16 @@ export async function main(argv = process.argv.slice(2)) {
       state.onebot = onebot
       state.bridge = bridge
       shutdown.push(async () => { onebot.close() })
+      // 保存「谁最近跟它说话最多」—— 不存的话每次重启都从零开始，
+      // 讨钱就永远 @ 不到人（7 天窗口内攒的互动全丢了）。
+      shutdown.push(() => {
+        try {
+          const f = path.join(store.home, 'interactions.json')
+          fs.writeFileSync(f, JSON.stringify(bridge._interactions.toJSON(), null, 2), 'utf8')
+        } catch (e) {
+          log.warn?.(`保存互动统计失败（不影响退出）：${String(e?.message ?? e)}`)
+        }
+      })
       const dir = cfg.qq.onebot?.mode ?? 'forward'
       log.info(`QQ：已启用（${dir} 模式，${cfg.qq.onebot?.wsUrl || cfg.qq.onebot?.reversePort || '未配置地址'}）`)
       if (!cfg.qq.allow?.groups?.length && !cfg.qq.allow?.private?.length) {
