@@ -357,8 +357,18 @@ console.log('\n=== 6c. _generate 能跑通（带媒体标记的场景）===')
         br.memory.get(), { kind: 'group', groupId: '1', groupName: '测试群' },
         { qq: '9', nickname: 'Bot' },
       )
-      // 成功时应该拿到文本
-      if (typeof out !== 'string') err = '没返回字符串：' + typeof out
+      // ⚠️ 2026-10-25 修：_generate 现在返回 `{ text, cover }` 而不是纯字符串。
+      //
+      // 为什么改成对象：封面图必须**随返回值带出去**，不能挂 this 上 ——
+      // 用实例变量会有竞态（_generate 到 _send 之间隔了几百行，
+      // 群里并发时后一条搜到的图可能被前一条取走，张冠李戴）。
+      //
+      // 这里断言形状正确 + text 是字符串。
+      if (!out || typeof out !== 'object') {
+        err = '没返回对象：' + typeof out
+      } else if (typeof out.text !== 'string') {
+        err = 'out.text 不是字符串：' + typeof out.text
+      }
     } catch (e) {
       err = String(e?.message ?? e)
     }
