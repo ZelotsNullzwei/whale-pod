@@ -60,7 +60,7 @@ export class RuleDecisionProvider extends DecisionProvider {
        *    （2026-10-24 就是漏了这一条，导致 mediaEmojiProbability=0
        *      关不掉、maxConsecutiveTurns 的门槛也读不到。）
        */
-      mediaEmojiProbability: cfg.mediaEmojiProbability ?? 0.25,
+      mediaEmojiProbability: cfg.mediaEmojiProbability ?? 0.12,
       // 延迟区间：由上层按人格配置传入（注意 0 是合法值，不能用 ?? 兜底）
       delayMin: cfg.delayMin,
       delayMax: cfg.delayMax,
@@ -97,6 +97,8 @@ export class RuleDecisionProvider extends DecisionProvider {
     if (!last) {
       return { reply: false, probability: 0, reason: '没有可判断的消息' }
     }
+    // 场景判定：私聊 / 群聊。多处要用（冷却、表情、加成都不同）。
+    const isPrivate = input.scene?.kind !== 'group'
 
     // ── 1. 是我自己发的 → 绝不回自己 ─────────────────────────
     if (last.isMe) {
@@ -350,9 +352,10 @@ export class RuleDecisionProvider extends DecisionProvider {
     if (isPureMedia
       && !last.mentionsMe
       && !followUp.hit
+      && !isPrivate
       && input.consecutiveTurns < (this.cfg.maxConsecutiveTurns ?? 3)
       && !(input.sinceMyLastMessage < (this.cfg.cooldownMs ?? 15000))) {
-      const base = Number(this.cfg.mediaEmojiProbability ?? 0.25)
+      const base = Number(this.cfg.mediaEmojiProbability ?? 0.12)
       // 话题连续（在刷梗图）→ 参与意愿更高，但上限 0.6，别喧宾夺主
       const pEmoji = thread.hit ? Math.min(base * 1.5, 0.6) : base
       if (rnd() < pEmoji) {

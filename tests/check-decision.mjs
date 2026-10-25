@@ -142,7 +142,9 @@ console.log('\n=== 11. 按配置组装 provider 顺序 ===')
     ['rule', ['rule']],
     ['jev', ['jev', 'rule']],
     ['custom', ['custom', 'rule']],
-    ['auto', ['jev', 'custom', 'rule']],
+    // 2026-10-25：新增 model（模型自主判断），auto 现在最先试它
+    ['model', ['model', 'rule']],
+    ['auto', ['model', 'jev', 'custom', 'rule']],
     ['未知值', ['rule']],
   ]
   for (const [provider, expect] of cases) {
@@ -156,10 +158,13 @@ console.log('\n=== 12. probeAll（供 Web UI） ===')
 {
   const reg = createDecisionLayer({ provider: 'auto', jev: { enabled: false }, custom: { enabled: false } }, { log })
   const r = await reg.probeAll()
-  check('有 3 个 provider', r.providers.length === 3, JSON.stringify(r.providers.map((p) => p.id)))
+  // ⚠️ 2026-10-25：加了 model provider 后是 **4 个**（rule/jev/custom/model）。
+  //    auto 的 order 变成 model → jev → custom → rule，所以 active 是 model。
+  check('有 4 个 provider', r.providers.length === 4, JSON.stringify(r.providers.map((p) => p.id)))
   check('rule 可用', r.providers.find((p) => p.id === 'rule')?.ok === true)
   check('jev 不可用（未启用）', r.providers.find((p) => p.id === 'jev')?.ok === false)
-  check('active 是 jev（order 首位，即使不可用）', r.active === 'jev', String(r.active))
+  check('model 不可用（没传 llm）', r.providers.find((p) => p.id === 'model')?.ok === false)
+  check('active 是 model（order 首位，即使不可用）', r.active === 'model', String(r.active))
 }
 
 console.log('\n=== 13. explain 摘要 ===')

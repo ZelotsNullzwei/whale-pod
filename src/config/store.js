@@ -82,7 +82,23 @@ export const DEFAULTS = {
    * 默认 rule = 内置零成本状态机；jev 是可选增强，接口已留好。
    */
   decision: {
-    /** rule | jev | custom */
+    /**
+     * 决策方式：rule | model | jev | custom | auto
+     *
+     *   rule  —— 内置规则 + 概率打分（零成本、零延迟，但僵硬）
+     *   model —— **让模型自己判断**该不该接（每次多一次 LLM 调用）
+     *            它看最近十几条对话，回答 reply / wait / stop。
+     *            比 rule 自然得多，代价是延迟 +1~3 秒、多一次调用。
+     *   jev / custom —— 见各自配置段
+     *   auto  —— model → jev → custom → rule 依次尝试
+     *
+     * ⚠️ 无论选哪个，**永远以 rule 收尾** —— 模型挂了也有零成本安全网。
+     *
+     * 为什么要有 model：实测（2026-10-25）rule 有两个架构性缺陷 ——
+     *   ① 冷却把真实对话吃掉：用户连发 5 条，一条都没回
+     *   ② p=0.04 却发言：掷骰子落在 4% 里，观感是「莫名其妙插一句」
+     * 这两件都不是参数问题，是「打分器不知道语境」。
+     */
     provider: 'rule',
     /** 任一实现报错时是否降级到 rule */
     fallbackOnError: true,
@@ -92,6 +108,51 @@ export const DEFAULTS = {
     delay: {
       min: 800,
       max: 3500,
+    },
+    /**
+     * 模型自主判断模式的参数。
+     *
+     * 什么时候该用：觉得「该回的时候不回、不该回的时候乱插」——
+     * 那是概率打分器的固有缺陷，调 rule 的参数治不好。
+     */
+    model: {
+      /**
+       * 拿哪个模型做判断，形如 `magpie/auto/deepseek-v4.1-flash`。
+       *
+       * 留空 = 用调用方的默认模型（即 qq.model）。
+       * 建议填一个**便宜、快**的 —— 判断「该不该说话」是简单任务，
+       * 不需要强模型，而它每条消息都会调一次。
+       */
+      model: '',
+      /** 给模型看多少条上下文。太多费 token，太少看不懂语境 */
+      maxMessages: 15,
+      /** 超时（ms）。判断不该拖太久，超时就降级到 rule */
+      timeoutMs: 8000,
+      /**
+       * 输出上限。**这个值很敏感，两头都不能过。**
+       *
+       * 太小（8）：推理模型（deepseek-v4.1-flash）先写一大段
+       *   reasoning_content，8 个 token 全被草稿吃光、正文一个字没输出 ——
+       *   流里只有 reasoning-delta，拼出来是空字符串，次次判定失败降级。
+       *
+       * 太大（512）：模型有了发挥空间，**开始扮演角色跟你聊天**。
+       *   实测同一个提示词、同一个问题：
+       *     maxTokens=512 → 输出「五张」（在回答用户问的"几张图"）
+       *     maxTokens=32  → 输出「reply」（正确判断）
+       *   日志表现为大量 badParse，模型吐「哼」「瞅瞅」「那当然」这类词。
+       *
+       * 实测扫描（2026-10-25，三组用例）：
+       *     16 / 24 / 32 → 全部正确
+       *     48 / 64      → 开始答非所问
+       *
+       * 32 是「够推理草稿、不够展开聊天」的平衡点。
+       * 改这个值前先跑 tests/_probe-verdict.mjs 复验。
+       */
+      maxTokens: 64,
+      /** 温度。判断要稳定，给 0 */
+      temperature: 0,
+      /** 解析不出 verdict 时重试几次 */
+      retryOnBad: 1,
     },
     /** 内置 rule 提供者的参数 */
     rule: {
@@ -120,7 +181,7 @@ export const DEFAULTS = {
        *
        * 设为 0 可完全关闭（表情包一律不回应）。
        */
-      mediaEmojiProbability: 0.25,
+      mediaEmojiProbability: 0.12,
       /**
        * 别名 —— 群里不提昵称、只用简称叫它时也算"在叫它"。
        *

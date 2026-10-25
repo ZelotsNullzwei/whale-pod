@@ -15,6 +15,7 @@ import { DecisionRegistry } from './provider.js'
 import { RuleDecisionProvider } from './rule.js'
 import { JevDecisionProvider } from './jev.js'
 import { CustomDecisionProvider } from './custom.js'
+import { ModelDecisionProvider } from './model.js'
 
 /**
  * @param {object} cfg 完整的 decision 配置
@@ -38,13 +39,17 @@ export function createDecisionLayer(cfg = {}, deps = {}) {
   const jev = new JevDecisionProvider(cfg.jev ?? {}, deps)
   const custom = new CustomDecisionProvider(cfg.custom ?? {}, deps)
 
+  // 模型自主判断 —— 让模型看上下文回答 reply/wait/stop，
+  // 而不是靠 rule.js 那套概率打分。用哪个模型由 cfg.model.model 决定。
+  const model = new ModelDecisionProvider(cfg.model ?? {}, deps)
+
   const registry = new DecisionRegistry({
     order: resolveOrder(cfg),
     fallbackOnError: cfg.fallbackOnError !== false,
     log: deps.log,
   })
 
-  registry.register(rule).register(jev).register(custom)
+  registry.register(rule).register(jev).register(custom).register(model)
 
   // 阈值：probability 低于它就当作"不说"。
   // 放在注册表外面（由调用方决定），因为不同 provider 的概率尺度不同；
@@ -110,7 +115,9 @@ function resolveOrder(cfg = {}) {
   if (which === 'rule') return ['rule']
   if (which === 'jev') return dedupeTail(['jev', 'rule'])
   if (which === 'custom') return dedupeTail(['custom', 'rule'])
-  if (which === 'auto') return ['jev', 'custom', 'rule']
+  // 模型自主判断：先问模型，模型挂了/解析失败就落回 rule
+  if (which === 'model') return dedupeTail(['model', 'rule'])
+  if (which === 'auto') return ['model', 'jev', 'custom', 'rule']
   // 未知值：退到最安全
   return ['rule']
 }
