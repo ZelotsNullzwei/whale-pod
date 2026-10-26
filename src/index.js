@@ -406,23 +406,8 @@ export async function main(argv = process.argv.slice(2)) {
     state.llm = llm
     state.usage = usage
     state.activity = activity
-    state.people = people
-
-    /*
-     * 人物档案落盘。
-     *
-     * `touch()` 只改内存并标脏 —— 每条消息都写文件太浪费
-     * （群聊一波能刷几十条）。这里 30 秒收一次，脏了才真写。
-     *
-     * 另外在 shutdown 时强制写一次：`unref()` 让这个定时器
-     * **不阻止进程退出**，但退出前那次必须显式带上。
-     */
-    const peopleTimer = setInterval(() => people.flush(), 30_000)
-    peopleTimer.unref?.()
-    shutdown.push(() => {
-      clearInterval(peopleTimer)
-      people.save()
-    })
+    // ⚠️ people 在下面才创建（LongTermStore 之后），所以这里不能直接用。
+    // 赋值和定时器都挪到 people 定义之后了。
     // 记录**启动时**实际装载的自备渠道 id。Web UI 靠它区分"自备渠道"与
     // "DSH 免费渠道"—— 必须用快照而不是当前配置，否则配置改动后
     // （要重启才生效）会把已删的渠道误判成 DSH 渠道。
@@ -518,6 +503,23 @@ export async function main(argv = process.argv.slice(2)) {
 
     // 人物档案：按 QQ 号认人。跨会话共享。
     const people = new PeopleStore({ home: store.home })
+    state.people = people
+
+    /*
+     * 人物档案落盘。
+     *
+     * `touch()` 只改内存并标脏 —— 每条消息都写文件太浪费
+     * （群聊一波能刷几十条）。这里 30 秒收一次，脏了才真写。
+     *
+     * ⚠️ 这个定时器必须放在 `people` 定义之后。放在前面会
+     *    `Cannot access 'people' before initialization` —— 启动直接失败。
+     */
+    const peopleTimer = setInterval(() => people.flush(), 30_000)
+    peopleTimer.unref?.()
+    shutdown.push(() => {
+      clearInterval(peopleTimer)
+      people.save()
+    })
 
     /**
      * ⚠️ 启动时校验长期记忆配置（2026-10-23 加）。
@@ -650,6 +652,22 @@ export async function main(argv = process.argv.slice(2)) {
       state.onebot = onebot
       state.bridge = bridge
       shutdown.push(async () => { onebot.close() })
+
+      /*
+       * 主动行为调度器（讨钱 + 空闲发言）。
+       *
+       * 两者各有独立开关：
+       *   · `beg.enabled`       —— 定期查余额，低了主动讨
+       *   · `proactive.enabled` —— 群安静够久就自己冒泡
+       *
+       * 关掉就完全不启动对应逻辑（调度器内部也会再判一次配置）。
+       */
+      try {
+        bridge.startProactive({ home: store.home, fs, memoryOf: (scope) => memory.get(scope) })
+        shutdown.push(() => bridge.stopProactive())
+      } catch (e) {
+        log.warn?.(`主动行为调度器启动失败（不影响其它功能）：${String(e?.message ?? e)}`)
+      }
       // 保存「谁最近跟它说话最多」—— 不存的话每次重启都从零开始，
       // 讨钱就永远 @ 不到人（7 天窗口内攒的互动全丢了）。
       shutdown.push(() => {

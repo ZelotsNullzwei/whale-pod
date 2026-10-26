@@ -145,6 +145,22 @@ export class ConversationMemory {
   }
 
   /** 距我上次发言多久（ms）；没说过返回 Infinity。 */
+  /**
+   * 距**最后一条消息**（不管谁说的）过了多久。
+   *
+   * 和 sinceMyLast（距我上次发言）不同：这个衡量「群里安静了多久」，
+   * 主动发言靠它判断该不该冒泡。没有任何消息时返回 Infinity。
+   *
+   * @param {number} [now]
+   * @returns {number}
+   */
+  sinceLastMessage(now = Date.now()) {
+    const last = this.messages[this.messages.length - 1]
+    if (!last) return Infinity
+    const at = Number(last.at)
+    return Number.isFinite(at) ? Math.max(0, now - at) : Infinity
+  }
+
   sinceMyLast(now = Date.now()) {
     return this.myLastAt > 0 ? now - this.myLastAt : Infinity
   }

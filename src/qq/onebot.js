@@ -654,9 +654,36 @@ export class OneBotClient {
         this.log.warn?.(`onebot：图片超过上限（${len} > ${maxBytes}）`)
         return null
       }
-      const buf = res.body
-        ? Buffer.from(res.body)
-        : Buffer.from(await res.arrayBuffer())
+      /*
+       * ⚠️ 2026-10-26 修：这里原来写的是
+       *
+       *   const buf = res.body
+       *     ? Buffer.from(res.body)
+       *     : Buffer.from(await res.arrayBuffer())
+       *
+       * 只要有 `res.body` 就直接 `Buffer.from(它)` —— 但 `res.body`
+       * 在标准 fetch 里是 **Web ReadableStream**，在代理兜底通道里是
+       * **Node Readable**，两者都进不了 `Buffer.from`：
+       *
+       *   TypeError: The first argument must be of type string or an
+       *   instance of Buffer, ArrayBuffer ... Received an instance of
+       *   ReadableStream
+       *
+       * 结果就是**每一张图都下载失败**（日志里那串「图片下载异常」），
+       * 表情包全部降级成「（对方发了一个表情包）」文字占位符 ——
+       * 模型看不到图，自然接不上「你看这个」之类的话。
+       *
+       * 现在按类型分派：
+       *   · Response / 有 arrayBuffer()  → 用它（最省事，一次拷完）
+       *   · Node Readable（.pipe/.on）  → 收集 chunk
+       *   · Web ReadableStream         → getReader 读到底
+       *   · Buffer / Uint8Array        → 直接用
+       */
+      const buf = await readBodyAsBuffer(res)
+      if (!buf) {
+        this.log.warn?.('onebot：图片响应体读不出来（类型不支持）')
+        return null
+      }
       if (buf.length > maxBytes) {
         this.log.warn?.(`onebot：图片超过上限（${buf.length} > ${maxBytes}）`)
         return null
@@ -684,6 +711,67 @@ export class OneBotClient {
     this.connected = false
     this.stats.direction = null
   }
+}
+
+/**
+ * 把 HTTP 响应体读成 Buffer —— 不管它是什么形态。
+ *
+ * ## 为什么需要这个
+ *
+ * 同样的「下载一张图」，两条通道返回的 `body` 类型不同：
+ *
+ *   · 标准 `fetch()`          → Web `ReadableStream`
+ *   · `fetchWithProxyFallback` → Node `Readable`（`node:http` 的 res）
+ *
+ * 原来的写法是 `Buffer.from(res.body)`，两种都接不住：
+ *
+ *   TypeError: The first argument must be of type string or an instance
+ *   of Buffer, ArrayBuffer ... Received an instance of ReadableStream
+ *
+ * 表现是**所有图片下载都失败**，表情包降级成文字占位符，
+ * 模型看不到图 —— 用户感觉「她不知道我在说什么」。
+ *
+ * @param {any} res fetch 的 Response 或 {body} 包装
+ * @returns {Promise<Buffer|null>} 读不出来返回 null
+ */
+async function readBodyAsBuffer(res) {
+  if (!res) return null
+  const body = res.body ?? res
+
+  // ① Buffer / Uint8Array：已经在内存里了
+  if (Buffer.isBuffer(body)) return body
+  if (body instanceof Uint8Array) return Buffer.from(body)
+
+  // ② Response 自己会转 —— 最省事，一次拷完，也让运行时管背压
+  if (typeof res.arrayBuffer === 'function') {
+    try {
+      return Buffer.from(await res.arrayBuffer())
+    } catch { /* 落到下面按流处理 */ }
+  }
+
+  // ③ Web ReadableStream：getReader 读到底
+  if (typeof body?.getReader === 'function') {
+    const reader = body.getReader()
+    const parts = []
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      if (value) parts.push(Buffer.from(value))
+    }
+    return Buffer.concat(parts)
+  }
+
+  // ④ Node Readable：收集 chunk
+  if (typeof body?.on === 'function') {
+    return await new Promise((resolve, reject) => {
+      const parts = []
+      body.on('data', (c) => parts.push(Buffer.isBuffer(c) ? c : Buffer.from(c)))
+      body.on('end', () => resolve(Buffer.concat(parts)))
+      body.on('error', reject)
+    })
+  }
+
+  return null
 }
 
 /** 按扩展名猜 MIME。 */

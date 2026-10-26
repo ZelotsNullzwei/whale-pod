@@ -26,6 +26,7 @@ import { resolveCandidates, openFirstAvailable, applyFreeOrder, PROVIDER_MODEL_H
 import { needsFreshInfo, webSearch, formatSearchContext, pickCoverImage, checkBalance } from '../gateway/search.js'
 import FACE_TABLE from './faces.json' with { type: 'json' }
 import { InteractionTracker, BegState, decideBeg } from './beg.js'
+import { ProactiveScheduler, ProactiveState } from './proactive.js'
 
 /** 模型表示"不说话"的标记。 */
 export const SILENT = '[SILENT]'
@@ -342,8 +343,7 @@ export class QQBridge {
     this.longMemory = opts.longMemory
     this.persona = opts.persona
     /**
-     * 人物档案（可空）—— 按 **QQ 号**认人，昵称只当别名。
-     *
+     * 人物档案（可空）—— 按 **QQ 号**认人，昵称只当别名。     *
      * 为什么单独一层而不是塞进会话记忆：一个人会出现在多个群和私聊里，
      * 但「他是谁」这件事跨会话只有一个答案。会话记忆回答「这里发生过什么」，
      * 档案回答「这个人是谁」。
@@ -408,6 +408,133 @@ export class QQBridge {
   /** 记一次「有人跟它说话」（供讨钱选人用）。 */
   noteInteraction(userId, userName, at = Date.now()) {
     this._interactions.hit(userId, userName, at)
+  }
+
+  /**
+   * 启动主动行为调度器（讨钱 + 空闲发言）。
+   *
+   * ## 为什么需要它
+   *
+   * 原来「讨钱」挂在**搜索成功**后面：不搜索就永不查余额；
+   * 而且 `_maybeBeg` 只是往回复里附带一句，她不回复时同样不触发。
+   * 「空闲发言」则**完全不存在** —— 群里安静下来她就永远沉默。
+   *
+   * 现在两条路径都由独立定时器驱动，跟「有没有人在说话」无关。
+   *
+   * @param {object} [opts]
+   * @param {import('node:fs')} [opts.fs]
+   * @param {string} [opts.home] 数据目录（写 proactive.json）
+   * @param {(scope:string) => string|null} [opts.memoryOf] 取某会话的 MemoryStore
+   */
+  startProactive(opts = {}) {
+    if (this._proactive) return this._proactive
+
+    const file = opts.home ? `${opts.home}/proactive.json` : null
+    const state = new ProactiveState({ file, fs: opts.fs ?? null })
+    const memoryOf = opts.memoryOf ?? (() => null)
+
+    this._proactive = new ProactiveScheduler({
+      cfg: this.cfg.proactive ?? {},
+      begCfg: this.cfg.beg ?? {},
+      state,
+      log: this.log,
+      // 查余额：只有偏低才返回 true
+      checkBalance: async () => {
+        if (!this.searchKey) return false
+        const b = await checkBalance(this.searchKey, 8000)
+        if (!b?.ok) return false
+        this._balance = b
+        const threshold = this.cfg.search?.lowBalanceCny ?? 3
+        const low = b.cny <= threshold
+        this._balanceLow = low
+        this.log.info?.(`proactive：余额 ¥${b.cny}（阈值 ¥${threshold}）${low ? ' —— 偏低' : ''}`)
+        return low
+      },
+      // 讨钱：走已有实现，但**不看 msg** —— 主动发，不依赖有人说话
+      onBeg: async () => {
+        const groups = (this.cfg.allow?.groups ?? []).map(String).filter(Boolean)
+        if (groups.length === 0) {
+          this.log.info?.('proactive：没有白名单群，不讨钱')
+          return false
+        }
+        // 从白名单里挑一个「最近有人说过话」的群 —— 没互动过的群 @ 谁都不知道
+        const picked = groups.find((g) => memoryOf(`group:${g}`)?.recent?.(1)?.length > 0) ?? null
+        if (!picked) {
+          this.log.info?.('proactive：白名单群都还没有聊天记录，不知道 @ 谁')
+          return false
+        }
+        const cny = Number(this._balance?.cny)
+        return await this._maybeBeg({ kind: 'group', groupId: picked, scope: `group:${picked}` }, Number.isFinite(cny) ? cny : 0)
+      },
+      // 主动发言：在某个会话说一句
+      onSpeak: async (scope) => {
+        const mem = memoryOf(scope)
+        if (!mem) return false
+        const kind = scope.startsWith('group:') ? 'group' : 'private'
+        const id = scope.slice(scope.indexOf(':') + 1)
+        return await this._speakUp({ scope, kind, groupId: kind === 'group' ? id : null, userId: kind === 'private' ? id : null }, mem)
+      },
+      // 可主动发言的会话：白名单内、并且最近有聊天记录的
+      scopes: () => {
+        const out = []
+        const p = this.cfg.proactive ?? {}
+        if (p.inGroups !== false) {
+          for (const g of (this.cfg.allow?.groups ?? [])) {
+            const scope = `group:${g}`
+            if (memoryOf(scope)?.recent?.(1)?.length > 0) out.push(scope)
+          }
+        }
+        if (p.inPrivate === true) {
+          for (const u of (this.cfg.allow?.private ?? [])) {
+            const scope = `private:${u}`
+            if (memoryOf(scope)?.recent?.(1)?.length > 0) out.push(scope)
+          }
+        }
+        return out
+      },
+      // 静默时长 = 所有候选会话里「距上次有人说话」的最大值
+      idleMs: () => {
+        let max = 0
+        for (const scope of this._proactiveScopes()) {
+          const mem = memoryOf(scope)
+          const since = mem?.sinceLastMessage?.()
+          if (Number.isFinite(since) && since > max) max = since
+        }
+        return max
+      },
+    })
+
+    this._proactiveScopes = () => this._proactive.scopes()
+    this._proactive.start()
+    return this._proactive
+  }
+
+  stopProactive() {
+    this._proactive?.stop?.()
+    this._proactive = null
+  }
+
+  /** 主动说一句：不走决策层，直接生成 + 发送。 */
+  async _speakUp(msg, mem) {
+    try {
+      const scene = await this.sceneOf(msg)
+      const self = { id: this.selfId, name: this.selfName }
+      const text = await this._generate(msg, mem, scene, self)
+      const clean = String(text ?? '').trim()
+      if (!clean || clean.includes(SILENT)) {
+        this.log.info?.('proactive：模型选择不说')
+        return false
+      }
+      if (msg.kind === 'group') await this.onebot.sendGroup(msg.groupId, clean)
+      else await this.onebot.sendPrivate(msg.userId, clean)
+      mem.push(makeMessage({ sender: this.selfId ?? '0', senderName: this.selfName, text: clean, isMe: true, at: Date.now() }))
+      this.stats.replied++
+      this.log.info?.(`proactive：[我主动] ${msg.scope}「${clean.slice(0, 100)}」`)
+      return true
+    } catch (e) {
+      this.log.warn?.(`proactive：主动发言失败 — ${String(e?.message ?? e)}`)
+      return false
+    }
   }
 
   /** 讨钱状态快照（给 Web UI / 调试用）。 */
@@ -1065,6 +1192,14 @@ export class QQBridge {
         model: this._lastRoute?.model ?? null,
       }))
       this._record(msg, d, text, 'sent')
+      /*
+       * 把**自己发了什么**也写进日志。
+       *
+       * 原来只记「收到什么 + 决策结果」，排查「上文不接下文」时
+       * 完全无法对照 —— 只能切到 QQ 窗口人眼看，而且看完就滚走了。
+       * 现在一行里有对方说了什么、自己回了什么，时序一目了然。
+       */
+      this.log.info?.(`bridge：[我] ${msg.scope}「${String(text).slice(0, 120)}」`)
       // 记下自己发出的 message_id —— 过时检测要靠它认出
       // 「后续消息引用了我的回复」= 有人在追问我，不能判过时。
       this._rememberMyReplyIds(msg.scope, sentIds)
@@ -1538,11 +1673,23 @@ export class QQBridge {
     // 为什么放宽：图上一条消息问「这图里是什么」很常见，而 6 条在活跃群里
     // 一眨眼就滑过去了 —— 图还在记忆里但已经不在收集窗口内，模型只看到
     // 「（对方发了一张图）」却拿不到图，只能瞎猜或者装作没看见。
-    const imageCache = await this._collectImages(mem.recent(10))
+    /*
+     * ⚠️ 2026-10-26 修：历史窗口 20 → 30，图片窗口 10 → 30。
+     *
+     * `maxMessages` 是 30，但这里只取 20 送进 prompt —— 白丢 10 条。
+     * 一轮对话占 2 条（对方一句 + 自己一句），20 条只有 10 轮，
+     * 聊得密一点就「忘了上一步说了什么」。30 条 ≈ 15 轮，够了。
+     *
+     * 图片窗口同步提到 30：图在记忆里但不在收集窗口内时，
+     * 模型只看到「（对方发了一张图）」却拿不到图，只能瞎猜 ——
+     * 这就是「一张都没入库，按纯文本发送」那条日志的来源。
+     */
+    const history = mem.recent(30)
+    const imageCache = await this._collectImages(history)
 
     const messages = buildChatMessages({
       system,
-      history: mem.recent(20),
+      history,
       imageCache,
       lastRoute: this._lastRoute,
     })
@@ -1846,13 +1993,13 @@ export class QQBridge {
 
       if (!r.beg) {
         this.log.info?.(`bridge：不讨钱 —— ${r.reason}`)
-        return
+        return false
       }
 
       // 只在群里讨：私聊没有「@ 观众」的意义，而且更容易被判骚扰。
       if (msg.kind !== 'group') {
         this.log.info?.(`bridge：不在群里（${msg.kind}），跳过讨钱`)
-        return
+        return false
       }
 
       // @ 目标 + 话术。OneBot 的 at 段要求 QQ 号是字符串。
@@ -1866,7 +2013,7 @@ export class QQBridge {
       const ok = res && (res.message_id !== undefined || res.messageId !== undefined || res.ok !== false)
       if (!ok) {
         this.log.warn?.(`bridge：讨钱发送失败 — ${JSON.stringify(res).slice(0, 120)}`)
-        return
+        return false
       }
 
       // 只有真的发出去了才记账 —— 否则失败也算进「今天 3 次」里，
@@ -1877,8 +2024,10 @@ export class QQBridge {
         `今日第 ${this._begState.snapshot().count}/${this._begState.maxPerDay} 次，话术「${r.line.id}」`,
       )
       this.stats.begged = (this.stats.begged ?? 0) + 1
+      return true
     } catch (e) {
       this.log.warn?.(`bridge：讨钱流程出错（忽略）— ${String(e?.message ?? e)}`)
+      return false
     }
   }
 
