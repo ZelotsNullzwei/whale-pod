@@ -282,13 +282,13 @@ console.log('\n=== 6b. 媒体标记的改写（别让模型去解说图）===')
   const { buildChatMessages, describeMedia } = await imp('src/qq/bridge.js')
   const { makeMessage } = await imp('src/memory/short.js')
 
-  check('表情包 → 说明式文字', describeMedia({ text: '[表情包:猫猫]' }).includes('（对方发了一个表情包，关于「猫猫」）'),
+  check('表情包 → 说明式文字 + 行为指引', describeMedia({ text: '[表情包:猫猫]' }).includes('（对方发了一个表情包，关于「猫猫」') && describeMedia({ text: '[表情包:猫猫]' }).includes('别去猜图里画的是谁'),
     describeMedia({ text: '[表情包:猫猫]' }))
-  check('无名表情包也说明', describeMedia({ text: '[表情包]' }).includes('（对方发了一个表情包）'))
+  check('无名表情包也说明 + 行为指引', describeMedia({ text: '[表情包]' }).includes('（对方发了一个表情包') && describeMedia({ text: '[表情包]' }).includes('别去猜图里画的是谁'))
   check('内置表情 → 带 id 的说明', describeMedia({ text: '[表情:4]' }).includes('（对方发了个QQ表情，id=4）'))
   check('图片 → 说明式', describeMedia({ text: '[图片]' }).includes('（对方发了一张图）'))
   check('普通文本不动', describeMedia({ text: '今天天气不错' }) === '今天天气不错')
-  check('混排也能改', describeMedia({ text: '看这个[表情包:笑]哈哈' }).includes('（对方发了一个表情包，关于「笑」）'))
+  check('混排也能改', describeMedia({ text: '看这个[表情包:笑]哈哈' }).includes('（对方发了一个表情包，关于「笑」'))
 
   // 通过 buildChatMessages 走一遍，确认送给模型的确实是改写后的
   const m = buildChatMessages({

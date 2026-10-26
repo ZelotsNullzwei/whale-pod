@@ -74,8 +74,39 @@ export function buildContext(input, opts = {}) {
     const who = m.isMe ? `${selfName}（己方）` : (m.senderName ?? m.sender ?? '某人')
     let text = String(m.text ?? '').replace(/\s+/g, ' ').trim()
     if (text.length > 120) text = text.slice(0, 120) + '…'
+    /*
+     * 「这条 @ 的是别人吗」必须在**替换之前**判定 ——
+     * 替换之后 text 里已经没有 `@\d`，再测就永远是 false 了。
+     */
+    const hasAtRaw = /@\d{5,12}/.test(text)
+    /*
+     * 把 `@3039392113` 这种裸号换成可读的名字。
+     *
+     * 决策层看到的文本和生成层一样，也会出现裸 QQ 号 ——
+     * 模型不知道那是谁，更不知道哪个号是己方。
+     * 用本批消息里出现过的 sender→senderName 建映射；
+     * 等于己方 id 的标「@己方」，其余标「@他人」。
+     */
+    const selfId2 = String(input.self?.id ?? input.self?.userId ?? '')
+    text = text.replace(/@(\d{5,12})/g, (all, id) => {
+      const sid = String(id)
+      if (selfId2 && sid === selfId2) return '@己方'
+      const hit = msgs.find((x) => String(x.sender ?? '') === sid && x.senderName)
+      return hit ? `@${hit.senderName}` : '@某人'
+    })
     const flags = []
     if (m.mentionsMe) flags.push('@己方')
+    /*
+     * ⚠️ 必须显式标出「@的是别人」。
+     *
+     * 原来只有 `@己方` 一个标记，所以 `@2129024700`（别人）在模型眼里
+     * 和普通消息没区别，它照样判「该接」—— 实测就翻了车：
+     * 群友 @ 别人，机器人抢答「玩啥啊，先说清楚」。
+     *
+     * rule 决策器里有这条判据（`atOthers`），但配置是 `order=[model→rule]`，
+     * model 先跑就把它绕过去了。所以在 model 的输入里也标出来。
+     */
+    if (!m.isMe && !m.mentionsMe && hasAtRaw) flags.push('@他人')
     if (m.isMe) flags.push('己方发言')
     const flag = flags.length > 0 ? `[${flags.join('、')}]` : ''
     return `${who}${flag}: ${text}`
@@ -155,6 +186,8 @@ reply（满足任一）：
 wait（满足任一）：
 - 他人在互相交谈，未涉及己方，但话题己方可以参与
 - 己方刚发言不久，再次发言会显得刷屏
+- **消息标了「@他人」—— @ 的不是己方**（哪怕问句也一样：
+  「@小明 你吃了吗」是在问小明，不是在问己方）
 
 stop（满足任一）：
 - 话题与己方完全无关（他人私事、工作汇报、技术争论）

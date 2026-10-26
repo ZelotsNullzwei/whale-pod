@@ -197,5 +197,58 @@ await ok('讨钱发送失败 → 不记账（留给下次）', async () => {
   assert.equal(state.begCount, 0, '失败不该占用今天的次数')
 })
 
+// ── 讨钱失败后要让位给发言 ────────────────────────────────────
+await ok('讨钱失败 → 同一轮里发言顶上', async () => {
+  const state = new ProactiveState()
+  const calls = { beg: 0, speak: 0 }
+  const s = new ProactiveScheduler({
+    cfg: { enabled: true, idleMinutes: 45, cooldownMinutes: 180, maxPerDay: 3, hours: [0, 24] },
+    begCfg: { enabled: true, checkIntervalMinutes: 60, maxPerDay: 3 },
+    state,
+    now: () => at(10).getTime(),
+    checkBalance: async () => false,          // 余额查不到 / 正常
+    onBeg: async () => { calls.beg++; return false },
+    onSpeak: async () => { calls.speak++; return true },
+    scopes: () => ['group:1'],
+    idleMs: () => 999 * 60_000,
+  })
+  await s.tick(at(10))
+  assert.equal(calls.beg, 0, '余额不低不该真讨')
+  assert.equal(calls.speak, 1, '讨钱没做成时发言要顶上')
+})
+
+await ok('讨钱真的发出去了 → 同一轮不再发言', async () => {
+  const state = new ProactiveState()
+  const calls = { beg: 0, speak: 0 }
+  const s = new ProactiveScheduler({
+    cfg: { enabled: true, idleMinutes: 45, cooldownMinutes: 180, maxPerDay: 3, hours: [0, 24] },
+    begCfg: { enabled: true, checkIntervalMinutes: 60, maxPerDay: 3 },
+    state,
+    now: () => at(10).getTime(),
+    checkBalance: async () => true,
+    onBeg: async () => { calls.beg++; return true },
+    onSpeak: async () => { calls.speak++; return true },
+    scopes: () => ['group:1'],
+    idleMs: () => 999 * 60_000,
+  })
+  await s.tick(at(10))
+  assert.equal(calls.beg, 1)
+  assert.equal(calls.speak, 0, '同一轮只做一件事，避免像刷屏')
+})
+
+await ok('planSpeak 单独判断可用', () => {
+  const state = new ProactiveState()
+  const s = new ProactiveScheduler({
+    cfg: { enabled: true, idleMinutes: 45, cooldownMinutes: 180, maxPerDay: 3, hours: [0, 24] },
+    begCfg: { enabled: false },
+    state,
+    onSpeak: async () => true,
+    scopes: () => ['group:1'],
+    idleMs: () => 999 * 60_000,
+  })
+  assert.equal(s.planSpeak(at(10)).ok, true)
+  assert.match(s.planSpeak(at(10)).reason, /可以发言/)
+})
+
 console.log(`\n通过 ${pass} / 失败 ${fail}`)
 process.exit(fail === 0 ? 0 : 1)

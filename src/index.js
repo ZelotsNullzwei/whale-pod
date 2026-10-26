@@ -452,7 +452,23 @@ export async function main(argv = process.argv.slice(2)) {
     }).catch(() => { })
 
     // ── 7. 记忆 + 人格 ────────────────────────────────────────
-    const memory = new MemoryStore(cfg.memory?.short ?? {})
+    /*
+     * 短期记忆也落盘（memory-short.json）。
+     *
+     * 原来它是纯内存的，重启即清零 —— 调试期间重启频繁时，
+     * 「我刚说了要去吃饭」这种当下状态会丢，用户体感就是断片。
+     * `dir` 跟长期记忆用同一个配置（`memory.dir`），留空则跟 home。
+     */
+    const memoryDir = typeof cfg.memory?.dir === 'string' && cfg.memory.dir.trim()
+      ? cfg.memory.dir.trim()
+      : store.home
+    const memory = new MemoryStore({
+      ...(cfg.memory?.short ?? {}),
+      dir: memoryDir,
+      log,
+    })
+    memory.load()
+    log.info(`短期记忆：${memory.file ? `落盘于 ${memory.file}` : '纯内存（未配置目录）'}`)
     const persona = new PersonaStore({
       home: store.home,
       active: cfg.persona?.active ?? 'default',
@@ -611,6 +627,13 @@ export async function main(argv = process.argv.slice(2)) {
       const bridge = new QQBridge({
         cfg: {
           ...cfg.qq,
+          /*
+           * 主动行为的两块配置在**顶层**（不在 qq 里）——
+           * 这里必须显式带上，否则 bridge.cfg.proactive 是 undefined，
+           * 调度器 planSpeak 第一行就返回「发言未开启」，一次都不触发。
+           */
+          proactive: cfg.proactive,
+          beg: cfg.beg,
           fallback: cfg.gateway?.fallback,
           // 免费渠道优先级与开关：bridge 的 auto 模式靠它们决定"先试哪个"
           freeOrder: cfg.gateway?.freeProviders ?? [],
@@ -663,7 +686,26 @@ export async function main(argv = process.argv.slice(2)) {
        * 关掉就完全不启动对应逻辑（调度器内部也会再判一次配置）。
        */
       try {
-        bridge.startProactive({ home: store.home, fs, memoryOf: (scope) => memory.get(scope) })
+        bridge.startProactive({
+          home: store.home,
+          fs,
+          memoryOf: (scope) => memory.get(scope),
+          // 白名单为空（allowAllWhenEmpty）时，主动发言要靠「实际有记录的会话」
+          // 来枚举可发言目标 —— 否则永远拿不到 scope，一次都不会触发。
+          //
+          // 两个来源合并：短期（内存，重启清零）+ 长期（落盘，重启仍在）。
+          // 只靠短期的话，重启后一个会话都没有，主动发言永远不触发。
+          scopesSource: () => {
+            const out = new Set()
+            try {
+              for (const s of memory.scopes?.() ?? []) out.add(String(s))
+            } catch { /* ignore */ }
+            try {
+              for (const s of longMemory.scopes?.() ?? []) out.add(String(s))
+            } catch { /* ignore */ }
+            return [...out]
+          },
+        })
         shutdown.push(() => bridge.stopProactive())
       } catch (e) {
         log.warn?.(`主动行为调度器启动失败（不影响其它功能）：${String(e?.message ?? e)}`)

@@ -164,8 +164,18 @@ export class ProactiveScheduler {
    * @param {() => number} [opts.idleMs]            当前最长静默时长（毫秒）
    */
   constructor(opts) {
-    this.cfg = opts.cfg ?? {}
-    this.begCfg = opts.begCfg ?? {}
+    /*
+     * ⚠️ 不要在这里把配置**拷贝**下来。
+     *
+     * `bridge.cfg` 是启动时的快照，而设置页的热更新只推部分字段
+     * （allow/model/maxTokens/effort/reply），`proactive` 和 `beg` 不在其中。
+     * 更关键的是：如果这里 `this.cfg = opts.cfg` 存的是「值」而不是
+     * 「取配置的函数」，那么即使热更新推了，调度器看到的还是旧值。
+     *
+     * 所以这里存的是 **getter**，每轮 plan 时现取。
+     */
+    this._cfgSrc = typeof opts.cfgSource === 'function' ? opts.cfgSource : () => (opts.cfg ?? {})
+    this._begCfgSrc = typeof opts.begCfgSource === 'function' ? opts.begCfgSource : () => (opts.begCfg ?? {})
     this.state = opts.state
     this._now = opts.now ?? (() => Date.now())
     this.log = opts.log ?? {}
@@ -177,6 +187,12 @@ export class ProactiveScheduler {
     this._timer = null
     this._busy = false
   }
+
+  /** 实时读 proactive 配置（每次现取，不吃启动快照）。 */
+  get cfg() { return this._cfgSrc() ?? {} }
+
+  /** 实时读 beg 配置。 */
+  get begCfg() { return this._begCfgSrc() ?? {} }
 
   /**
    * 跑一轮判断。**纯逻辑，不发消息**（除非回调真的发了）。
@@ -220,7 +236,16 @@ export class ProactiveScheduler {
     // 讨钱优先：它是「有实际用处的」；主动发言是锦上添花，让路。
     if (wantBeg) return { beg: true, speak: false, reason: '余额检查到期' }
     if (wantSpeak) return { beg: false, speak: true, reason: '群里安静够久了' }
-    return { beg: false, speak: false, reason: '条件不满足' }
+
+    /*
+     * 都不满足时，把每一项的实际值打进 reason ——
+     * 只说「条件不满足」的话，排查得靠猜，而猜错过好几次。
+     */
+    const sp = this.planSpeak(now)
+    const begWhy = this.begCfg.enabled !== true
+      ? '讨钱未开启'
+      : (!this.checkBalance ? '没注入查余额' : `讨钱：${Math.round((t - this.state.lastBalanceCheckAt) / 60_000)} 分钟前查过`)
+    return { beg: false, speak: false, reason: `${begWhy}；发言：${sp.reason}` }
   }
 
   /** 执行一轮（plan + 真的去做）。 */
@@ -229,8 +254,23 @@ export class ProactiveScheduler {
     this._busy = true
     try {
       const p = this.plan(now)
-      if (p.beg) await this._doBeg(now)
-      else if (p.speak) await this._doSpeak(now)
+      // 每轮都留一行判断结果 —— 不打印的话「为什么没触发」只能靠猜。
+      // 用 info 而不是 debug：默认日志级别会把 debug 过滤掉。
+      this.log.info?.(`proactive：plan → ${p.reason}`)
+      if (p.beg) {
+        const didBeg = await this._doBeg(now)
+        /*
+         * 讨钱没做成（余额查不到 / 余额正常 / 没有白名单群）时，
+         * **同一轮里让发言顶上** —— 否则每次到点都先跑讨钱，
+         * 而讨钱因为没配 searchKey 必然失败，发言就永远轮不到。
+         */
+        if (!didBeg && this.cfg.enabled === true && this.onSpeak) {
+          const sp = this.planSpeak(now)
+          if (sp.ok) await this._doSpeak(now)
+        }
+      } else if (p.speak) {
+        await this._doSpeak(now)
+      }
     } catch (e) {
       this.log.warn?.(`proactive：执行出错（忽略）— ${String(e?.message ?? e)}`)
     } finally {
@@ -238,20 +278,59 @@ export class ProactiveScheduler {
     }
   }
 
+  /**
+   * 单独判断「现在能不能发言」。
+   *
+   * 抽出来是为了在讨钱失败时复用 —— 否则那段条件得写两遍。
+   *
+   * @param {Date} now
+   * @returns {{ok:boolean, reason:string}}
+   */
+  planSpeak(now = new Date()) {
+    const t = now.getTime()
+    if (this.cfg.enabled !== true || !this.onSpeak) return { ok: false, reason: '发言未开启' }
+    if (!inActiveHours(this.cfg.hours, now)) return { ok: false, reason: '不在时段' }
+    const idleNeed = Math.max(1, Number(this.cfg.idleMinutes ?? 45)) * 60_000
+    const cooldown = Math.max(1, Number(this.cfg.cooldownMinutes ?? 180)) * 60_000
+    const left = Math.max(0, Number(this.cfg.maxPerDay ?? 3) - this.state.speakCount)
+    if (left <= 0) return { ok: false, reason: '今日已说满' }
+    if (t - this.state.lastSpeakAt < cooldown) return { ok: false, reason: '冷却中' }
+    const idle = this.idleMs()
+    const idleMin = idle === Infinity ? '∞' : Math.round(idle / 60_000)
+    if (!(idle >= idleNeed)) {
+      // 「还不够安静」必须带数字 —— 不说数值等于没说，排查只能靠猜。
+      return {
+        ok: false,
+        reason: `还不够安静（静默 ${idleMin} 分钟 / 需要 ${Math.round(idleNeed / 60_000)}）`,
+      }
+    }
+    const scopeList = this.scopes()
+    if (scopeList.length === 0) return { ok: false, reason: '没有可发言的会话' }
+    return { ok: true, reason: `可以发言（静默 ${idleMin} 分钟，${scopeList.length} 个会话）` }
+  }
+
+  /**
+   * 跑一次讨钱。
+   *
+   * @param {Date} now
+   * @returns {Promise<boolean>} 真的发出去了才 true
+   */
   async _doBeg(now) {
     const t = now.getTime()
     this.state.lastBalanceCheckAt = t
     try {
       const low = await this.checkBalance()
       if (!low) {
-        this.log.info?.('proactive：余额正常，不用讨')
-        return
+        this.log.info?.('proactive：余额正常或查不到，不用讨')
+        return false
       }
       const ok = await this.onBeg()
       if (ok) {
         this.state.begCount += 1
         this.state.lastBegAt = t
+        return true
       }
+      return false
     } finally {
       this.state.save()
     }

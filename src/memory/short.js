@@ -10,6 +10,9 @@
  *     也防止把超长历史塞进 LLM 请求。
  */
 
+import fs from 'node:fs'
+import path from 'node:path'
+
 /**
  * 一条消息。
  *
@@ -104,6 +107,8 @@ export class ConversationMemory {
       // 否则别人插一句话就把我的"连说"状态抹掉，容易变成刷屏。
     }
     this._trim()
+    // 通知宿主「有变化，该落盘了」（由 MemoryStore 挂上，见 get()）
+    this.onChange?.()
     return m
   }
 
@@ -215,6 +220,110 @@ export class MemoryStore {
     this.sessions = new Map()
     /** 会话作用域 -> 最近活跃时间 */
     this._lru = new Map()
+    this.log = opts.log ?? {}
+    /*
+     * 落盘位置。
+     *
+     * ## 为什么要落盘（2026-10-26 改）
+     *
+     * 原来短期记忆是**纯内存**的，重启即清零。设计初衷是「上下文价值
+     * 随时间衰减，真正要持久化的是长期摘要」—— 这在**正常运行**时成立。
+     *
+     * 但它忽略了一件事：**调试期间重启很频繁**。实测症状：
+     *   19:04:38  它: 我去吃饭了
+     *   19:05:13  它: 吃了，白米饭两碗
+     *   19:20:14  （重启）
+     *   19:26:55  你: 我还没吃
+     *   19:27:19  你: 你不是才吃过吗
+     *   19:27:32  它: 谁说我吃过了……      ← 真的忘了
+     *
+     * 「我去吃饭了」这种**当下状态**，长期摘要不会记（它只概括人和关系），
+     * 于是重启后就断片了。用户体感就是「聊天接不上」。
+     *
+     * 所以加一层落盘。文件很小（几十条 × 几百字），且有 `maxAgeMs`
+     * 兜底 —— 太老的记录载入后会被 `_trim()` 丢掉。
+     */
+    const dir = typeof opts.dir === 'string' && opts.dir.trim()
+      ? opts.dir.trim()
+      : String(opts.home ?? '')
+    this.file = dir ? path.join(dir, 'memory-short.json') : null
+    this._dirty = false
+    this._saveTimer = null
+  }
+
+  /**
+   * 从磁盘恢复。
+   *
+   * 只恢复**消息本身**，不恢复 `consecutiveTurns` / `pendingSinceMyLast`
+   * 这类「当前轮次状态」—— 那些描述的是「正在进行的一轮对话」，
+   * 重启后重新开始更合理。
+   */
+  load() {
+    if (!this.file || !fs.existsSync(this.file)) return
+    try {
+      const j = JSON.parse(fs.readFileSync(this.file, 'utf8'))
+      const now = Date.now()
+      const maxAge = Number(this.shortCfg.maxAgeMs ?? 0) || 6 * 3600_000
+      for (const [scope, v] of Object.entries(j.sessions ?? {})) {
+        const m = new ConversationMemory({
+          maxMessages: this.shortCfg.maxMessages,
+          maxChars: this.shortCfg.maxChars,
+          maxAgeMs: this.shortCfg.maxAgeMs,
+        })
+        for (const raw of (v.messages ?? [])) {
+          const at = Number(raw?.at ?? 0)
+          // 过期的直接不要（省得载入一堆早就没用的历史）
+          if (maxAge > 0 && at > 0 && now - at > maxAge) continue
+          m.messages.push(makeMessage(raw))
+        }
+        m.totalPushed = Number(v.totalPushed ?? m.messages.length)
+        m.myLastAt = Number(v.myLastAt ?? 0)
+        m._trim()
+        if (m.messages.length > 0) this.sessions.set(scope, m)
+      }
+      this.log.info?.(`短期记忆：载入 ${this.sessions.size} 个会话`)
+    } catch (e) {
+      this.log.warn?.(`短期记忆载入失败（忽略）：${String(e?.message ?? e)}`)
+    }
+  }
+
+  /** 落盘（原子写：先写 tmp 再 rename，避免半截文件）。 */
+  save() {
+    if (!this.file) return
+    try {
+      fs.mkdirSync(path.dirname(this.file), { recursive: true })
+      const sessions = {}
+      for (const [scope, m] of this.sessions) {
+        if (!m.messages.length) continue
+        sessions[scope] = {
+          totalPushed: m.totalPushed,
+          myLastAt: m.myLastAt,
+          messages: m.messages,
+        }
+      }
+      const tmp = `${this.file}.${process.pid}.tmp`
+      fs.writeFileSync(tmp, JSON.stringify({ version: 1, sessions }) + '\n', { mode: 0o600 })
+      fs.renameSync(tmp, this.file)
+      this._dirty = false
+    } catch (e) {
+      this.log.warn?.(`短期记忆落盘失败：${String(e?.message ?? e)}`)
+    }
+  }
+
+  /**
+   * 标脏 + 延迟落盘。
+   *
+   * 每条消息都同步写盘太浪费（群聊一秒好几条）。这里 2 秒合并一次，
+   * 进程退出前由宿主调 `save()` 兜底。
+   */
+  touch() {
+    this._dirty = true
+    if (this._saveTimer) return
+    this._saveTimer = setTimeout(() => {
+      this._saveTimer = null
+      if (this._dirty) this.save()
+    }, 2000)
+    this._saveTimer.unref?.()
   }
 
   /**
@@ -228,6 +337,14 @@ export class MemoryStore {
         maxChars: this.shortCfg.maxChars,
         maxAgeMs: this.shortCfg.maxAgeMs,
       })
+      /*
+       * 挂落盘回调。
+       *
+       * 在**这里**挂而不是在 `push` 调用点改，是因为 push 有 4 处
+       * （收到消息 / 自己回复 / 主动发言 / 表情回应），
+       * 漏一处那条消息就不会落盘，而且很难发现。
+       */
+      m.onChange = () => this.touch()
       this.sessions.set(scope, m)
     }
     this._lru.set(scope, Date.now())
@@ -294,5 +411,7 @@ export class MemoryStore {
   clear(scope) {
     if (scope) this.sessions.delete(scope)
     else this.sessions.clear()
+    // 清空也要落盘 —— 否则重启后又被"恢复"回来，用户会以为清不掉
+    this.save()
   }
 }

@@ -56,14 +56,73 @@ export const SILENT = '[SILENT]'
  * @param {object} [o.lastRoute]     本次路由 {provider,model}，兜底用
  * @returns {Array} messages
  */
-export function buildChatMessages({ system, history = [], imageCache = new Map(), lastRoute = null }) {
+export function buildChatMessages({ system, history = [], imageCache = new Map(), lastRoute = null, selfId = '', selfName = '' }) {
+  /*
+   * 把历史里出现的 `@<QQ号>` 换成昵称，并标出「这是你自己」。
+   *
+   * ## 为什么需要
+   *
+   * onebot 解析 at 段时只能拿到 QQ 号，所以消息文本里是 `@3039392113`。
+   * 模型看到一串裸数字根本不知道在 @ 谁 —— 实测回过
+   * 「艾特谁呢，数字直接甩出来了」，而且认不出那个号就是自己。
+   *
+   * 这里用**历史消息里已经出现过的 sender/senderName** 建一张映射表，
+   * 能查到的换成昵称；查不到但等于 selfId 的标成「@你(机器人)」。
+   */
+  const nameOf = new Map()
+  for (const m of history) {
+    const id = String(m.sender ?? '').trim()
+    const name = String(m.senderName ?? '').trim()
+    if (id && name) nameOf.set(id, name)
+  }
+  const atToName = (text) => String(text ?? '').replace(/@(\d{5,12})/g, (all, id) => {
+    if (selfId && String(id) === String(selfId)) return `@${selfName || '你'}（就是你自己）`
+    const n = nameOf.get(String(id))
+    return n ? `@${n}` : `@某群友(${id})`
+  })
+  /*
+   * 给每条历史标上**相对时间**。
+   *
+   * ## 为什么需要
+   *
+   * 没有时间戳时，模型不知道两条消息隔了多久 —— 实测翻过车：
+   *   它: ……我又不去医院 / 我去吃饭了      (19:04:38)
+   *   你: [表情包]
+   *   它: [表情包]
+   *   你: 吃
+   *   它: 吃了，白米饭两碗                  (19:05:13)
+   *
+   * 「我去吃饭了」到「吃了，白米饭两碗」只隔 **35 秒**，
+   * 但它以为过了很久，把「吃」（=去吧）读成「你吃了吗」，
+   * 回出一个自相矛盾的答案。
+   */
+  const nowMs = Date.now()
+  const fmtGap = (ms) => {
+    const sec = Math.max(0, Math.round(ms / 1000))
+    if (sec < 60) return sec + ' 秒'
+    const min = Math.round(sec / 60)
+    if (min < 60) return min + ' 分钟'
+    const hr = Math.floor(min / 60)
+    if (hr < 24) return hr + ' 小时'
+    return Math.floor(hr / 24) + ' 天'
+  }
+  // 最新一条给「X 前」（相对现在）；更早的给「+X」（距下一条）
+  const stamp = (m, idx) => {
+    const at = Number(m.at ?? 0)
+    if (!at) return ''
+    if (idx === history.length - 1) return '（' + fmtGap(nowMs - at) + '前）'
+    const nextAt = Number(history[idx + 1]?.at ?? 0)
+    const gap = nextAt > at ? nextAt - at : 0
+    return gap > 0 ? '（+' + fmtGap(gap) + '）' : ''
+  }
+
   return [
     // ① system 用数组块（见上）
     { role: 'system', content: [{ type: 'text', text: String(system ?? '') }] },
-    ...history.map((m) => {
+    ...history.map((m, idx) => {
       const mine = m.isMe
       const label = mine ? '' : `${m.senderName}: `
-      const blocks = [{ type: 'text', text: label + describeMedia(m) }]
+      const blocks = [{ type: 'text', text: stamp(m, idx) + label + atToName(describeMedia(m)) }]
       for (const ref of (m.images ?? [])) {
         const blk = imageCache.get(ref)
         if (blk) blocks.push(blk)
@@ -102,10 +161,33 @@ export function buildChatMessages({ system, history = [], imageCache = new Map()
  */
 export function describeMedia(m) {
   let t = String(m?.text ?? '')
-  // 表情包：换成一句话说明 + 明确的行为指引
+  /*
+   * 表情包：换成一句话说明 + **明确的行为指引**。
+   *
+   * ⚠️ 光说「（对方发了一个表情包）」不够 —— 模型会去猜「这表情什么意思」
+   *    「图里是谁」，然后一本正经地分析起来。实测它回过「这谁啊，又不是本鱼」。
+   *
+   *    所以这里直接把「该怎么应对」写进去：别解读、别描述画面，
+   *    回个表情或者接一句情绪话就够了。真人就是这么反应的。
+   */
   t = t.replace(/\[表情包(?::([^\]]*))?\]/g, (_all, name) => {
     const n = String(name ?? '').trim()
-    return n ? `（对方发了一个表情包，关于「${n}」）` : '（对方发了一个表情包）'
+    /*
+     * 表情包：说明是表情，并要求「有字就先看字」。
+     *
+     * ⚠️ 光说「（对方发了一个表情包）」不够 —— 模型会去猜「这表情什么意思」
+     *    「图里是谁」，然后一本正经地分析起来。实测它回过「这谁啊，又不是本鱼」。
+     *
+     *    但也不能一刀切说「别解读」：很多表情包**上面的字才是重点**
+     *    （「这用户发的啥啊」「典型的碳基思维」这类梗图）。
+     *    所以：有字读字，没字才按情绪接。
+     */
+    const tail = '表情包上如果**有字**，那个字通常才是重点（梗图、吐槽、'
+      + '「这用户发的啥啊」这类），把意思点出来；没字就回个表情或接一句情绪话，'
+      + '别去猜图里画的是谁'
+    return n
+      ? `（对方发了一个表情包，关于「${n}」。${tail}）`
+      : `（对方发了一个表情包。${tail}）`
   })
   // 系统小黄脸：保留 id（情绪信号），但说明它是表情
   t = t.replace(/\[表情:(\d+)\]/g, (_all, id) => `（对方发了个QQ表情，id=${id}）`)
@@ -270,7 +352,72 @@ export function cleanModelText(raw) {
   //       后者会误伤正常括号（「（笑）」「（认真脸）」）。
   s = s.replace(/[（(]\s*对方发了[^）)]*[）)]/g, '')
 
+  /*
+   * ⑨ 剥掉 emoji。
+   *
+   * ## 为什么要用代码拦，而不是只靠提示词
+   *
+   * 人格里写着「不要用 emoji」，但实测模型照样一条带好几个 ——
+   * 提示词约束不住这类高频低成本的输出习惯。
+   *
+   * emoji 放出去观感上很假（尤其连着几条都带），而 QQ 的表情体系
+   * 本来就有 `[表情:N]` / `[表情包]` 两种受控写法，够用了。
+   * 所以直接在输出侧清掉，只留那两种标记。
+   *
+   * 覆盖范围：常见 emoji 区段（杂项符号、装饰符号、Emoji 面板、
+   * 交通符号、补充符号、以及肤色/组合修饰符）。
+   * 清完如果只剩空白，返回空串由调用方处理（当成"什么都没说"）。
+   */
+  s = stripEmoji(s)
+  // 清掉 emoji 后可能留下多余空格（「好 😄」→「好 」），压一下
+  s = s.replace(/[ \t]{2,}/g, ' ').replace(/ +([，。！？、；：])/g, '$1')
+
   return s.trim()
+}
+
+/**
+ * 删掉文本里的 emoji（彩色小图标）。
+ *
+ * ## 为什么要用代码拦，而不是只靠提示词
+ *
+ * 人格里写着「不要用 emoji」，但模型照样一条带好几个 ——
+ * 提示词约束不住这种高频低成本的输出习惯。emoji 连着几条都带很假，
+ * 而 QQ 本来就有 `[表情:N]` / `[表情包]` 两种受控写法，够用了。
+ *
+ * ## 为什么不用正则
+ *
+ * `[\u1F300}-\u1FAFF}]` 这类写法要求 `u` 标志 + 花括号，
+ * 手写极易漏括号而静默失配（本文件就被这个坑过）。按**码点**判断
+ * 没有转义，读起来也直白。
+ *
+ * 保留中文标点、全角字符、以及 `[表情:N]` 这类方括号标记。
+ *
+ * @param {string} text
+ * @returns {string}
+ */
+export function stripEmoji(text) {
+  const s = String(text ?? '')
+  let out = ''
+  // for...of 按码点迭代，代理对（emoji）会作为一个整体取出
+  for (const ch of s) {
+    const cp = ch.codePointAt(0)
+    if (isEmojiCodePoint(cp)) continue
+    out += ch
+  }
+  return out
+}
+
+/** 这个码点是不是 emoji（含肤色修饰符、ZWJ、变体选择符）。 */
+function isEmojiCodePoint(cp) {
+  if (cp >= 0x1f000 && cp <= 0x1faff) return true   // 麻将/信封/补充符号/Emoji 面板/扩展A
+  if (cp >= 0x2600 && cp <= 0x27bf) return true     // 杂项符号 + 装饰符号
+  if (cp >= 0x2b00 && cp <= 0x2bff) return true     // 杂项符号与箭头（⭐⬆等）
+  if (cp >= 0x1f1e6 && cp <= 0x1f1ff) return true   // 区域指示符（国旗）
+  if (cp >= 0x2190 && cp <= 0x21ff) return true     // 箭头（模型爱拿来当装饰）
+  if (cp >= 0x2300 && cp <= 0x23ff) return true     // 技术符号（⌚⏰等）
+  if (cp >= 0x25a0 && cp <= 0x25ff) return true     // 几何图形（▪▫●）
+  if (cp === 0xfe0f || cp === 0x200d || cp === 0x20e3) return true  // 变体选择符 / ZWJ / 键帽
+  return false
 }
 
 /**
@@ -432,10 +579,83 @@ export class QQBridge {
     const file = opts.home ? `${opts.home}/proactive.json` : null
     const state = new ProactiveState({ file, fs: opts.fs ?? null })
     const memoryOf = opts.memoryOf ?? (() => null)
+    // 白名单为空时，scopes() 要靠「实际有记录的会话」来枚举 —— 由宿主注入。
+    if (typeof opts.scopesSource === 'function') this._scopesSource = opts.scopesSource
+
+    /**
+     * 判断某个会话「有没有过聊天」。
+     *
+     * ⚠️ 不能只看短期记忆 —— 它是纯内存的，重启后清零。
+     *    只查 `mem.recent(1)` 的话重启后所有会话都被过滤掉，
+     *    scopes() 返回空，主动发言永不触发。
+     *
+     *    长期记忆是落盘的（memory-long.json），重启后仍在，
+     *    所以「短期有消息 **或** 长期有摘要」都算有过聊天。
+     */
+    const hasHistory = (scope) => {
+      try {
+        if ((memoryOf(scope)?.recent?.(1)?.length ?? 0) > 0) return true
+      } catch { /* ignore */ }
+      try {
+        const summary = this.longMemory?.get?.(scope)?.summary
+        if (typeof summary === 'string' && summary.length > 0) return true
+      } catch { /* ignore */ }
+      return false
+    }
+
+    /**
+     * 计算「可以主动发言的会话」。
+     *
+     * 提取成独立函数是为了让 `idleMs` 也能用 —— 它比 scheduler 先创建，
+     * 拿不到 `this._proactive`。
+     *
+     * @returns {string[]}
+     */
+    const computeScopes = () => {
+      const out = []
+      const p = this.cfg.proactive ?? {}
+      if (p.inGroups !== false) {
+        const groups = (this.cfg.allow?.groups ?? []).map(String)
+        if (groups.length > 0) {
+          for (const g of groups) {
+            const scope = `group:${g}`
+            if (hasHistory(scope)) out.push(scope)
+          }
+        } else if (this.cfg.allow?.allowAllWhenEmpty === true) {
+          // 白名单为空但允许所有人用 —— 这时「可发言的群」就是**实际有记录的群**。
+          // 早先只遍历白名单，空数组时永远拿不到 scope，主动发言一次都不会触发。
+          for (const scope of this._knownScopes('group')) {
+            if (hasHistory(scope)) out.push(scope)
+          }
+        }
+      }
+      if (p.inPrivate === true) {
+        const users = (this.cfg.allow?.private ?? []).map(String)
+        if (users.length > 0) {
+          for (const u of users) {
+            const scope = `private:${u}`
+            if (hasHistory(scope)) out.push(scope)
+          }
+        } else if (this.cfg.allow?.allowAllWhenEmpty === true) {
+          for (const scope of this._knownScopes('private')) {
+            if (hasHistory(scope)) out.push(scope)
+          }
+        }
+      }
+      return out
+    }
 
     this._proactive = new ProactiveScheduler({
-      cfg: this.cfg.proactive ?? {},
-      begCfg: this.cfg.beg ?? {},
+      /*
+       * 传 **getter** 而不是值。
+       *
+       * `this.cfg` 是 bridge 启动时的配置快照，而设置页热更新只推
+       * allow/model/maxTokens/effort/reply —— `proactive` 和 `beg` 不在其中。
+       * 传值的话调度器永远看到 undefined，planSpeak 第一行就返回
+       * 「发言未开启」，一次都不会触发。
+       */
+      cfgSource: () => this.cfg.proactive ?? {},
+      begCfgSource: () => this.cfg.beg ?? {},
       state,
       log: this.log,
       // 查余额：只有偏低才返回 true
@@ -474,30 +694,42 @@ export class QQBridge {
         const id = scope.slice(scope.indexOf(':') + 1)
         return await this._speakUp({ scope, kind, groupId: kind === 'group' ? id : null, userId: kind === 'private' ? id : null }, mem)
       },
-      // 可主动发言的会话：白名单内、并且最近有聊天记录的
-      scopes: () => {
-        const out = []
-        const p = this.cfg.proactive ?? {}
-        if (p.inGroups !== false) {
-          for (const g of (this.cfg.allow?.groups ?? [])) {
-            const scope = `group:${g}`
-            if (memoryOf(scope)?.recent?.(1)?.length > 0) out.push(scope)
-          }
-        }
-        if (p.inPrivate === true) {
-          for (const u of (this.cfg.allow?.private ?? [])) {
-            const scope = `private:${u}`
-            if (memoryOf(scope)?.recent?.(1)?.length > 0) out.push(scope)
-          }
-        }
-        return out
-      },
+      // 可主动发言的会话：白名单内、并且「有过聊天」（短期或长期任一有记录即可）
+      // 可主动发言的会话（逻辑见上方 computeScopes）
+      scopes: computeScopes,
       // 静默时长 = 所有候选会话里「距上次有人说话」的最大值
       idleMs: () => {
+        /*
+         * ⚠️ 不能用 `this._proactive.scopes()` —— `this._proactive` 在本函数
+         *    返回之后才赋值，首次 tick 时还是 undefined，list 恒为空，
+         *    idleMs 恒为 0，永远「还不够安静」。
+         *
+         * 这里用闭包捕获的 `computeScopes`，它是本作用域内的函数，
+         * 构造时就已经可用。
+         */
+        let list = []
+        try {
+          list = computeScopes()
+        } catch { /* 拿不到就当没有 */ }
+        if (list.length === 0) return Infinity  // 没有会话 = 没人在说话 = 安静了无限久
         let max = 0
-        for (const scope of this._proactiveScopes()) {
+        for (const scope of list) {
           const mem = memoryOf(scope)
           const since = mem?.sinceLastMessage?.()
+          /*
+           * ⚠️ `Infinity` 不能直接当「安静了无限久」用。
+           *
+           * `sinceLastMessage()` 在**短期记忆为空**时返回 Infinity ——
+           * 但短期记忆是纯内存的，重启后必然为空。于是重启后第一轮
+           * idleMs 就是 Infinity，立刻触发主动发言，而此时群里
+           * 明明 8 秒前还有人说话（实测：17:55:28 判定「安静够久」，
+           * 上一句是 17:55:20）。
+           *
+           * 正确语义：**这一路取不到任何时间戳时，视为「不知道」，返回 0**
+           * （= 不算安静），让调度器保守地不开口。
+           * 「真的安静了很久」这种情况，短期记忆里有消息、时间戳是真实的，
+           * 走下面的 Number.isFinite 分支自然能算出来。
+           */
           if (Number.isFinite(since) && since > max) max = since
         }
         return max
@@ -514,13 +746,79 @@ export class QQBridge {
     this._proactive = null
   }
 
-  /** 主动说一句：不走决策层，直接生成 + 发送。 */
+  /**
+   * 列出「实际有聊天记录」的会话，按 kind 过滤。
+   *
+   * 白名单为空（`allowAllWhenEmpty: true`）时，主动发言需要知道**跟谁说过话** ——
+   * 白名单那套拿不到任何 scope，等于永远不开口。
+   *
+   * @param {'group'|'private'} kind
+   * @returns {string[]}
+   */
+  _knownScopes(kind) {
+    const prefix = `${kind}:`
+    return this._allScopes()
+      .map(String)
+      .filter((s) => s.startsWith(prefix))
+  }
+
+  /** 所有已知会话（跨 kind）。子类/宿主可通过 `_scopesSource` 覆盖。 */
+  _allScopes() {
+    try {
+      if (typeof this._scopesSource === 'function') {
+        const v = this._scopesSource()
+        if (Array.isArray(v)) return v
+      }
+    } catch { /* 拿不到就当没有 */ }
+    return []
+  }
+
+  /**
+   * 主动说一句：不走决策层，直接生成 + 发送。
+   *
+   * ## 为什么要把 msg 补全
+   *
+   * `_generate` 里用到三个字段：
+   *   msg.scope   → 取长期记忆
+   *   msg.sender  → 查人物档案（按 QQ 号认人）
+   *   msg.text    → 判断要不要联网搜
+   *
+   * 早先只传了 scope/kind/id，另外两个是 undefined —— 人物档案查不到、
+   * 搜索判断也失效。这里补成一条「空消息」：text 为空表示「没有新内容，
+   * 你自己找话说」。
+   */
   async _speakUp(msg, mem) {
     try {
       const scene = await this.sceneOf(msg)
       const self = { id: this.selfId, name: this.selfName }
-      const text = await this._generate(msg, mem, scene, self)
-      const clean = String(text ?? '').trim()
+      // 私聊时 sender 就是对方；群里没有具体发言人，留空。
+      const full = {
+        ...msg,
+        sender: msg.kind === 'private' ? String(msg.userId ?? '') : '',
+        senderName: '',
+        /*
+         * ⚠️ `text` 必须留空，不能写指令。
+         *
+         * `_generate` 里有一句 `needsFreshInfo(msg.text)` —— 它会把 text 当成
+         * **用户说的话**去判断要不要联网搜索。早先这里写了一句
+         * 「（没有人在说话。你自己找个话头开口…）」，结果被当成话题
+         * 直接拿去搜了（日志实测：需要联网（提到具体名字「没人说话」））。
+         *
+         * 场景说明改由 `speakHint` 单独传给 `_generate`，不进 text。
+         */
+        text: '',
+        speakHint: '（没有人在说话。你自己找个话头开口 —— 接着刚才的话题、'
+          + '或者随便聊点什么都行。不要说"没人说话"这种话，直接说你想说的。）',
+        isMe: false,
+        at: Date.now(),
+      }
+      /*
+       * ⚠️ `_generate` 返回 `{ text, cover }`，不是字符串。
+       *    早先直接 `String(text)` 会把整个对象转成 "[object Object]"
+       *    发出去 —— 实测就是这样翻的车。
+       */
+      const gen = await this._generate(full, mem, scene, self)
+      const clean = String(gen?.text ?? '').trim()
       if (!clean || clean.includes(SILENT)) {
         this.log.info?.('proactive：模型选择不说')
         return false
@@ -1242,6 +1540,29 @@ export class QQBridge {
     const withImg = [...recent].reverse().find((m) => !m.isMe && (m.images ?? []).length > 0)
     if (!withImg) return out
 
+    /*
+     * ⚠️ 表情包不附图。
+     *
+     * 表情包是**情绪信号**，不是「内容」。真人收到一个表情包，不会去分析
+     * 图里画的是谁 —— 但模型拿到图就会这么做。
+     *
+     * 实测症状：用户发了个表情包，它回「这谁啊，又不是本鱼」，
+     * 然后一路在「这是谁」的误会里打转（「就是你个头」「……」）。
+     * 真人群友发个表情包，没人会问「这谁啊」。
+     *
+     * 只发文字说明（「（对方发了一个表情包）」）就够了 —— 它知道对方
+     * 在用表情表达情绪，回个表情或接一句情绪话即可。
+     *
+     * 判据：这条消息**全部**是表情包（`stickerRefs` 覆盖了 `images`）。
+     * 混着真实图片的（比如截图 + 文字）仍然附图。
+     */
+    const stickerCount = (withImg.stickerRefs ?? []).length
+    const imageCount = (withImg.images ?? []).length
+    if (stickerCount > 0 && stickerCount >= imageCount) {
+      this.log.info?.(`bridge：这条只有表情包（${stickerCount} 个）—— 不附图，只给文字说明`)
+      return out
+    }
+
     const refs = withImg.images.slice(0, this.cfg.reply?.maxImages ?? 2)
     // ⚠️ 这几条以前是 debug 级 —— 图坏了日志里什么都看不到，用户只能猜。
     //    图片属于"看不见就是功能坏了"的东西，失败必须留下痕迹。
@@ -1600,21 +1921,63 @@ export class QQBridge {
     // 为什么要单独提醒：人格里虽然有通用规则，但模型很健忘 ——
     // 实测收到猫的表情包时它还是会回「这猫是被吓到了还是被丑到了」。
     // 在这条请求里明确点一下，效果好得多（而且不占常驻 prompt 的篇幅）。
-    const lastText = String(mem.recent(1)[0]?.text ?? '')
-    const mediaHint = /\[表情包|\[表情:|\[图片\]/.test(lastText)
-      ? (this.cfg.reply?.mediaHint !== false
-        ? '## 这条消息带了表情/图片\n' +
-          '对方发的是表情或图 —— **不要描述图里有什么**（对方自己知道）。\n' +
-          '直接**回一个表情**（[表情:N] 或 [表情包]）最自然，' +
-          '最多再配几个字的语气词（「哈哈」「确实」「绷不住了」）。\n' +
-          '只有在图里确实有**对方不知道的新信息**（新闻、数字、别人的聊天记录）时，才谈内容。\n' +
-          // ⚠️ 这条是 2026-10-19 补的，实测踩过：模型会把消息里那句
-          //    「（对方发了个QQ表情，id=20）」**当成正文复述出来**，
-          //    群友看到的是一句机械旁白。那段括号是系统给它看的注解，
-          //    不是对话内容 —— 必须明说，否则它会照抄。
-          '⚠️ 消息里形如「（对方发了个QQ表情，id=20）」的括号是**系统注解**，' +
-          '告诉你对方发了什么，**不是对话内容**。绝对不要把它写进你的回复里。'
-        : '')
+    /*
+     * 图/表情的处理指引。
+     *
+     * ## 为什么要分「有文字」和「没文字」
+     *
+     * 真人反应是不一样的：
+     *   · 对方 @ 你 / 说了句话 + 发张图 → 先回应**那句话**，图只是补充
+     *   · 对方只发了张图、什么都没说   → 才对图本身做反应
+     *
+     * 实测反例：群友 @ 它 + 同时发图，它张口就分析图（「右下角那个
+     * 1亿DeepSeek云钱包是什么鬼」），完全没理「被 @」这件事 ——
+     * 观感上像没听见人叫他。
+     *
+     * ## 图里的文字优先
+     *
+     * 截图、聊天记录、表情包上的字，往往才是**对方想给你看的东西**。
+     * 所以要求它先读字、把文字里的兴趣点提炼出来；没有字才退回去看画面。
+     */
+    const lastMsg = mem.recent(1)[0]
+    const lastText = String(lastMsg?.text ?? '')
+    const hasMedia = /\[表情包|\[表情:|\[图片\]/.test(lastText)
+    // 去掉媒体标记后还剩不剩文字（@ 段也算文字）
+    const textPart = lastText
+      .replace(/\[表情包(?::[^\]]*)?\]/g, '')
+      .replace(/\[表情:\d+\]/g, '')
+      .replace(/\[图片\]/g, '')
+      .replace(/\s+/g, '')
+      .trim()
+    const hasWords = textPart.length > 0
+    const mediaHint = hasMedia && this.cfg.reply?.mediaHint !== false
+      ? (hasWords
+        // ── 有文字：文字优先，图只作补充 ──────────────────────
+        ? `## 这条消息既有文字又有图
+
+**先回应文字部分**（对方说了什么、@ 了谁、问了什么）—— 这才是重点。
+图是补充材料，不要一上来就分析画面。
+
+如果图里有**文字**（截图、聊天记录、表情包上的字），先把它读出来、
+提炼出**对方可能想给你看的那个点**（某个数字、某句话、某个荒诞之处），
+用一句话点出来就够了。
+
+⚠️ 不要复述画面细节（「图里有个穿裙子的女孩」这种没人要听）。
+⚠️ 消息里形如「（对方发了个QQ表情，id=20）」的括号是**系统注解**，
+不是对话内容，绝对不要写进回复里。`
+        // ── 只有图：才以图为主 ────────────────────────────────
+        : `## 这条消息只有图/表情
+
+先看图里有没有**文字**（截图、聊天记录、表情包上的字）——
+有的话把那个意思点出来，那通常就是对方想给你看的。
+
+**没有文字就是斗图。** 斗图的规矩是**只回表情，不打字** ——
+直接发一个 [表情包]（或 [表情:N]）。
+不要配「哈哈」「确实」这种字，那等于斗图认输，而且很出戏。
+
+⚠️ 不要描述画面内容（对方自己知道图里是什么）。
+⚠️ 消息里形如「（对方发了个QQ表情，id=20）」的括号是**系统注解**，
+不是对话内容，绝对不要写进回复里。`)
       : ''
 
     const system = this.persona.buildSystemPrompt({
@@ -1626,6 +1989,14 @@ export class QQBridge {
       extras: [
         searchContext,
         mediaHint,
+        /*
+         * 主动发言的场景说明。
+         *
+         * ⚠️ 不能塞进 `msg.text` —— 那里会被 `needsFreshInfo()` 当成
+         *    用户说的话去判断要不要联网搜索（实测把「你自己找个话头开口」
+         *    整句拿去搜了）。所以单独走 extras。
+         */
+        msg.speakHint ?? '',
         // 余额偏低时的提醒。
         //
         // ⚠️ 不写"请充值"这种客服腔 —— 大肥鱼的人格里有「Token 是脑力口粮」
@@ -1692,6 +2063,9 @@ export class QQBridge {
       history,
       imageCache,
       lastRoute: this._lastRoute,
+      // 用于把 `@3039392113` 这种裸号换成昵称，并标出「这是你自己」
+      selfId: this.selfId ?? '',
+      selfName: this.selfName ?? '',
     })
 
     // 走网关的路由（免费优先）

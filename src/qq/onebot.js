@@ -857,7 +857,21 @@ export function parseMessage(raw) {
       if (type === 'at') {
         const qq = String(data.qq ?? data.user_id ?? '')
         if (qq) mentions.push(qq)
-        return data.qq === 'all' ? '@全体成员' : `@${qq}`
+        if (data.qq === 'all') return '@全体成员'
+        /*
+         * ⚠️ 不要直接输出 `@3039392113` 这种纯 QQ 号。
+         *
+         * 模型看到的对话里如果全是数字，它根本不知道在 @ 谁 ——
+         * 实测它回过「艾特谁呢，数字直接甩出来了」，而且认不出
+         * `@3039392113` 就是自己。
+         *
+         * 优先用 at 段里带的昵称（部分实现会给 `name`），
+         * 没有就退回「@某人」+ 号（至少不带一串裸数字）。
+         * bridge 层会再用记忆里的 senderName 做一次替换。
+         */
+        const atName = String(data.name ?? data.card ?? '').trim()
+        if (atName) return `@${atName}`
+        return qq ? `@某群友(${qq})` : '@某人'
       }
       if (type === 'reply') {
         // CQ 码形式也要取（与数组分支同理，见那里的说明）
@@ -909,7 +923,12 @@ export function parseMessage(raw) {
       else if (t === 'at') {
         const qq = String(d.qq ?? d.user_id ?? '')
         if (qq) mentions.push(qq)
-        text += d.qq === 'all' ? '@全体成员' : `@${qq}`
+        if (d.qq === 'all') text += '@全体成员'
+        else {
+          // 同 CQ 码分支：优先昵称，别把裸 QQ 号甩给模型。
+          const atName = String(d.name ?? d.card ?? '').trim()
+          text += atName ? `@${atName}` : (qq ? `@某群友(${qq})` : '@某人')
+        }
       } else if (t === 'image') {
         // 同 CQ 码分支：NapCat 不同配置下给的字段不一样，多兜几个。
         //   url       —— enableLocalFile2Url=true 时的 http 地址（最理想）
