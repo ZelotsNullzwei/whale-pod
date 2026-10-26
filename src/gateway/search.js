@@ -43,6 +43,8 @@
  *
  * 文档：https://api-docs.deepseek.com/zh-cn/guides/search
  */
+import { fetchWithProxyFallback } from '../net.js'
+
 const SEARCH_ENDPOINT = process.env.DEEPSEEK_SEARCH_ENDPOINT
   ? String(process.env.DEEPSEEK_SEARCH_ENDPOINT)
   : 'https://api.deepseek.com/v1/tools/search'
@@ -296,7 +298,7 @@ export async function webSearch(o) {
   // ── ① 调 Search API ───────────────────────────────────────
   let results = []
   try {
-    const res = await fetch(SEARCH_ENDPOINT, {
+    const res = await fetchWithProxyFallback(SEARCH_ENDPOINT, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${o.apiKey}`,
@@ -354,7 +356,7 @@ export async function webSearch(o) {
   let inTok = 0
   let outTok = 0
   try {
-    const res = await fetch(SUMMARIZE_ENDPOINT, {
+    const res = await fetchWithProxyFallback(SUMMARIZE_ENDPOINT, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -420,7 +422,7 @@ export async function webSearch(o) {
 export async function checkBalance(apiKey, timeoutMs = 8000) {
   if (!apiKey) return { ok: false, cny: 0, available: false, error: '没有凭据' }
   try {
-    const res = await fetch('https://api.deepseek.com/user/balance', {
+    const res = await fetchWithProxyFallback('https://api.deepseek.com/user/balance', {
       headers: { Authorization: `Bearer ${apiKey}` },
       signal: AbortSignal.timeout(timeoutMs),
     })
@@ -468,7 +470,7 @@ export async function pickCoverImage(sources, opts = {}) {
     const ctrl = new AbortController()
     const timer = setTimeout(() => ctrl.abort(), timeoutMs)
     try {
-      const res = await fetch(s.url, {
+      const res = await fetchWithProxyFallback(s.url, {
         signal: ctrl.signal,
         redirect: 'follow',
         headers: {
