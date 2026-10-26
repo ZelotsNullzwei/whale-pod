@@ -235,6 +235,35 @@ export class MemoryStore {
     return [...this.sessions.keys()]
   }
 
+  /**
+   * 每个会话的明细（供 Web UI 的「记忆管理」列表用）。
+   *
+   * ⚠️ 2026-10-25 新增。原来 `/memory` 接口只回 `scopes()`（**字符串数组**），
+   * 但前端读的是 `row.scope` / `row.messages` —— 对字符串取 `.scope` 得到
+   * undefined，界面显示成「**undefined 条消息**」，看着像记忆功能没生效。
+   *
+   * 实际上记忆一直在正常工作（2 个会话 17 条消息都在）。
+   *
+   * 这里返回对象数组，前端就能显示「群 xxx：12 条消息」这种人话。
+   *
+   * @returns {Array<{scope:string, messages:number, summarized:number, unsummarized:number}>}
+   */
+  scopeDetails() {
+    const out = []
+    for (const [scope, session] of this.sessions) {
+      const msgs = session.messages ?? []
+      out.push({
+        scope,
+        messages: msgs.length,
+        summarized: Number(session.summarizedCount ?? 0),
+        unsummarized: Math.max(0, msgs.length - Number(session.summarizedCount ?? 0)),
+      })
+    }
+    // 消息多的排前面 —— 用户最想清的通常是聊得最久的那个
+    out.sort((a, b) => b.messages - a.messages)
+    return out
+  }
+
   /** 汇总统计（供 Web UI）。 */
   stats() {
     let totalMessages = 0
