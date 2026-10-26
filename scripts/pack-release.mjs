@@ -1,7 +1,9 @@
 /**
- * 重新打包 v0.2.5 并上传到 GitHub Release。
+ * 打包到 dist/，供 GitHub Release 上传。
  *
- * 用法：node scripts/pack-release.mjs
+ * 用法：
+ *   node scripts/pack-release.mjs          # 用 package.json 的 version
+ *   node scripts/pack-release.mjs 0.3.0    # 指定版本号
  *
  * 为什么写这个脚本：上一版是手动打包的，没有可复现的流程。
  * 重发 Release 需要「同样的结构、同样的排除规则」，手打容易漏东西。
@@ -17,10 +19,16 @@ import { execFileSync } from 'node:child_process'
 
 const REPO = 'D:/DSH WorkSpace/whale-pod'
 const OUT_DIR = path.join(REPO, 'dist')
-const ZIP = path.join(OUT_DIR, 'dsh-whale-pod-v0.2.5.zip')
+
+// ⚠️ 版本号不要写死。写死过一次（v0.2.5），下次升级漏改就会
+//    产出「0.3.0 的代码、0.2.5 的文件名」，人和脚本都会被误导。
+const PKG = JSON.parse(fs.readFileSync(path.join(REPO, 'package.json'), 'utf8'))
+const VERSION = String(process.argv[2] ?? PKG.version).replace(/^v/, '')
+const ZIP = path.join(OUT_DIR, `dsh-whale-pod-v${VERSION}.zip`)
 
 fs.mkdirSync(OUT_DIR, { recursive: true })
 if (fs.existsSync(ZIP)) fs.unlinkSync(ZIP)
+console.log(`版本：v${VERSION}`)
 
 /**
  * 用 git archive 打包 —— 比手写白名单可靠：

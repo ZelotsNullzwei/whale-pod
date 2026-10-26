@@ -122,6 +122,27 @@ window.__ModuleLoader__.load({
       'mem.dirReset': '已恢复默认目录',
       'mem.dirDefault': '恢复默认',
         'mem.hint': '按会话清空短期上下文；摘要属长期记忆',
+    'active.title': '主动行为',
+    'active.hint': '控制它什么时候自己开口',
+    'active.on': '已开启',
+    'active.off': '已关闭',
+    'active.saved': '已保存',
+    'active.speak': '空闲主动发言',
+    'active.speakToggle': '允许它自己开口',
+    'active.speakToggleHint': '群里安静够久时冒个泡。默认关闭 —— 时间没选好容易刷屏',
+    'active.speakOn': '已开启：安静够了它会自己说话',
+    'active.speakOff': '已关闭：只在被叫到时才回',
+    'active.idle': '静默多少分钟后开口',
+    'active.idleHint': '单位：分钟',
+    'active.maxPerDay': '每天最多说几次',
+    'active.maxPerDayHint': '防止刷屏',
+    'active.beg': '自动讨钱',
+    'active.begToggle': '余额低时主动开口',
+    'active.begToggleHint': '定期查搜索余额，低于阈值就讨一次',
+    'active.begOn': '已开启：余额低会主动说',
+    'active.begOff': '已关闭：不会主动讨钱',
+    'active.begEvery': '多久查一次余额',
+    'active.begEveryHint': '单位：分钟',
         'mem.empty': '还没有活跃会话',
         'mem.scope': '会话',
         'mem.messages': '条消息',
@@ -359,6 +380,27 @@ window.__ModuleLoader__.load({
 
         'mem.title': 'Memory management',
         'mem.hint': 'Clear short-term context per session; summaries are long-term memory',
+    'active.title': 'Proactive behavior',
+    'active.hint': 'Control when it speaks up on its own',
+    'active.on': 'On',
+    'active.off': 'Off',
+    'active.saved': 'Saved',
+    'active.speak': 'Idle speak-up',
+    'active.speakToggle': 'Let it start a conversation',
+    'active.speakToggleHint': 'Speaks up when the group goes quiet. Off by default',
+    'active.speakOn': 'On: it will chime in when things go quiet',
+    'active.speakOff': 'Off: it only replies when addressed',
+    'active.idle': 'Minutes of silence before speaking',
+    'active.idleHint': 'minutes',
+    'active.maxPerDay': 'Max times per day',
+    'active.maxPerDayHint': 'prevents flooding',
+    'active.beg': 'Auto begging',
+    'active.begToggle': 'Ask when balance is low',
+    'active.begToggleHint': 'Checks search balance periodically',
+    'active.begOn': 'On: will mention low balance',
+    'active.begOff': 'Off: no automatic begging',
+    'active.begEvery': 'Check interval',
+    'active.begEveryHint': 'minutes',
         'mem.empty': 'No active sessions yet',
         'mem.scope': 'Session',
         'mem.messages': 'messages',
@@ -2398,6 +2440,9 @@ window.__ModuleLoader__.load({
         // ── 记忆管理（按会话）───────────────────────────────────────────
         h(MemorySection, { t, setToast }),
 
+        // ── 主动行为（讨钱 / 空闲发言）────────────────────────────────
+        h(ActiveSection, { t, setToast }),
+
         // ── 人格编辑器 ──────────────────────────────────────────────────
         h(PersonaSection, { t, setToast, status }),
 
@@ -2405,6 +2450,121 @@ window.__ModuleLoader__.load({
         h(LogSection, { t }))
     }
 
+    /**
+     * 主动行为：空闲发言 / 自动讨钱。
+     *
+     * ## 为什么单独一节
+     *
+     * 这两个功能各有独立开关，且**默认不同**（讨钱开、主动发言关）。
+     * 塞进「记忆管理」会让人以为它们和记忆有关，其实是两件独立的事。
+     *
+     * ## 为什么把当前状态写出来
+     *
+     * 主动发言是最容易招人烦的功能 —— 时间没选好就是刷屏。
+     * 光给一个复选框，用户不知道它到底会不会突然冒泡，所以标题旁边
+     * 直接标「已开启 / 已关闭」。
+     */
+    function ActiveSection({ t, setToast }) {
+      const cfg = usePoll(() => api('/config'), [], 15000)
+      const [busy, setBusy] = useState(false)
+
+      const pro = cfg.data?.config?.proactive ?? {}
+      const beg = cfg.data?.config?.beg ?? {}
+
+      /** 提交扁平点号路径（后端 /config 按这个格式吃）。 */
+      const save = async (patch, okText) => {
+        setBusy(true)
+        try {
+          await api('/config', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(patch),
+          })
+          cfg.reload()
+          setToast({ ok: true, text: okText })
+        } catch (error) {
+          setToast({ ok: false, text: String(error?.message ?? error) })
+        } finally { setBusy(false) }
+      }
+
+      const row = (label, hintText, control) => h('div', {
+        className: 'gd_row',
+        style: { padding: '10px 0', alignItems: 'flex-start' },
+      },
+        h('div', { className: 'gd_rowlabel', style: { flex: 1 } },
+          h('b', null, label),
+          hintText ? h('i', { style: { opacity: 0.75 } }, hintText) : null),
+        control)
+
+      const head = (label, on) => h('div', {
+        className: 'gd_rowlabel', style: { marginBottom: '6px' },
+      },
+        h('b', null, label),
+        h('i', null, on ? t('active.on') : t('active.off')))
+
+      return h(Section, { title: t('active.title'), hint: t('active.hint') },
+        cfg.status === 'error'
+          ? h('p', { className: 'gd_err' }, cfg.error)
+          : h('div', null,
+            h('div', { style: { marginBottom: '18px' } },
+              head(t('active.speak'), pro.enabled === true),
+              row(
+                t('active.speakToggle'),
+                t('active.speakToggleHint'),
+                h(Toggle, {
+                  checked: pro.enabled === true,
+                  disabled: busy,
+                  onChange: (on) => save(
+                    { 'proactive.enabled': on },
+                    on ? t('active.speakOn') : t('active.speakOff'),
+                  ),
+                }),
+              ),
+              row(
+                t('active.idle'),
+                t('active.idleHint'),
+                h(TextField, {
+                  value: pro.idleMinutes ?? 45,
+                  numeric: true,
+                  disabled: busy,
+                  onCommit: (v) => save({ 'proactive.idleMinutes': Number(v) || 45 }, t('active.saved')),
+                }),
+              ),
+              row(
+                t('active.maxPerDay'),
+                t('active.maxPerDayHint'),
+                h(TextField, {
+                  value: pro.maxPerDay ?? 3,
+                  numeric: true,
+                  disabled: busy,
+                  onCommit: (v) => save({ 'proactive.maxPerDay': Number(v) || 3 }, t('active.saved')),
+                }),
+              )),
+            h('div', null,
+              head(t('active.beg'), beg.enabled === true),
+              row(
+                t('active.begToggle'),
+                t('active.begToggleHint'),
+                h(Toggle, {
+                  checked: beg.enabled === true,
+                  disabled: busy,
+                  onChange: (on) => save(
+                    { 'beg.enabled': on },
+                    on ? t('active.begOn') : t('active.begOff'),
+                  ),
+                }),
+              ),
+              row(
+                t('active.begEvery'),
+                t('active.begEveryHint'),
+                h(TextField, {
+                  value: beg.checkIntervalMinutes ?? 60,
+                  numeric: true,
+                  disabled: busy,
+                  onCommit: (v) => save({ 'beg.checkIntervalMinutes': Number(v) || 60 }, t('active.saved')),
+                }),
+              ))))
+    }
     /**
      * 记忆管理：列出活跃会话（短期）与长期摘要，支持按会话清空。
      * 8 秒轮询；全部清空的核弹按钮留在上面的决策区（那是"低频且危险"的）。
