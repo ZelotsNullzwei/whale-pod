@@ -104,6 +104,7 @@ window.__ModuleLoader__.load({
         'dash.searchNo': '联网不可用',
         'dash.openSettings': '打开设置',
         'dash.autoRefresh': '每 4 秒自动刷新',
+      'dash.activeDays': '活跃',
         'dash.refreshHint': '立即刷新状态与消息',
         'dash.backendOff': '后端未运行 —— 点下面「一键启动」',
         'set.backendOffHint': '后端进程还没起来，所以这里读不到配置。回侧栏点「一键启动」，起来后这里会自动刷新。',
@@ -112,10 +113,6 @@ window.__ModuleLoader__.load({
         'usage.calls': '模型调用',
         'usage.tokens': 'tokens 用量',
         'usage.cost': '折合费用（估算）',
-      'usage.activeDays': '活跃天数',
-      'usage.todayLabel': '今天',
-      'usage.todayActive': '有聊',
-      'usage.todayIdle': '没聊',
 
         'mem.title': '记忆管理',
         'mem.hint': '按会话清空短期上下文；摘要属长期记忆',
@@ -341,6 +338,7 @@ window.__ModuleLoader__.load({
         'dash.searchNo': 'Web search unavailable',
         'dash.openSettings': 'Open settings',
         'dash.autoRefresh': 'Auto-refresh every 4s',
+      'dash.activeDays': 'Active',
         'dash.refreshHint': 'Refresh status and messages now',
         'dash.backendOff': 'Backend is not running — press Start below',
         'set.backendOffHint': 'The backend process is not up yet, so settings cannot be read here. Go to the sidebar and press Start; this page refreshes once it is running.',
@@ -349,10 +347,6 @@ window.__ModuleLoader__.load({
         'usage.calls': 'Model calls',
         'usage.tokens': 'Token usage',
         'usage.cost': 'Estimated cost',
-      'usage.activeDays': 'Active days',
-      'usage.todayLabel': 'Today',
-      'usage.todayActive': 'Chatted',
-      'usage.todayIdle': 'Quiet',
 
         'mem.title': 'Memory management',
         'mem.hint': 'Clear short-term context per session; summaries are long-term memory',
@@ -702,6 +696,8 @@ window.__ModuleLoader__.load({
 .gd_titleicon{flex:none;width:28px;height:28px;border-radius:7px;object-fit:cover;display:block}
 /* 标题行右侧：刷新按钮 + 自动刷新提示 */
 .gd_headright{display:flex;align-items:center;gap:7px;flex:none}
+/* 右上角两行小字：自动刷新提示 + 活跃天数 */
+.gd_headmini{display:flex;flex-direction:column;align-items:flex-end;gap:1px;line-height:1.25}
 .gd_refresh{width:24px;height:24px;padding:0;display:flex;align-items:center;justify-content:center;border-radius:7px;border:1px solid var(--dsw-alias-border-l2);background:transparent;color:var(--dsw-alias-label-secondary);font-size:13px;line-height:1;cursor:pointer;font-family:inherit;transition:border-color .12s,color .12s}
 .gd_refresh:hover:not(:disabled){border-color:var(--dsw-alias-state-business-primary);color:var(--dsw-alias-label-primary)}
 .gd_refresh:disabled{opacity:.5;cursor:default}
@@ -718,8 +714,6 @@ window.__ModuleLoader__.load({
 @container (min-width:560px){.gd_grid{grid-template-columns:repeat(4,minmax(0,1fr))}}
 /* 用量卡片只有 3 项，宽屏下用三列而不是四列 */
 @container (min-width:560px){.gd_grid.gd_grid3{grid-template-columns:repeat(3,minmax(0,1fr))}}
-/* 活跃天数卡片固定两列（就 2 项，宽屏也别摊成 4 列） */
-@container (min-width:560px){.gd_grid.gd_grid2{grid-template-columns:repeat(2,minmax(0,1fr))}}
 .gd_kv{display:flex;flex-direction:column;gap:2px;padding:8px 10px;border-radius:10px;border:1px solid var(--dsw-alias-border-l1);background:color-mix(in srgb,var(--dsw-alias-bg-layer-1) 55%,transparent);min-width:0}
 .gd_kv b{font-size:12px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .gd_kv span{color:var(--dsw-alias-label-tertiary);font-size:10.5px;letter-spacing:.2px}
@@ -1113,6 +1107,8 @@ window.__ModuleLoader__.load({
       const { t } = props
       const status = usePoll(() => api('/status'), [], 4000)
       const qq = usePoll(() => api('/qq'), [], 4000)
+      // 活跃天数随 /status 一起回来（不用多开一个轮询）
+      const activity = status.data?.activity ?? null
       const [busy, setBusy] = useState(false)
       const [flash, setFlash] = useState(null)
 
@@ -1199,7 +1195,7 @@ window.__ModuleLoader__.load({
                 height: 28,
               }),
               h('h2', { className: 'gd_titletext' }, t('title'))),
-            // 右侧：刷新按钮 + 自动刷新提示
+            // 右侧：刷新按钮 + 自动刷新提示 + 活跃天数
             h('div', { className: 'gd_headright' },
               h('button', {
                 className: `gd_refresh${busy ? ' spin' : ''}`,
@@ -1210,7 +1206,12 @@ window.__ModuleLoader__.load({
                   status.reload(); qq.reload()
                 },
               }, '⟳'),
-              h('span', { className: 'gd_sidehint' }, t('dash.autoRefresh')))),
+              h('div', { className: 'gd_headmini' },
+                h('span', { className: 'gd_sidehint' }, t('dash.autoRefresh')),
+                // 活跃天数：纯文字，不占卡片位置。
+                // 从今天起累计，没有历史数据时显示 0。
+                activity ? h('span', { className: 'gd_sidehint' },
+                  `${t('dash.activeDays')} ${activity.totalDays ?? 0}`) : null))),
           // ⚠️ 用 `||` 而不是 `&&`。
           //
           //    status 和 qq 是两个独立的轮询（间隔都是 4s，但启动时刻差几十毫秒），
@@ -1875,17 +1876,6 @@ window.__ModuleLoader__.load({
       return `≈¥${y.toFixed(4)}`
     }
       return h('div', null,
-        // 活跃天数单独一行放在最前 —— 它是「陪伴感」指标，比调用次数更该先看到。
-        // 只有真跑过（有消息往来）才显示，避免刚装好时出现一个 0 天。
-        act !== null && act !== undefined && (act.totalDays ?? 0) > 0
-          ? h('div', { className: 'gd_grid gd_grid2' },
-              h('div', { className: 'gd_count' },
-                h('b', null, `${act.totalDays}`),
-                h('span', null, t('usage.activeDays'))),
-              h('div', { className: 'gd_count' },
-                h('b', null, act.todayActive ? t('usage.todayActive') : t('usage.todayIdle')),
-                h('span', null, t('usage.todayLabel'))))
-          : null,
         h('div', { className: 'gd_grid gd_grid3' },
           h('div', { className: 'gd_count' }, h('b', null, String(u.calls ?? 0)), h('span', null, t('usage.calls'))),
           h('div', { className: 'gd_count' }, h('b', null, fmtTok(u.tokensTotal ?? 0)), h('span', null, t('usage.tokens'))),
