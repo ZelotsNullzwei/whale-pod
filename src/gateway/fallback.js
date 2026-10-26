@@ -338,7 +338,7 @@ function buildHeaders(ch) {
 }
 
 function buildBody(ch, o) {
-  const model = o.model || ch.model || ch.models?.[0]
+  const model = stripProviderPrefix(o.model || ch.model || ch.models?.[0], ch.id)
   const body = {
     model,
     messages: toOpenAiMessages(o.messages ?? []),
@@ -354,6 +354,39 @@ function buildBody(ch, o) {
     body.tool_choice = o.toolChoice ?? 'auto'
   }
   return body
+}
+
+/**
+ * 去掉模型名前面的 `<channelId>/` 前缀。
+ *
+ * ## 为什么需要这一步
+ *
+ * WhalePod 内部统一用 `provider/model` 形式命名模型（见 router.js 的解析），
+ * 例如 `magpie/auto/deepseek-v4.1-flash`。**provider 前缀只用于本地路由**，
+ * 发给上游时必须剥掉 —— 上游只认 `auto/deepseek-v4.1-flash`。
+ *
+ * ⚠️ 2026-10-25 实测踩到：不剥的话 magpie 直接回
+ *    `magpie knows no model "magpie/auto/deepseek-v4.1-flash";
+ *     did you mean auto/deepseek-v4.1-flash?`
+ *    而且报的是 **HTTP 404**，日志里看着像「渠道配错了」，实际是模型名多了前缀。
+ *
+ * 只在**前缀确实等于本渠道 id** 时才剥。`auto/deepseek-v4.1-flash` 这种
+ * 模型名本身自带斜杠的（上游就是这么命名的）必须原样保留，
+ * 否则会把 `auto` 当成 provider 削掉，变成 `deepseek-v4.1-flash`，一样 404。
+ *
+ * @param {string} model
+ * @param {string} channelId
+ * @returns {string}
+ */
+export function stripProviderPrefix(model, channelId) {
+  const m = String(model ?? '')
+  const id = String(channelId ?? '')
+  if (!m || !id) return m
+  const prefix = id + '/'
+  if (m.startsWith(prefix) && m.length > prefix.length) {
+    return m.slice(prefix.length)
+  }
+  return m
 }
 
 /** dsh 的 block 数组 → OpenAI 的 content（支持文本与图片）。 */
@@ -393,7 +426,7 @@ function blocksToText(content) {
 }
 
 /** block 数组 → OpenAI 的 content（字符串或 parts 数组）。 */
-function blocksToOpenAiContent(content) {
+function blocksToOpenAiContent(content, opts = {}) {
   if (typeof content === 'string') return content
   if (!Array.isArray(content) || content.length === 0) return ''
   const parts = []
@@ -403,8 +436,28 @@ function blocksToOpenAiContent(content) {
       parts.push({ type: 'text', text: String(b.text ?? '') })
     } else if (b?.type === 'image' || b?.type === 'image_url') {
       allText = false
-      const url = b.url ?? b.image_url?.url ?? b.data
-      parts.push({ type: 'image_url', image_url: { url: String(url ?? '') } })
+      // ⚠️ dsh-llm 的 ImageBlock 是**内容寻址引用**：
+      //      { type:'image', attachment:{ attachmentId:'sha256:…', mediaType, width, height } }
+      //    它**没有 url / data 字段**。
+      //
+      //    原来这里只认 `b.url ?? b.image_url?.url ?? b.data` —— 对 ImageBlock
+      //    全是 undefined，于是拼出 `{ url: "undefined" }` 发给上游。
+      //    上游收到一个地址叫 "undefined" 的图，自然什么也看不见。
+      //
+      //    症状（2026-10-25 实测）：日志一切正常（「已附图 1 张」「本条带 1 张图
+      //    发给 magpie/…」），机器人却答非所问 —— 因为它压根没收到图。
+      //
+      //    现在按优先级取值：直接的 url/data → `b.dataUrl`（附件层一并带上的
+      //    原始 data URL，见 gateway/attachment.js）。
+      const direct = b.url ?? b.image_url?.url ?? b.data ?? b.dataUrl
+      if (direct) {
+        parts.push({ type: 'image_url', image_url: { url: String(direct) } })
+      } else if (b.attachment && typeof opts.readImage === 'function') {
+        const resolved = opts.readImage(b.attachment)
+        if (resolved) {
+          parts.push({ type: 'image_url', image_url: { url: resolved } })
+        }
+      }
     }
   }
   // 全是文本就退回字符串（兼容性最好，很多端点不认 parts 数组）

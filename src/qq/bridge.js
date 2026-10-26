@@ -1083,6 +1083,27 @@ export class QQBridge {
     this.log.info?.(`bridge：发现 ${refs.length} 张待取图片（引用示例：${String(refs[0]).slice(0, 80)}）`)
     for (const ref of refs) {
       try {
+        // ── 图片缓存 ──────────────────────────────────────────
+        //
+        // ⚠️ 2026-10-25 实测：同一张图在一次对话里被下载了 **28 次**。
+        //
+        // 原因：`_collectImages` 每次都从 `recent` 里找"最近一条带图的
+        // 消息"，而那"最近一条"在用户连发几条文字后**不会变** —— 于是
+        // 每条新消息都把同一批图重新 fetch + 入库一遍。
+        //
+        // 代价很实在：一次下载 1~2 MB，还要多等一次网络往返，
+        // 用户体感就是"回得慢"。而且 QQ 的图片 URL 带 rkey，过期后
+        // 重复下载还会失败。
+        //
+        // 这里按 ref 缓存 5 分钟。key 用 ref 字符串本身（QQ 的 fileid
+        // 在会话内唯一）；超时后重新下载，避免 rkey 过期后一直用坏数据。
+        const cacheKey = String(ref)
+        const cached = this._imgCache?.get(cacheKey)
+        if (cached && Date.now() - cached.at < 5 * 60 * 1000) {
+          out.set(ref, cached.block)
+          continue
+        }
+
         const img = await this.onebot.fetchImage(ref, { maxBytes: this.cfg.reply?.maxImageBytes ?? 4 * 1024 * 1024 })
         if (!img?.dataUrl) {
           this.log.warn?.(`bridge：取图失败（拿不到可下载内容）ref=${String(ref).slice(0, 80)}`)
@@ -1096,8 +1117,18 @@ export class QQBridge {
           mediaType: m[1],
           name: 'qq-image',
         })
-        if (block) out.set(ref, block)
-        else this.log.warn?.('bridge：图片入库失败（makeImageBlock 返回空）')
+        if (block) {
+          out.set(ref, block)
+          // 缓存：只留最近 20 张，避免长会话把内存吃满
+          if (!this._imgCache) this._imgCache = new Map()
+          this._imgCache.set(cacheKey, { at: Date.now(), block })
+          if (this._imgCache.size > 20) {
+            const oldest = this._imgCache.keys().next().value
+            this._imgCache.delete(oldest)
+          }
+        } else {
+          this.log.warn?.('bridge：图片入库失败（makeImageBlock 返回空）')
+        }
       } catch (e) {
         this.log.warn?.(`bridge：取图失败 — ${String(e?.message ?? e)}`)
       }

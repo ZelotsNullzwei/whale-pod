@@ -37,6 +37,7 @@ import * as runtime from './qq/runtime.js'
 import * as modes from './qq/modes.js'
 import { MODES, astrbotGatewayHint } from './qq/modes.js'
 import { createFallbackLlm } from './gateway/fallback.js'
+import { createAttachmentSupport } from './gateway/attachment.js'
 import { discoverDshProviders, resolveChannelKey } from './gateway/dsh-providers.js'
 
 /**
@@ -359,6 +360,34 @@ export async function main(argv = process.argv.slice(2)) {
       }
       llm = fallbackLlm
       log.info(`LLM：仅用自备渠道（${selfChannels.map((c) => c.id).join(', ')}）`)
+
+      // ── 多模态：给自备渠道也挂上 attachment ──────────────────────
+      //
+      // ⚠️ 2026-10-25 修。原来 makeImageBlock 只在 createLlmGateway()
+      //    里定义，而那个函数只有**找到 channel-pack** 时才调用
+      //    （上面的 if (appDir && pack)）。于是走自备渠道的人
+      //    （比如 magpie）完全用不了图片，日志只说
+      //    「attachment 服务不可用，图片降级为文字」—— 看着像 DSH 装坏了。
+      //
+      //    实际上 attachmentStore 只依赖 appDir + dshHome，
+      //    跟 channel-pack 毫无关系。所以这里独立挂一份。
+      if (appDir && typeof llm.makeImageBlock !== 'function') {
+        try {
+          const att = await createAttachmentSupport({
+            appDir,
+            ctx: { },
+            dshHome: process.env.DSH_HOME ?? path.join(process.env.USERPROFILE ?? '', '.dsh'),
+            log: (lv, msg) => log[lv]?.(msg),
+          })
+          if (att.makeImageBlock) {
+            llm.makeImageBlock = att.makeImageBlock
+            state.attachmentStore = att.attachmentStore
+            log.info('LLM：自备渠道已支持图片（多模态）')
+          }
+        } catch (e) {
+          log.warn?.(`LLM：挂载 attachment 失败（图片会降级成文字）：${String(e?.message ?? e)}`)
+        }
+      }
       // ⚠️ 无 DSH 时，配置里那条默认付费兜底（deepseek-official）是个幽灵：
       //    它排在自备渠道后面却被当成有效候选，失败信息还会盖住真正的原因。
       //    这里在启动时把它关掉，只用用户显式配置的渠道。
@@ -397,7 +426,13 @@ export async function main(argv = process.argv.slice(2)) {
     }
 
     // ── 5. 决策层 ─────────────────────────────────────────────
-    const decision = createDecisionLayer(cfg.decision ?? {}, { credentials: creds, log })
+    const decision = createDecisionLayer(cfg.decision ?? {}, {
+      credentials: creds,
+      log,
+      // 模型自主判断要用它。没传的话 provider 会在 probe() 里报「没有 LLM」
+      // 并降级到 rule，不会让启动失败。
+      llm,
+    })
     state.decision = decision
     log.info(`决策层：order = [${decision.order.join(' → ')}]，阈值 ${decision.threshold}`)
     // 启动时探一次可用性，把问题尽早暴露在日志里
