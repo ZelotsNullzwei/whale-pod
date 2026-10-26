@@ -6,6 +6,7 @@
 
 <b>简体中文</b> | <a href="#english">English</a>
 
+![version](https://img.shields.io/badge/version-0.3.0-3B6FE0.svg)
 ![license](https://img.shields.io/badge/license-MIT-blue.svg)
 ![dsh](https://img.shields.io/badge/dsh-plugin-4B6BFB.svg)
 ![node](https://img.shields.io/badge/node-%E2%89%A522.19-339933.svg)
