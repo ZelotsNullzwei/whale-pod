@@ -104,7 +104,8 @@ window.__ModuleLoader__.load({
         'dash.searchNo': '联网不可用',
         'dash.openSettings': '打开设置',
         'dash.autoRefresh': '每 4 秒自动刷新',
-      'dash.activeDays': '活跃',
+      'dash.activeDays': '已活跃',
+      'dash.activeDaysUnit': '天',
         'dash.refreshHint': '立即刷新状态与消息',
         'dash.backendOff': '后端未运行 —— 点下面「一键启动」',
         'set.backendOffHint': '后端进程还没起来，所以这里读不到配置。回侧栏点「一键启动」，起来后这里会自动刷新。',
@@ -339,6 +340,7 @@ window.__ModuleLoader__.load({
         'dash.openSettings': 'Open settings',
         'dash.autoRefresh': 'Auto-refresh every 4s',
       'dash.activeDays': 'Active',
+      'dash.activeDaysUnit': 'd',
         'dash.refreshHint': 'Refresh status and messages now',
         'dash.backendOff': 'Backend is not running — press Start below',
         'set.backendOffHint': 'The backend process is not up yet, so settings cannot be read here. Go to the sidebar and press Start; this page refreshes once it is running.',
@@ -1211,7 +1213,7 @@ window.__ModuleLoader__.load({
                 // 活跃天数：纯文字，不占卡片位置。
                 // 从今天起累计，没有历史数据时显示 0。
                 activity ? h('span', { className: 'gd_sidehint' },
-                  `${t('dash.activeDays')} ${activity.totalDays ?? 0}`) : null))),
+                  `${t('dash.activeDays')} ${activity.totalDays ?? 0}${t('dash.activeDaysUnit')}`) : null))),
           // ⚠️ 用 `||` 而不是 `&&`。
           //
           //    status 和 qq 是两个独立的轮询（间隔都是 4s，但启动时刻差几十毫秒），
