@@ -21,6 +21,23 @@ export function defaultHome() {
 export const DEFAULTS = {
   version: 1,
 
+  /**
+   * 随 DSH 启动时自动拉起 WhalePod。
+   *
+   * ⚠️ 这个字段放在 **WhalePod 自己的 config.json** 里，不是插件的
+   *    cordis.patch.yml —— 因为设置页（`/api/whale-pod/config`）改的是
+   *    前者。插件那边也有一个同名 `autoStart`（插件 config），
+   *    两个都生效时按「**任一为 false 就手动**」处理，见 plugin/index.js。
+   *
+   * 为什么要这个开关：WhalePod 是 detached 进程，会一直占着 QQ 在线、
+   * 内存和端口。有人希望它跟着 DSH 生命走（DSH 不开就不跑），
+   * 有人希望它常驻（QQ 机器人本来就要 24 小时在线）。两种都合理。
+   *
+   * true  → DSH 启动时自动拉起（默认，和以前一样）
+   * false → 什么都不做，只在侧栏点「一键启动」时才起
+   */
+  autoStart: true,
+
   /** LLM 网关（对外 OpenAI 兼容） */
   gateway: {
     enabled: true,
