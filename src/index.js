@@ -461,6 +461,8 @@ export async function main(argv = process.argv.slice(2)) {
     const longMemory = new LongTermStore({
       cfg: cfg.memory?.long ?? {},
       home: store.home,
+      // 记忆可以单独放别处（memory.dir 为空时跟着 home）
+      dir: cfg.memory?.dir,
       log,
       summarize: async ({ messages, previous, scene, self }) => {
         const { SUMMARY_PROMPT } = await import('./memory/long.js')

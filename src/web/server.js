@@ -2074,6 +2074,9 @@ async function whalePodCompat(o) {  const { sub, method, url, req, res, json, re
           stats,
         },
         decision: { order: decision?.order ?? [], threshold: decision?.threshold ?? 0.5 },
+        // 活跃天数：真正有消息往来的日子（关机那天不算）。
+        // 侧栏右上角「已活跃 N 天」读这个字段。
+        activity: state.activity?.stats?.() ?? null,
         memory: memory?.stats?.() ?? null,
         persona: { active: persona?.active ?? null, list: persona?.list?.() ?? [] },
         gateway: {
@@ -2159,6 +2162,27 @@ async function whalePodCompat(o) {  const { sub, method, url, req, res, json, re
         } catch (e) {
           // 换失败不能让配置保存失败 —— 旧决策层还能用
           log.warn?.(`[whale-pod] 决策层热更新失败（继续用旧的）：${String(e?.message ?? e)}`)
+        }
+      }
+
+      // ── 记忆目录热更新 ────────────────────────────────────────────
+      //
+      // 改 `memory.dir` 不能只写盘 —— LongTermStore 的 `file` 是构造时
+      // 定死的，不重算就还在往旧路径写，用户以为搬成功了其实没有。
+      // 这里重算 `file` 并把已加载的数据落到新位置。
+      if (nested.memory && 'dir' in nested.memory && longMemory) {
+        try {
+          const raw = nested.memory.dir
+          const dir = typeof raw === 'string' && raw.trim() ? raw.trim() : null
+          const target = dir || store.home
+          if (target) {
+            longMemory.file = path.join(target, 'memory-long.json')
+            // 立刻写一次，让新路径上出现文件（否则要等到下次摘要）
+            longMemory.save?.()
+            log.info(`[whale-pod] 记忆目录已切换：${longMemory.file}`)
+          }
+        } catch (e) {
+          log.warn?.(`[whale-pod] 记忆目录切换失败（继续用旧的）：${String(e?.message ?? e)}`)
         }
       }
 
@@ -2317,6 +2341,15 @@ async function whalePodCompat(o) {  const { sub, method, url, req, res, json, re
         longMemory: longMemory?.stats?.() ?? null,
         // 长期摘要的会话列表（前端 longs 读这个）
         longScopes: longMemory?.listScopes?.() ?? [],
+        // 记忆落盘位置：设置页拿它显示当前目录 + 让用户改
+        storage: {
+          // 实际生效的文件路径（memory.dir 为空时 = <home>/memory-long.json）
+          file: longMemory?.file ?? null,
+          // 用户配置的目录（空 = 跟随数据目录）
+          dir: store.get().memory?.dir ?? '',
+          // 数据目录本身，界面上作为「默认」提示
+          home: store.home,
+        },
       })
     }
     if (sub === '/memory' && method === 'DELETE') {

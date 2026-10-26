@@ -116,6 +116,11 @@ window.__ModuleLoader__.load({
         'usage.cost': '折合费用（估算）',
 
         'mem.title': '记忆管理',
+      'mem.dir': '记忆目录',
+      'mem.dirNow': '当前文件：',
+      'mem.dirSaved': '记忆目录已更新',
+      'mem.dirReset': '已恢复默认目录',
+      'mem.dirDefault': '恢复默认',
         'mem.hint': '按会话清空短期上下文；摘要属长期记忆',
         'mem.empty': '还没有活跃会话',
         'mem.scope': '会话',
@@ -2434,6 +2439,56 @@ window.__ModuleLoader__.load({
         mem.status === 'error'
           ? h('p', { className: 'gd_err' }, mem.error)
           : h('div', null,
+            // ── 记忆目录 ────────────────────────────────────────
+            //
+            // 长期记忆默认写在数据目录（memory-long.json）。
+            // 想放别的盘 / 同步盘时在这儿填路径，不用搬整个数据目录。
+            // 留空 = 跟随数据目录（默认行为）。
+            h('div', { style: { marginBottom: '12px' } },
+              h('div', { className: 'gd_rowlabel' },
+                h('b', null, t('mem.dir')),
+                h('i', null, mem.data?.storage?.file
+                  ? `${t('mem.dirNow')} ${mem.data.storage.file}`
+                  : '')),
+              h('div', { className: 'gd_actions', style: { marginTop: '6px' } },
+                h('input', {
+                  className: 'gd_input',
+                  style: { flex: 1, minWidth: 0 },
+                  placeholder: mem.data?.storage?.home ?? '',
+                  defaultValue: mem.data?.storage?.dir ?? '',
+                  onBlur: async (e) => {
+                    const v = String(e.target.value ?? '').trim()
+                    if (v === (mem.data?.storage?.dir ?? '')) return
+                    try {
+                      await api('/config', {
+                        method: 'POST',
+                        headers: { 'content-type': 'application/json' },
+                        body: JSON.stringify({ 'memory.dir': v }),
+                      })
+                      mem.reload()
+                      setToast({ ok: true, text: t('mem.dirSaved') })
+                    } catch (error) {
+                      setToast({ ok: false, text: String(error?.message ?? error) })
+                    }
+                  },
+                }),
+                h('button', {
+                  className: 'gd_btn',
+                  disabled: busy,
+                  onClick: async () => {
+                    try {
+                      await api('/config', {
+                        method: 'POST',
+                        headers: { 'content-type': 'application/json' },
+                        body: JSON.stringify({ 'memory.dir': '' }),
+                      })
+                      mem.reload()
+                      setToast({ ok: true, text: t('mem.dirReset') })
+                    } catch (error) {
+                      setToast({ ok: false, text: String(error?.message ?? error) })
+                    }
+                  },
+                }, t('mem.dirDefault')))),
             scopes.length === 0
               ? h('p', { className: 'gd_note' }, t('mem.empty'))
               : h('div', { className: 'gd_actions', style: { flexDirection: 'column', alignItems: 'stretch', gap: '6px' } },

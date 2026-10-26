@@ -85,7 +85,18 @@ export class LongTermStore {
     this.home = opts.home
     this.summarize = opts.summarize
     this.log = opts.log ?? {}
-    this.file = this.home ? path.join(this.home, 'memory-long.json') : null
+    /*
+     * 落盘目录。
+     *
+     * `opts.dir` 来自 `memory.dir` 配置 —— 用户可以把记忆单独放到
+     * 另一个盘或同步盘，不必搬整个数据目录（config、日志、附件都在
+     * 那儿）。留空就跟着 home，跟以前完全一样。
+     *
+     * 写不进去时 `_save()` 会静默放弃（不阻断主流程），
+     * 所以即使配了个非法路径，最坏情况是「记忆不落盘」，不会崩。
+     */
+    const dir = typeof opts.dir === 'string' && opts.dir.trim() ? opts.dir.trim() : this.home
+    this.file = dir ? path.join(dir, 'memory-long.json') : null
     /** @type {Map<string, LongTermMemory>} */
     this.memories = new Map()
     /** 防止同一会话并发摘要 */
