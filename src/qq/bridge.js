@@ -344,6 +344,13 @@ export class QQBridge {
     this.log = opts.log ?? {}
     /** 用量统计（可空）—— 用于总览页的 token/费用 */
     this.usage = opts.usage ?? null
+    /**
+     * 活跃天数统计（可空）。
+     *
+     * 和 `usage.startedAt` 不同：那个是「首次启动时间」，算出来是装了多久；
+     * 这个数的是**真正有消息往来的日子**，关机的那几天不算。
+     */
+    this.activity = opts.activity ?? null
     /** DeepSeek API key —— 联网搜索用（没有就跳过搜索，不影响其它功能） */
     this.searchKey = opts.searchKey ?? null
     /** 最近一次联网搜索（给 UI 看） */
@@ -481,6 +488,13 @@ export class QQBridge {
       this.log.debug?.(`bridge：忽略 ${msg.scope}（不在白名单）`)
       return
     }
+
+    // 活跃天数：白名单内的消息进来就记一天。
+    //
+    // 放在 allowed 之后 —— 不在白名单的噪音不该算「活跃」。
+    // 放在去重之前 —— 重连重推的同一条消息不该让这一天漏记。
+    // touch() 同一天幂等，只有跨天才写盘，不用担心频繁 IO。
+    this.activity?.touch()
 
     // ⚠️ 重复事件去重（2026-10-23 补）
     //

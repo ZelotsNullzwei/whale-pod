@@ -1214,6 +1214,9 @@ function buildStatus(ctx) {
     // 用量：token 与估算费用（QQ + 网关两条路都汇总在这里）。
     // state.usage 缺失时给个零值快照，UI 不用做空判断。
     usage: state.usage?.snapshot?.() ?? null,
+    // 活跃天数：真正有消息往来的日子（关机那天不算），与 usage.startedAt 不同。
+    // 侧栏「机器人」区块显示这个数字。
+    activity: state.activity?.stats?.() ?? null,
     decision: { order: decision.order, threshold: decision.threshold, stats: decision.stats },
     credentials: {
       file: credentials.file,
@@ -2392,7 +2395,9 @@ async function whalePodCompat(o) {  const { sub, method, url, req, res, json, re
     // ── 用量 ─────────────────────────────────────────────────────
     if (sub === '/usage' && method === 'GET') {
       const usage = state.usage?.snapshot?.() ?? null
-      return json(res, 200, { ok: true, usage })
+      // 顺带带上活跃天数 —— 侧栏的小卡片和用量卡相邻，同一次轮询拿两样更省。
+      const activity = state.activity?.stats?.() ?? null
+      return json(res, 200, { ok: true, usage, activity })
     }
 
     // ── 模型与渠道优先级（侧栏模型卡片）────────────────────────────

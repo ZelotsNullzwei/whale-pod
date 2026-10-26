@@ -23,6 +23,7 @@ import { Logger } from './logger.js'
 import { findDshAppDir, findChannelPack, linkDshModules, createLlmGateway } from './gateway/llm-core.js'
 import { createGatewayServer, mintKey } from './gateway/server.js'
 import { UsageTracker } from './gateway/usage.js'
+import { ActivityTracker } from './gateway/activity.js'
 import { resolveCandidates, openFirstAvailable, DEFAULT_FREE_ORDER } from './gateway/router.js'
 import { createDecisionLayer } from './decision/index.js'
 import { createWebServer } from './web/server.js'
@@ -337,6 +338,9 @@ export async function main(argv = process.argv.slice(2)) {
     // ⚠️ 传 home 让它落盘到 <home>/usage.json —— 原来只用内存，
     //    每次重启归零，用户看到的是「昨天用了 24K，今天一开变 0」。
     const usage = new UsageTracker({ home: store.home })
+    // 活跃天数：数「真正有消息往来的日子」，关机那几天不算。
+    // 和 usage.startedAt（首次启动至今）是两回事。
+    const activity = new ActivityTracker({ home: store.home })
     if (appDir && pack) {
       linkDshModules(appDir, projectRoot)
       const core = await createLlmGateway({ appDir, packFile: pack.file, credentials: creds, log })
@@ -399,6 +403,7 @@ export async function main(argv = process.argv.slice(2)) {
     }
     state.llm = llm
     state.usage = usage
+    state.activity = activity
     // 记录**启动时**实际装载的自备渠道 id。Web UI 靠它区分"自备渠道"与
     // "DSH 免费渠道"—— 必须用快照而不是当前配置，否则配置改动后
     // （要重启才生效）会把已删的渠道误判成 DSH 渠道。
@@ -594,6 +599,7 @@ export async function main(argv = process.argv.slice(2)) {
         longMemory,
         persona,
         usage,
+        activity,
         // 联网搜索用 DeepSeek 的 key（没有就自动跳过搜索，不影响其它功能）
         searchKey: (() => {
           try { return creds.get('DEEPSEEK_API_KEY') ?? null } catch { return null }

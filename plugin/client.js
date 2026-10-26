@@ -112,6 +112,10 @@ window.__ModuleLoader__.load({
         'usage.calls': '模型调用',
         'usage.tokens': 'tokens 用量',
         'usage.cost': '折合费用（估算）',
+      'usage.activeDays': '活跃天数',
+      'usage.todayLabel': '今天',
+      'usage.todayActive': '有聊',
+      'usage.todayIdle': '没聊',
 
         'mem.title': '记忆管理',
         'mem.hint': '按会话清空短期上下文；摘要属长期记忆',
@@ -345,6 +349,10 @@ window.__ModuleLoader__.load({
         'usage.calls': 'Model calls',
         'usage.tokens': 'Token usage',
         'usage.cost': 'Estimated cost',
+      'usage.activeDays': 'Active days',
+      'usage.todayLabel': 'Today',
+      'usage.todayActive': 'Chatted',
+      'usage.todayIdle': 'Quiet',
 
         'mem.title': 'Memory management',
         'mem.hint': 'Clear short-term context per session; summaries are long-term memory',
@@ -710,6 +718,8 @@ window.__ModuleLoader__.load({
 @container (min-width:560px){.gd_grid{grid-template-columns:repeat(4,minmax(0,1fr))}}
 /* 用量卡片只有 3 项，宽屏下用三列而不是四列 */
 @container (min-width:560px){.gd_grid.gd_grid3{grid-template-columns:repeat(3,minmax(0,1fr))}}
+/* 活跃天数卡片固定两列（就 2 项，宽屏也别摊成 4 列） */
+@container (min-width:560px){.gd_grid.gd_grid2{grid-template-columns:repeat(2,minmax(0,1fr))}}
 .gd_kv{display:flex;flex-direction:column;gap:2px;padding:8px 10px;border-radius:10px;border:1px solid var(--dsw-alias-border-l1);background:color-mix(in srgb,var(--dsw-alias-bg-layer-1) 55%,transparent);min-width:0}
 .gd_kv b{font-size:12px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .gd_kv span{color:var(--dsw-alias-label-tertiary);font-size:10.5px;letter-spacing:.2px}
@@ -1840,6 +1850,9 @@ window.__ModuleLoader__.load({
     function UsageCards({ t }) {
       const usage = usePoll(() => api('/usage'), [], 8000)
       const u = usage.data?.usage
+      // 活跃天数：真正有消息往来的天数（关机那天不算）。
+      // 和 usage.startedAt 不同 —— 那个是「装了多久」，这个才是「聊了几天」。
+      const act = usage.data?.activity
       if (usage.status === 'error' || u === null || u === undefined) return null
       const top = (u.byProvider ?? []).slice(0, 3)
       const fmtTok = (n) => {
@@ -1862,6 +1875,17 @@ window.__ModuleLoader__.load({
       return `≈¥${y.toFixed(4)}`
     }
       return h('div', null,
+        // 活跃天数单独一行放在最前 —— 它是「陪伴感」指标，比调用次数更该先看到。
+        // 只有真跑过（有消息往来）才显示，避免刚装好时出现一个 0 天。
+        act !== null && act !== undefined && (act.totalDays ?? 0) > 0
+          ? h('div', { className: 'gd_grid gd_grid2' },
+              h('div', { className: 'gd_count' },
+                h('b', null, `${act.totalDays}`),
+                h('span', null, t('usage.activeDays'))),
+              h('div', { className: 'gd_count' },
+                h('b', null, act.todayActive ? t('usage.todayActive') : t('usage.todayIdle')),
+                h('span', null, t('usage.todayLabel'))))
+          : null,
         h('div', { className: 'gd_grid gd_grid3' },
           h('div', { className: 'gd_count' }, h('b', null, String(u.calls ?? 0)), h('span', null, t('usage.calls'))),
           h('div', { className: 'gd_count' }, h('b', null, fmtTok(u.tokensTotal ?? 0)), h('span', null, t('usage.tokens'))),
