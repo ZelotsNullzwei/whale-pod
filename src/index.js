@@ -29,6 +29,7 @@ import { createDecisionLayer } from './decision/index.js'
 import { createWebServer } from './web/server.js'
 import { MemoryStore } from './memory/short.js'
 import { LongTermStore } from './memory/long.js'
+import { PeopleStore } from './memory/person.js'
 import { PersonaStore } from './persona/store.js'
 import { OneBotClient } from './qq/onebot.js'
 import { QQBridge } from './qq/bridge.js'
@@ -232,6 +233,7 @@ export async function main(argv = process.argv.slice(2)) {
     llm: null,
     decision: null,
     usage: null,
+    people: null,
     tray: null,
     errors: [],
   }
@@ -404,6 +406,23 @@ export async function main(argv = process.argv.slice(2)) {
     state.llm = llm
     state.usage = usage
     state.activity = activity
+    state.people = people
+
+    /*
+     * 人物档案落盘。
+     *
+     * `touch()` 只改内存并标脏 —— 每条消息都写文件太浪费
+     * （群聊一波能刷几十条）。这里 30 秒收一次，脏了才真写。
+     *
+     * 另外在 shutdown 时强制写一次：`unref()` 让这个定时器
+     * **不阻止进程退出**，但退出前那次必须显式带上。
+     */
+    const peopleTimer = setInterval(() => people.flush(), 30_000)
+    peopleTimer.unref?.()
+    shutdown.push(() => {
+      clearInterval(peopleTimer)
+      people.save()
+    })
     // 记录**启动时**实际装载的自备渠道 id。Web UI 靠它区分"自备渠道"与
     // "DSH 免费渠道"—— 必须用快照而不是当前配置，否则配置改动后
     // （要重启才生效）会把已删的渠道误判成 DSH 渠道。
@@ -496,6 +515,9 @@ export async function main(argv = process.argv.slice(2)) {
       },
     })
     longMemory.load()
+
+    // 人物档案：按 QQ 号认人。跨会话共享。
+    const people = new PeopleStore({ home: store.home })
 
     /**
      * ⚠️ 启动时校验长期记忆配置（2026-10-23 加）。
@@ -600,6 +622,7 @@ export async function main(argv = process.argv.slice(2)) {
         memory,
         longMemory,
         persona,
+        people,
         usage,
         activity,
         // 联网搜索用 DeepSeek 的 key（没有就自动跳过搜索，不影响其它功能）

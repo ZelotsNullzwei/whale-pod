@@ -50,21 +50,104 @@ export class LongTermMemory {
     return `【关于这个会话你已经知道的】\n${this.summary}`
   }
 
+  /**
+   * 合并新摘要。
+   *
+   * ⚠️ **2026-10-26 重写**。原来的实现是：
+   *
+   * ```js
+   * this.summary = `${this.summary}\n${newSummary}`       // 直接拼
+   * if (this.summary.length > 3000) this.summary = this.summary.slice(-3000)
+   * ```
+   *
+   * 后果（实测 `memory-long.json`）：
+   *   · 同一件事（「风宝爱攒抽」「机器人自称本鱼」）被反复写进去
+   *   · 摘要越来越长，最后靠 `slice(-3000)` 硬截 —— 截掉的正好是
+   *     **最早、最该保留**的那部分
+   *   · 3000 字里可能一半是重复内容，真正有效的印象被稀释
+   *
+   * 现在改成**按人替换**：新摘要里的人如果是「已经认识的人」，
+   * 用新印象**覆盖**旧的；话题部分同理整段替换。
+   *
+   * 判断「是同一个」的依据是 QQ 号（见 `person.js`），不是昵称 ——
+   * 昵称会变，用来比对必然对不上。
+   *
+   * @param {string} newSummary LLM 输出的「【人】…【事】…」格式
+   */
   merge(newSummary) {
-    // 简单策略：如果新摘要能覆盖旧的（包含关系），直接用新的；
-    // 否则拼接（保留更早的信息），并限制总长度。
-    if (!this.summary) {
-      this.summary = newSummary
-    } else if (newSummary.includes(this.summary)) {
-      this.summary = newSummary
-    } else {
-      this.summary = `${this.summary}\n${newSummary}`
+    const incoming = newSummary
+    if (!incoming) return
+
+    // 不是新格式（老版本调用，或模型没按格式答）→ 退化成「替换整个摘要」
+    //
+    // 为什么不是退回「拼接」：拼接正是要修的问题。宁可丢掉旧细节，
+    // 也不该让摘要无限膨胀 —— 最近的印象比三个月前的一句话更有用。
+    if (!incoming.includes('【人】')) {
+      this.summary = incoming.slice(-MAX_SUMMARY_CHARS)
+      this.updatedAt = Date.now()
+      return
     }
-    if (this.summary.length > 3000) {
-      this.summary = this.summary.slice(-3000)
-    }
+
+    const prev = parsePeople(this.summary)
+    const next = parsePeople(incoming)
+
+    // 按 QQ 号覆盖：新的一行胜过旧的一行
+    for (const [id, line] of next) prev.set(id, line)
+
+    const topics = parseTopics(incoming) || parseTopics(this.summary)
+    this.summary = renderPeople(prev, topics)
     this.updatedAt = Date.now()
   }
+}
+
+/** 摘要总长上限。够装 ~40 个人 + 话题，再多说明该淘汰了。 */
+const MAX_SUMMARY_CHARS = 3000
+
+/**
+ * 从摘要文本里取出「【人】→ QQ号 → 那一行」的映射。
+ *
+ * 提取不出 QQ 号的行会被**丢掉** —— 没有 QQ 号就没法判断是不是同一个人，
+ * 留着只会在下次合并时制造重复。
+ *
+ * @param {string} text
+ * @returns {Map<string, string>}
+ */
+export function parsePeople(text) {
+  /** @type {Map<string, string>} */
+  const out = new Map()
+  const s = String(text ?? '')
+  const start = s.indexOf('【人】')
+  if (start < 0) return out
+  const end = s.indexOf('【事】')
+  const seg = end > start ? s.slice(start + 3, end) : s.slice(start + 3)
+  for (const raw of seg.split(/\r?\n/)) {
+    const line = raw.trim()
+    if (!line) continue
+    const m = line.match(/(\d{4,12})/)
+    if (!m) continue
+    out.set(m[1], line)
+  }
+  return out
+}
+
+/**
+ * 把「人 + 话题」渲染回摘要文本。
+ *
+ * @param {Map<string, string>} people
+ * @param {string} topics
+ * @returns {string}
+ */
+export function renderPeople(people, topics) {
+  const lines = [...people.values()]
+  const head = lines.length > 0 ? `【人】\n${lines.join('\n')}` : ''
+  const tail = topics ? `【事】\n${topics}` : ''
+  const body = [head, tail].filter(Boolean).join('\n\n')
+  // 兜底：真超了就砍最早的人（Map 保序，前面的最先加）
+  if (body.length > MAX_SUMMARY_CHARS) {
+    const keep = [...people.entries()].slice(-Math.floor(people.size * 0.7))
+    return renderPeople(new Map(keep), topics).slice(0, MAX_SUMMARY_CHARS)
+  }
+  return body
 }
 
 /**
@@ -273,19 +356,91 @@ export class LongTermStore {
 }
 
 /** 默认的摘要提示词（上层可覆盖）。 */
-export const SUMMARY_PROMPT = `你在为一个 QQ 群聊机器人维护长期记忆。
-请把下面的群聊记录压缩成一段简短的中文摘要，只保留：
-1. 群里有谁（昵称 + 特点/身份）
-2. 正在发生或讨论的事（话题、梗、事件）
-3. 与机器人相关的偏好（谁喜欢被怎么称呼、谁不喜欢被打扰）
-不要逐条复述，不要编造。控制在 200 字以内。
+export const SUMMARY_PROMPT = `你在维护一个 QQ 群聊机器人的长期记忆。目标不是复述聊天，而是**留下印象**。
 
-${'若有【已有摘要】，请把新信息合并进去，输出完整的新摘要。'}
+按下面的格式输出，一共两部分：
 
-【已有摘要】
+【人】
+每行一个人，格式：QQ号 | 昵称 | 一句话印象
+- 只写**能长期成立**的特征：性格、说话风格、在意什么、常做什么
+- 不要写「他刚才说了xxx」这种一次性的内容
+- 印象要短，一句话，不要超过 30 字
+- 昵称变了以 QQ 号为准，同一个人只写一行
+
+【事】
+这个会话最近在聊什么，2-3 句以内。只写**还需要记住的**：正在推进的事、
+反复出现的梗、约好的事情。一次性的闲聊不用记。
+
+【不要做的事】
+- 不要复述对话，不要点名谁说了哪句话
+- 不要编造没人提过的事
+- 不要写「群成员：xxx、xxx」这种罗列
+- 总长度控制在 300 字以内
+
+${'【已有印象】是上一次的结论。请在此基础上**更新**：\n- 印象变了就整行替换，不要叠加\n- 事实没有变化的人可以省略不写\n- 已经明显过时的内容直接删掉'}
+
+【已有印象】
 {previous}
 
 【新的聊天记录】
 {messages}
 
-只输出摘要正文，不要任何前后缀。`
+只输出上述两部分，不要任何前后缀。`
+
+/**
+ * 解析摘要输出里的「【人】」段。
+ *
+ * 格式容错做得比较宽 —— 模型经常自由发挥（用 `|`、`：`、`-` 混着写），
+ * 硬解析会大面积丢数据。这里只要能认出「QQ号 + 印象」就收。
+ *
+ * @param {string} text LLM 输出
+ * @returns {Array<{id:string, name:string, impression:string}>}
+ */
+export function parsePersonLines(text) {
+  const out = []
+  const s = String(text ?? '')
+  // 只取【人】到【事】（或结尾）之间
+  const start = s.indexOf('【人】')
+  if (start < 0) return out
+  const end = s.indexOf('【事】')
+  const seg = end > start ? s.slice(start + 3, end) : s.slice(start + 3)
+
+  for (const rawLine of seg.split(/\r?\n/)) {
+    const line = rawLine.trim().replace(/^[-*·]\s*/, '')
+    if (!line) continue
+    // 找行里的 QQ 号（5-12 位数字）。找不到就跳过 —— 没 QQ 号认不了人
+    const m = line.match(/(\d{4,12})/)
+    if (!m) continue
+    const id = m[1]
+    // 去掉 id 之后剩下的部分里，取最后一个分隔符之后的作为印象
+    let rest = line.replace(m[0], '').trim()
+    rest = rest.replace(/^[|｜:：\-\s]+/, '')
+    // 昵称 | 印象  →  按第一个分隔符切开
+    const parts = rest.split(/[|｜]/).map((x) => x.trim()).filter(Boolean)
+    let name = ''
+    let impression = ''
+    if (parts.length >= 2) {
+      name = parts[0]
+      impression = parts.slice(1).join(' ')
+    } else {
+      // 没有分隔符：整段当印象，昵称留空（展示时回退到 QQ 号）
+      impression = rest.replace(/^[|｜:：\-\s]+/, '')
+    }
+    if (!impression) continue
+    out.push({ id, name, impression })
+  }
+  return out
+}
+
+/**
+ * 解析摘要输出里的「【事】」段。
+ *
+ * @param {string} text
+ * @returns {string}
+ */
+export function parseTopics(text) {
+  const s = String(text ?? '')
+  const start = s.indexOf('【事】')
+  if (start < 0) return ''
+  return s.slice(start + 3).trim()
+}

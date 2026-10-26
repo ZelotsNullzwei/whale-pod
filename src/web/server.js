@@ -2341,6 +2341,8 @@ async function whalePodCompat(o) {  const { sub, method, url, req, res, json, re
         longMemory: longMemory?.stats?.() ?? null,
         // 长期摘要的会话列表（前端 longs 读这个）
         longScopes: longMemory?.listScopes?.() ?? [],
+        // 人物档案：按 QQ 号认人，昵称只是别名
+        people: state.people?.stats?.() ?? null,
         // 记忆落盘位置：设置页拿它显示当前目录 + 让用户改
         storage: {
           // 实际生效的文件路径（memory.dir 为空时 = <home>/memory-long.json）

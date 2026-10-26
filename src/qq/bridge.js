@@ -341,6 +341,14 @@ export class QQBridge {
     this.memory = opts.memory
     this.longMemory = opts.longMemory
     this.persona = opts.persona
+    /**
+     * 人物档案（可空）—— 按 **QQ 号**认人，昵称只当别名。
+     *
+     * 为什么单独一层而不是塞进会话记忆：一个人会出现在多个群和私聊里，
+     * 但「他是谁」这件事跨会话只有一个答案。会话记忆回答「这里发生过什么」，
+     * 档案回答「这个人是谁」。
+     */
+    this.people = opts.people ?? null
     this.log = opts.log ?? {}
     /** 用量统计（可空）—— 用于总览页的 token/费用 */
     this.usage = opts.usage ?? null
@@ -495,6 +503,14 @@ export class QQBridge {
     // 放在去重之前 —— 重连重推的同一条消息不该让这一天漏记。
     // touch() 同一天幂等，只有跨天才写盘，不用担心频繁 IO。
     this.activity?.touch()
+
+    // 人物档案：记一次「这个人又出现了」，顺带更新昵称别名。
+    //
+    // 认人一律按 QQ 号（`msg.sender`）—— 昵称会换、会撞，用它当 key
+    // 会把同一个人拆成好几个，或把两个人的印象串在一起。
+    if (!msg.isMe && msg.sender) {
+      this.people?.touch(msg.sender, msg.senderName)
+    }
 
     // ⚠️ 重复事件去重（2026-10-23 补）
     //
@@ -1320,6 +1336,23 @@ export class QQBridge {
     const long = this.longMemory?.get(msg.scope)
     const memoryText = long?.toPrompt() ?? ''
 
+    /*
+     * 人物档案：当前说话人优先，其余按最近活跃补几个。
+     *
+     * 只带「有实际内容（印象或事实）」的人 —— 刚加进来还没沉淀的
+     * 不该占 prompt。上限 6 人，大约 200-300 字。
+     *
+     * ⚠️ 跨群共享：档案不按会话隔离（同一个人在群里和私聊是同一个人），
+     *    但**只带高度概括的印象/事实，不带原始对话** —— 原始对话留在
+     *    各会话自己的记忆里，不会因为这个机制串到别的群。
+     */
+    let peopleText = ''
+    try {
+      peopleText = this.people?.toPrompt?.({ self: msg.sender, limit: 6 }) ?? ''
+    } catch (e) {
+      this.log.debug?.(`bridge：人物档案注入失败（跳过）：${String(e?.message ?? e)}`)
+    }
+
     // ── 联网搜索（只在"需要新信息"时才查）─────────────────────
     //
     // 为什么需要：各免费渠道的模型训练数据都有截止日期。实测踩过 ——
@@ -1450,7 +1483,9 @@ export class QQBridge {
       : ''
 
     const system = this.persona.buildSystemPrompt({
-      memory: memoryText,
+      // 会话记忆 + 人物档案分两段传：前者是「这里发生过什么」，
+      // 后者是「这些人是谁」，混在一起模型容易把两者当同一层事实。
+      memory: [memoryText, peopleText].filter(Boolean).join('\n\n'),
       scene,
       self,
       extras: [

@@ -128,6 +128,8 @@ window.__ModuleLoader__.load({
         'mem.clearOne': '清空',
         'mem.cleared': '已清空',
         'mem.long': '长期摘要',
+      'mem.people': '认识的人',
+      'mem.peopleEmpty': '还没有形成印象（多聊几次就会出现）',
         'mem.longEmpty': '暂无长期摘要',
         'mem.viewSummary': '查看摘要',
         'mem.summaryTitle': '长期记忆摘要',
@@ -2521,6 +2523,29 @@ window.__ModuleLoader__.load({
                         } catch (error) { setToast({ ok: false, text: String(error?.message ?? error) }) }
                       },
                     }, t('mem.viewSummary'))))))),
+            // ── 认识的人 ────────────────────────────────────────
+            //
+            // 按 QQ 号列。昵称会变，所以主标题用 QQ 号，昵称作为别名。
+            (() => {
+              const ppl = mem.data?.people
+              if (!ppl || (ppl.count ?? 0) === 0) return null
+              return h('div', { style: { marginTop: '10px' } },
+                h('div', { className: 'gd_rowlabel' },
+                  h('b', null, t('mem.people')),
+                  h('i', null, `${ppl.described ?? 0} / ${ppl.count} 有印象`)),
+                (ppl.people ?? []).length === 0
+                  ? h('p', { className: 'gd_note' }, t('mem.peopleEmpty'))
+                  : h('div', { style: { display: 'flex', flexDirection: 'column', gap: '6px', marginTop: '6px' } },
+                    (ppl.people ?? []).map((p) => h('div', {
+                      key: p.id, className: 'gd_row',
+                      style: { borderBottom: '1px solid color-mix(in srgb,var(--dsw-alias-border-l1) 55%,transparent)', padding: '6px 0' },
+                    },
+                      h('div', { className: 'gd_rowlabel', style: { minWidth: 0 } },
+                        h('b', null, `${p.name || p.id}`),
+                        h('i', null, `${p.id} · ${p.seen ?? 0} 句`)),
+                      h('div', { style: { fontSize: '11.5px', color: 'var(--dsw-alias-label-secondary)', marginTop: '2px' } },
+                        p.impression || (p.facts ?? []).join('、') || '')))))
+            })(),
             viewing === null ? null : h('div', {
               style: {
                 position: 'fixed', inset: 0, zIndex: 9999, display: 'flex', alignItems: 'center', justifyContent: 'center',
