@@ -27,6 +27,10 @@ import { needsFreshInfo, webSearch, formatSearchContext, pickCoverImage, checkBa
 import FACE_TABLE from './faces.json' with { type: 'json' }
 import { InteractionTracker, BegState, decideBeg } from './beg.js'
 import { ProactiveScheduler, ProactiveState } from './proactive.js'
+import { extractFindImageMarkers, stripFindImageMarkers, resolveFindImage } from './imageFindMarkers.js'
+import { extractBanMarkers, stripBanMarkers, validateBan, describeBanMinutes, extractNicknameMarkers, stripNicknameMarkers, validateNickname } from './groupAdmin.js'
+import { buildVarietyHint, buildExpressionHint } from '../persona/variety.js'
+import { currentSlot, renderDayPlan } from '../memory/dayPlan.js'
 
 /** 模型表示"不说话"的标记。 */
 export const SILENT = '[SILENT]'
@@ -173,18 +177,14 @@ export function describeMedia(m) {
   t = t.replace(/\[表情包(?::([^\]]*))?\]/g, (_all, name) => {
     const n = String(name ?? '').trim()
     /*
-     * 表情包：说明是表情，并要求「有字就先看字」。
+     * 表情包：说明是表情，并要求「有字接梗、没字只回表情」。
      *
-     * ⚠️ 光说「（对方发了一个表情包）」不够 —— 模型会去猜「这表情什么意思」
-     *    「图里是谁」，然后一本正经地分析起来。实测它回过「这谁啊，又不是本鱼」。
-     *
-     *    但也不能一刀切说「别解读」：很多表情包**上面的字才是重点**
-     *    （「这用户发的啥啊」「典型的碳基思维」这类梗图）。
-     *    所以：有字读字，没字才按情绪接。
+     * ⚠️ 这里千万不能说「把图上的字读出来」—— 那种引导会让它把字
+     *    念一遍当回复（「图里写着『今天又加班』」），等于废话。
+     *    用户的要求是「懂意思、接梗、不复述」。
      */
-    const tail = '表情包上如果**有字**，那个字通常才是重点（梗图、吐槽、'
-      + '「这用户发的啥啊」这类），把意思点出来；没字就回个表情或接一句情绪话，'
-      + '别去猜图里画的是谁'
+    const tail = '有字的梗图就懂意思、用自己的话接一句；'
+      + '纯情绪图（没字）只回一个表情，不要打字也不要描述画面'
     return n
       ? `（对方发了一个表情包，关于「${n}」。${tail}）`
       : `（对方发了一个表情包。${tail}）`
@@ -528,6 +528,17 @@ export class QQBridge {
     this.decision = opts.decision
     this.memory = opts.memory
     this.longMemory = opts.longMemory
+    /**
+     * 今日状态（每天一份日程）。可空 —— 没有就跳过这一段提示词。
+     *
+     * ⚠️ 为什么单独一层而不是塞进长期摘要：
+     *    摘要按 scope 存（群/私聊各一份），而「今天是几号、几点在干嘛」
+     *    是**跨会话共享**的事实 —— 她在群里说自己在吃午饭，
+     *    私聊里也得说在吃午饭。所以单独存。
+     */
+    this.dayPlan = opts.dayPlan ?? null
+    /** 生成今日日程的函数（由 index.js 注入，可空） */
+    this.generateDayPlan = opts.generateDayPlan ?? null
     this.persona = opts.persona
     /**
      * 人物档案（可空）—— 按 **QQ 号**认人，昵称只当别名。     *
@@ -867,34 +878,26 @@ export class QQBridge {
     const isSticker = stickerCount > 0 && stickerCount >= images.length
 
     /*
-     * ⚠️ 表情包**也放行**，但判的问题不同（2026-10-26 第三次修）。
+     * ⚠️ 表情包**不再绕过决策层**（2026-10-27 定）。
      *
-     * 前两次都错了：
-     *   ① 让表情包判断「像不像自己」→ 它对每张都硬凑
-     *      （「蓝毛勉强沾点边」），比不接更出戏
-     *   ② 干脆不看表情包 → **有字的梗图也没人管了**
-     *      实测 21:21:04 群友发了一张带字的表情包，判沉默，字全漏掉
+     * 完整历史（五次尝试）：
+     *   ① 让表情包判断「像不像自己」→ 每张都硬凑（「蓝毛勉强沾点边」）
+     *   ② 干脆不看 → 有字的梗图也漏了
+     *   ③ 只在「单独发的」时放行 → **见表情就回**，不管上下文
+     *      实测：群里在聊显卡价格，它 10:39/10:40/10:41 连回 4 张表情包
+     *   ④ 现在：**表情包交回决策层**
      *
-     * 根因是把「表情包」当成一类东西，其实它分两种：
-     *   · **有字的梗图**（「这用户发的啥啊」这类）→ 字才是重点，该接
-     *   · 没字的纯情绪图 → 回个表情或沉默
+     * 为什么交回去：决策层虽然看不见图，但**看得见上下文**
+     * （「3060现在为啥还3000多」「解锁没啥意义」…），
+     * 它能判断「这张表情包是在接这个话题，还是只是语气」。
+     * 而绕过决策层等于把「该不该说话」这个判断直接跳过了 ——
+     * 那必然变成见啥都回。
      *
-     * 所以表情包也过一遍模型，但问的是「**图上有没有字**」，
-     * 不是「像不像你」。具体指引见 `_generate` 的 mediaHint。
-     *
-     * 成本闸门：表情包只在「单独发的」时才过模型（见下面的 ①），
-     * 不像真图片那样还看熟人和话题 —— 表情包太频繁，放宽会刷屏。
+     * 只有**真图片**才值得绕过（因为决策层看不见图内容，
+     * 没法判断「像不像鲸鱼娘」那种需要看图的事）。
+     * 表情包的语义（语气/情绪）本来就是文本能表达的，不需要绕过。
      */
-    if (isSticker) {
-      const textPart = String(msg.text ?? '')
-        .replace(/\[表情包(?::[^\]]*)?\]/g, '')
-        .replace(/\[表情:\d+\]/g, '')
-        .replace(/\[图片\]/g, '')
-        .replace(/\s+/g, '')
-        .trim()
-      // 纯表情包（没附带文字）才放行；「文字 + 表情包」走正常决策
-      return textPart.length === 0
-    }
+    if (isSticker) return false
 
     /*
      * ① 图是单独发的。
@@ -1062,6 +1065,39 @@ export class QQBridge {
   }
 
   /** 处理一条消息事件。 */
+  /**
+   * 确保「今天」的日程存在；没有就生成一份。
+   *
+   * ## 为什么懒生成而不是定时任务
+   *
+   * 定时任务在没人说话的日子也会白花一次调用。懒生成只在
+   * 「今天第一次要回复」时才跑，一天最多一次，省钱且简单。
+   *
+   * ⚠️ 并发保护：同一时刻多条消息进来时，不能每个都去生成
+   *    （那会一天烧掉好几次调用，而且互相覆盖）。用一个
+   *    in-flight promise 兜住，后来者等同一个结果。
+   */
+  async _ensureDayPlan() {
+    if (!this.dayPlan || !this.generateDayPlan) return
+    if (this.dayPlan.today()) return
+    if (this._dayPlanPending) { await this._dayPlanPending; return }
+    this._dayPlanPending = (async () => {
+      try {
+        const plan = await this.generateDayPlan({ recent: this.dayPlan.recentHints() })
+        if (plan) {
+          this.dayPlan.setToday(plan)
+          this.log.info?.(
+            'bridge：今日状态已生成 — ' + [plan.morning, plan.noon, plan.afternoon].filter(Boolean).join(' / '),
+          )
+        }
+      } catch (e) {
+        this.log.warn?.('bridge：今日状态生成失败 — ' + String(e?.message ?? e))
+      } finally {
+        this._dayPlanPending = null
+      }
+    })()
+    await this._dayPlanPending
+  }
   async onEvent(ev) {
     this.stats.received++
     if (this.paused) return
@@ -1069,6 +1105,9 @@ export class QQBridge {
     // 通知事件（戳一戳 / 群成员变动等）单独走：它们没有消息体。
     // 放在 __normalized 检查之前，否则会被当"没有消息内容"直接丢掉。
     if (ev?.post_type === 'notice') return this._onNotice(ev)
+
+    // 请求事件（加好友 / 加群邀请）。同样没有消息体。
+    if (ev?.post_type === 'request') return this._onRequest(ev)
 
     const msg = ev?.__normalized ?? null
     if (!msg) return
@@ -1257,6 +1296,81 @@ export class QQBridge {
    * 群里戳一戳本来就是个互动动作，回文字反而突兀。
    * 所以默认戳回去，并按概率偶尔配一句话，保留"真人有时懒得理"的感觉。
    */
+  /**
+   * 请求事件：好友申请 / 加群邀请。
+   *
+   * OneBot v11 的形状：
+   *   { post_type:'request', request_type:'friend', user_id, comment, flag }
+   *   { post_type:'request', request_type:'group',  group_id, user_id, comment, flag }
+   *
+   * ## 只做「被动同意」
+   *
+   * 用户明确要求：「不主动加人，只被动被加」。
+   * 这也正好符合 OneBot 的能力边界 —— QQ **没有**「主动加好友」的 API，
+   * 只有「处理别人发来的申请」。所以这里只能被动。
+   *
+   * ## 为什么默认自动同意
+   *
+   * 用户要的就是这个效果（「加好友也加上」）。
+   * 但加了几个闸：
+   *    · 只处理 request_type === 'friend'
+   *    · 同一个人一小时只处理一次（防刷）
+   *    · 配置可关（groupAdmin.friendRequest = false）
+   *    · 同意后给对方设个备注，方便以后认人
+   *
+   * ⚠️ 加群邀请**不自动同意** —— 那等于让机器人随便进群，
+   *    和"被动被加好友"是两件完全不同的事。
+   */
+  async _onRequest(ev) {
+    const rt = String(ev?.request_type ?? '?')
+    const flag = ev?.flag
+    const userId = String(ev?.user_id ?? ev?.sender_id ?? '')
+    const comment = String(ev?.comment ?? '').replace(/\s+/g, ' ').slice(0, 60)
+    this.log.info?.(
+      `bridge：收到请求 ${rt}（来自 ${userId || '-'}，flag ${flag ? '有' : '无'}）` +
+      (comment ? ` — 附言「${comment}」` : ''),
+    )
+
+    if (rt !== 'friend') {
+      // 加群邀请：只记日志，不自动同意
+      if (rt === 'group') this.log.info?.('bridge：加群邀请不自动同意（需要人手动处理）')
+      return
+    }
+    if (!flag) {
+      this.log.warn?.('bridge：好友申请没有 flag，无法处理')
+      return
+    }
+    if (this.cfg.groupAdmin?.friendRequest === false) {
+      this.log.info?.('bridge：好友申请自动同意已关闭')
+      return
+    }
+
+    // 频率：同一个人一小时只处理一次
+    const now = Date.now()
+    if (!this._friendReqAt) this._friendReqAt = new Map()
+    const last = Number(this._friendReqAt.get(userId) ?? 0)
+    if (last > 0 && now - last < 3600_000) {
+      this.log.info?.(`bridge：${userId} 一小时内申请过，这次跳过`)
+      return
+    }
+
+    try {
+      // 备注用对方的申请附言（他要是说了自己是谁，以后好认）
+      await this.onebot.handleFriendRequest(flag, true, comment || undefined)
+      this._friendReqAt.set(userId, now)
+      this.log.info?.(`bridge：已同意 ${userId} 的好友申请`)
+      // 通过后打个招呼 —— 刚加好友一句话都不说挺冷的
+      if (this.cfg.groupAdmin?.friendGreeting !== false) {
+        const name = this.selfName ?? '蓝色大肥鱼'
+        try {
+          await this.onebot.sendPrivate(userId, `${name}同意了你的好友申请。有事说事，没事别戳。`)
+        } catch { /* 打招呼失败不影响"已同意"这件事 */ }
+      }
+    } catch (e) {
+      this.log.warn?.(`bridge：同意好友申请失败 — ${String(e?.message ?? e)}`)
+    }
+  }
+
   async _onNotice(ev) {
     // 先把收到的**所有**通知记一条 —— 排查"为什么戳一戳没反应"时，
     // 第一件要知道的事就是"协议端到底有没有把通知推过来"。
@@ -1689,9 +1803,184 @@ export class QQBridge {
     }
     text = stripped
 
+    /*
+     * ── 4b. 找图标记 ──────────────────────────────────────────
+     *
+     * 模型可以输出 `[找图:关键词]` 表示「这段想配张图」。
+     * 两种场景都用这一个标记：
+     *   被动：「帮我找张鲸鱼娘的图」→ 模型识别后输出标记
+     *   主动：它觉得这段配张图更清楚 → 也输出标记
+     *
+     * 处理方式：
+     *   ① 把标记从正文里剥掉（绝不能发到群里 —— 和 `（+3 秒）`
+     *      被照抄是同一类问题，已经踩过两次）
+     *   ② 找图 → 下载 → 走 `_send` 的 image 段发出去
+     *
+     * ⚠️ 找图失败**不影响文字回复**：图是锦上添花，
+     *    失败了就只发文字，绝不因此整条不发。
+     */
+    let findImage = null
+    if (this.cfg.reply?.findImage !== false) {
+      const marks = extractFindImageMarkers(text)
+      if (marks.length > 0) {
+        // 一次回复只找一张 —— 找图要花半分钱，而且多图会刷屏
+        const q = marks[0].query
+        text = stripFindImageMarkers(text)
+        this.log.info?.(`bridge：回复里要求找图「${q.slice(0, 40)}」`)
+        try {
+          const r = await resolveFindImage({
+            query: q,
+            apiKey: this.searchKey,
+            log: (m) => this.log.info?.(`bridge：${m}`),
+          })
+          if (r.ok && r.images.length > 0) {
+            findImage = r.images[0]
+            this.log.info?.(`bridge：找到图 ${findImage.url.slice(0, 80)}（${Math.round(findImage.buffer.length / 1024)}KB）`)
+          } else {
+            this.log.warn?.(`bridge：找图失败（按纯文字发）— ${r.error}`)
+          }
+        } catch (e) {
+          this.log.warn?.(`bridge：找图出错（按纯文字发）— ${String(e?.message ?? e)}`)
+        }
+        // 剥完标记如果什么都不剩，就只发图（不硬凑文字）
+        if (!text.trim() && !findImage) {
+          this.stats.silent++
+          this._record(msg, d, null, 'find-image-empty')
+          this._maybeSummarize(msg.scope, mem, scene)
+          return
+        }
+      }
+    }
+
+    /*
+     * ── 4c. 禁言标记 ──────────────────────────────────────────
+     *
+     * 格式：`[禁言:QQ号:分钟]`（分钟可省略，默认 5 分钟）
+     *
+     * ⚠️ 这是**唯一**一个模型能对其他群友造成实际影响的能力，
+     *    所以铁律是：**三道闸，任何一道不过就不执行**。
+     *
+     *      ① 模型只能给 `QQ号:分钟`，不能给 action/参数
+     *      ② 代码查群成员列表，校验目标角色和时长上限
+     *      ③ 频率限制（同一目标每小时 1 次 / 全群每天 10 次）
+     *
+     * ⚠️ 还有一条更重要的：**不能让「它讨厌谁」直接变成「禁言谁」**。
+     *    模型判断「这人烦我」的依据极不可靠（一句玩笑就能被读成敌意），
+     *    而禁言对当事人是**不可见**的 —— 他不知道为什么突然不能说话。
+     *    提示词里已经写明：只在**被明确要求**时才禁言。
+     */
+    let banNote = null
+    if (this.cfg.groupAdmin?.ban !== false) {
+      const marks = extractBanMarkers(text)
+      if (marks.length > 0) {
+        text = stripBanMarkers(text)
+        // 私聊里不做群管理操作
+        if (!msg.groupId) {
+          this.log.warn?.('bridge：私聊里收到禁言标记，忽略')
+        } else if (marks.length > 1) {
+          // 一次只处理一个，避免一条回复里连环禁言
+          this.log.warn?.(`bridge：一条回复里有 ${marks.length} 个禁言标记，只执行第一个`)
+        }
+
+        const m = marks[0]
+        if (msg.groupId) {
+          try {
+            const members = await this.onebot.getGroupMembers(msg.groupId)
+            const today = new Date().toISOString().slice(0, 10)
+            if (!this._banHistory) this._banHistory = { perUser: new Map(), day: '', perDay: 0 }
+            if (this._banHistory.day !== today) {
+              this._banHistory.day = today
+              this._banHistory.perDay = 0
+            }
+            const v = validateBan({
+              userId: m.userId,
+              minutes: m.minutes,
+              selfId: this.selfId,
+              members,
+              history: this._banHistory,
+            })
+            if (!v.ok) {
+              this.log.warn?.(`bridge：禁言 ${m.userId} 被拒绝 — ${v.reason}`)
+              banNote = v.reason
+            } else {
+              await this.onebot.banMember(msg.groupId, m.userId, v.minutes * 60)
+              this._banHistory.perUser.set(m.userId, Date.now())
+              this._banHistory.perDay++
+              this.log.info?.(`bridge：已禁言 ${m.userId} ${v.minutes} 分钟`)
+              banNote = `已禁言 ${describeBanMinutes(v.minutes)}`
+            }
+          } catch (e) {
+            this.log.warn?.(`bridge：禁言执行失败 — ${String(e?.message ?? e)}`)
+            banNote = '禁言没成功'
+          }
+        }
+      }
+    }
+
+    /*
+     * ── 4d. 改昵称标记 ────────────────────────────────────────
+     *
+     * 格式：`[改昵称:新名字]`
+     *
+     * ⚠️ 这是**改自己的 QQ 昵称**，不是群名片。
+     *    群名片只影响一个群，改错了在群里一看就知道；
+     *    QQ 昵称是**全局**的 —— 所有群、所有好友、所有搜索结果里都是新名字。
+     *    改成一个莫名其妙的名字，别人会以为这号被盗了。
+     *
+     * 所以限额比禁言还紧：长度 ≤12、每小时 ≤3 次、
+     * 不许含引号/反斜杠/纯符号（见 validateNickname）。
+     */
+    let nickNote = null
+    if (this.cfg.groupAdmin?.nickname !== false) {
+      const marks = extractNicknameMarkers(text)
+      if (marks.length > 0) {
+        text = stripNicknameMarkers(text)
+        const m = marks[0]
+        if (marks.length > 1) {
+          this.log.warn?.(`bridge：一条回复里有 ${marks.length} 个改昵称标记，只执行第一个`)
+        }
+        try {
+          if (!this._nickHistory) this._nickHistory = []
+          const now = Date.now()
+          this._nickHistory = this._nickHistory.filter((x) => now - x < 3600_000)
+          const v = validateNickname({
+            name: m.name,
+            currentName: this.selfName,
+            history: this._nickHistory,
+            now,
+          })
+          if (!v.ok) {
+            this.log.warn?.(`bridge：改昵称「${m.name}」被拒绝 — ${v.reason}`)
+            nickNote = v.reason
+          } else {
+            await this.onebot.setSelfNickname(v.name)
+            this._nickHistory.push(now)
+            this.log.info?.(`bridge：昵称已改为「${v.name}」（原「${this.selfName}」）`)
+            // 让后续的自我称呼立刻用新名字
+            this.selfName = v.name
+            nickNote = `已改名为「${v.name}」`
+          }
+        } catch (e) {
+          this.log.warn?.(`bridge：改昵称失败 — ${String(e?.message ?? e)}`)
+          nickNote = '改名没成功'
+        }
+      }
+    }
+
     // 5. 发送
     try {
-      const sentIds = await this._send(msg, text, cover)
+      // findImage 的 buffer 走 base64 data URL —— OneBot 的 image 段
+      // 能直接收 URL，也能收 base64，但 URL 更省带宽。
+      const coverForSend = findImage
+        ? { url: `base64://${findImage.buffer.toString('base64')}` }
+        : cover
+      // 禁言结果附一句说明 —— 当事人得知道发生了什么，别偷偷摸摸的。
+      // 没写正文（只给了标记）时，就用这句当正文。
+      if (banNote || nickNote) {
+        const notes = [banNote, nickNote].filter(Boolean).join('；')
+        text = text.trim() ? `${text}（${notes}）` : `${notes}。`
+      }
+      const sentIds = await this._send(msg, text, coverForSend)
       this.stats.replied++
       mem.push(makeMessage({
         // ⚠️ 用自己的 message_id 记录这条回复。
@@ -1761,19 +2050,30 @@ export class QQBridge {
     if (!withImg) return out
 
     /*
-     * ⚠️ 表情包**要附图**（2026-10-26 第三次修）。
+     * 表情包**要附图**（2026-10-27 最终定）。
      *
-     * 反复横跳过两次，记录一下结论：
-     *   · 最早不附图 → 模型看不见，只能靠文字说明猜（「这谁啊」）
-     *   · 中途附图但问「像不像自己」→ 每张都硬凑（「蓝毛勉强沾点边」）
-     *   · **现在附图，但问「图上有字吗」** —— 字才是梗图的重点
+     * 反复横跳四次的完整结论：
+     *   ① 不附图，只给「（对方发了一个表情包）」文字
+     *      → 看不见就猜「这谁啊，又不是本鱼」
+     *   ② 附图 + 问「像不像自己」
+     *      → 每张都要表态（「蓝毛勉强沾点边」「这不是我，是那只青蛙」）
+     *   ③ 附图 + 问「图上有字吗」
+     *      → 会去描述画面 / 复述图上的字
+     *   ④ 不附图（上一版）
+     *      → **带字的梗图接不住了**，用户明确反馈「不看字了」
+     *   ⑤ **附图 + 严格约束「懂意思、接梗、不复述」** ← 现在
      *
-     * 不附图的话，带字的表情包等于被彻底丢弃（实测漏掉过整句吐槽）。
-     * 具体怎么解读由 `mediaHint` 约束，这里只负责把图给出去。
+     * 用户的要求很明确：「严格限制，不复述，只接梗，懂意思」。
+     * 也就是——**看懂那个梗在说什么，用自己的话接一句**，
+     * 而不是把图上的字念一遍、也不是描述画面。
+     *
+     * 约束写在 `mediaHint` 的表情包分支里，这里只负责把图给出去。
      */
     const stickerCount = (withImg.stickerRefs ?? []).length
-    if (stickerCount > 0) {
-      this.log.info?.(`bridge：这条是表情包（${stickerCount} 个）—— 附图，让模型看上面的字`)
+    const textOfImg = String(withImg.text ?? '')
+    const isStickerMsg = stickerCount > 0 || /\[表情包(?::[^\]]*)?\]/.test(textOfImg)
+    if (isStickerMsg) {
+      this.log.info?.('bridge：这条是表情包 —— 附图，让它看懂梗再自己说')
     }
 
     const refs = withImg.images.slice(0, this.cfg.reply?.maxImages ?? 2)
@@ -2152,6 +2452,9 @@ export class QQBridge {
      * 截图、聊天记录、表情包上的字，往往才是**对方想给你看的东西**。
      * 所以要求它先读字、把文字里的兴趣点提炼出来；没有字才退回去看画面。
      */
+    // 今天第一次回复时生成日程（一天最多一次，见 _ensureDayPlan）
+    await this._ensureDayPlan()
+
     const lastMsg = mem.recent(1)[0]
     const lastText = String(lastMsg?.text ?? '')
     const hasMedia = /\[表情包|\[表情:|\[图片\]/.test(lastText)
@@ -2164,36 +2467,47 @@ export class QQBridge {
       .trim()
     const hasWords = textPart.length > 0
     /*
-     * 纯表情包？—— 单独一条分支。
+     * 纯表情包？—— 用**文本标记**判断，不用 stickerRefs。
      *
-     * ⚠️ 表情包**绝不能**走「像不像你」那套判断（2026-10-27 定）。
+     * ⚠️ 之前用 `lastMsg.stickerRefs.length > 0` 判断，实测漏了：
+     * 09:37:34 那条明明显示「[表情包]」，stickerRefs 却是空的
+     * （NapCat 有时只在 text 里给标记，不给结构化字段），
+     * 于是它被当成「真图片」，走了「像不像你」分支，答「这不是本鱼」。
      *
-     * 试过让它看表情包判断像不像自己，结果它对每张都要表个态：
-     *   「这不是我，是那只青蛙。」
-     *   「喊啥啊，这又不是本鱼」
-     *   「蓝毛勉强沾点边」
-     *
-     * 群里发个表情包本来是当语气用的，它却逐个回应 —— 比不接更烦人。
-     * 表情包只看**上面的字**，没字就当斗图。
+     * 文本里的 `[表情包]` 标记是**最可靠**的依据 —— 它和发给模型的
+     * 内容同源，不会有字段缺失。
      */
-    const isStickerOnly = (lastMsg?.stickerRefs ?? []).length > 0
-      && (lastMsg?.stickerRefs ?? []).length >= (lastMsg?.images ?? []).length
+    const isStickerOnly = /\[表情包(?::[^\]]*)?\]/.test(lastText)
 
     const mediaHint = hasMedia && this.cfg.reply?.mediaHint !== false
       ? (isStickerOnly
-        // ── 纯表情包：只看字，绝不判断像不像自己 ─────────────
+        // ── 纯表情包：看懂梗，自己说，不复述 ───────────────────
         ? `## 这条是表情包
 
-**只看图上有没有字，不要管画的是什么。**
+**先看懂它在说什么梗，然后用你自己的话接一句。**
 
-- **有字**（梗图上的配字、吐槽、对话）→ 把那个意思点出来，
-  顺着那个梗接一句。这是唯一值得回的情况。
-- **没字** → 那就是表情包当语气用。**回一个表情就行**
-  （[表情包] 或 [表情:N]），不要打字。
+表情包通常分两种，**处理方式完全不同**：
 
-⚠️ **绝对不要**说「这不是我」「像我」这类话 —— 哪怕图上真的画着
-蓝头发的人或鱼。表情包不需要你认领，那是别人的图。
-⚠️ 不要描述画面（「图里是只青蛙」这种没人要听）。
+**A. 有字的梗图**（图上有句吐槽/台词/段子）
+看懂那句话在表达什么，然后**用你自己的话回应那个意思**。
+✅ 对：「这说的不就是上班吗」「有被冒犯到」
+❌ 错：把图上的字念一遍 / 「图上写着 xxx」
+
+**B. 没字的情绪图**（只有表情、动作、脸）
+**只回一个表情，不要打字。** 直接发 [表情包] 或 [表情:N]。
+不要配「哈哈」「我也是」「这表情」这种字 —— **配了就是错**。
+
+⚠️ **严格禁止**（这三条是最容易被骂的）：
+1. **描述画面** —— 「图里是只青蛙」「一个猫瞪大眼张着嘴」
+2. **把图翻译成文字** —— 「我这边也是这个表情」「吃了一惊」
+3. **认领** —— 「这不是我」「像我」「勉强沾点边」
+
+⚠️ 特别注意 **B 类**：真人收到一个「震惊猫」表情包，
+**直接甩一个表情回去**，不会说「我这边也是这个表情——吃了一惊」。
+后者是把图翻译成文字，是**最典型的机器人行为**。
+判断标准：你的回复里如果出现了**对图内容的任何转述**，就是错的。
+
+一句话：**B 类只发图不说话；A 类只说意思不念字。**
 ⚠️ 消息里形如「（对方发了个QQ表情，id=20）」的括号是**系统注解**，
 不是对话内容，绝对不要写进回复里。`
         : hasWords
@@ -2244,6 +2558,32 @@ export class QQBridge {
       extras: [
         searchContext,
         mediaHint,
+        /*
+         * ── 今日状态（抄自 X 上大肥鱼；作者说这是「活人感」最大来源）──
+         *
+         * 没有这一层时，别人问「在干嘛/吃了吗」，模型只能**现编**；
+         * 而下一个问的人会得到**另一个**答案 —— 同一天里她说自己
+         * 「刚吃完午饭」又说「还没吃」，这就是最像机器人的地方。
+         *
+         * 只给**当前时段及之前**的内容（见 renderDayPlan），
+         * 否则它会用还没发生的事回答（下午就说「我刚看完电影」）。
+         */
+        (() => {
+          const plan = this.dayPlan?.today()
+          if (!plan) return ''
+          return renderDayPlan(plan, currentSlot().id)
+        })(),
+        /*
+         * ── 换个说法 + 表情开关（抄自「坑 10：回复越来越像模板」）──
+         *
+         * 单条看不出来，批量看立刻露馅：一天下来开头全是
+         * 「在的在的」「行吧」「啊这」。人不会每次同一个起手式。
+         *
+         * 把最近十几条的开头列出来要求错开；表情包/QQ 表情
+         * 用过一次就不给用（交替开放），避免连着甩图。
+         */
+        buildVarietyHint(mem.recent(20)),
+        buildExpressionHint(mem.recent(20)).hint,
         /*
          * 主动发言的场景说明。
          *
@@ -2340,41 +2680,86 @@ export class QQBridge {
     if (Number.isFinite(mt) && mt > 0) request.maxTokens = mt
     // 推理等级：用户在侧栏「推理等级」下拉里选的。
     //
-    // ⚠️ 必须**校验这个等级对当前模型是否合法**，不能直接透传。
-    //    等级是模型相关的：gemini 支持 tiered，buddy 不支持。用户在 auto
-    //    模式下选了一个并集里的等级（比如 tiered），之后模型切到 buddy，
-    //    这个值就非法了 —— 透传会让**每一次**生成都失败：
-    //      provider "buddy" model "xxx" does not support reasoning effort "tiered"
-    //    用户看到的是"机器人不回复了"，完全联想不到是等级不匹配。
-    //    这里按 resolveModelInfo 报的 efforts 校验，不合法就退回默认（不传）。
+    /*
+     * ⚠️ 必须**校验这个等级对模型是否合法**，不能直接透传。
+     *    等级是模型相关的：gemini 支持 tiered，buddy 不支持。用户在 auto
+     *    模式下选了一个并集里的等级（比如 tiered），之后模型切到 buddy，
+     *    这个值就非法了 —— 透传会让**每一次**生成都失败：
+     *      provider "buddy" model "xxx" does not support reasoning effort "tiered"
+     *    用户看到的是"机器人不回复了"，完全联想不到是等级不匹配。
+     *
+     * ⚠️ 2026-10-27 改：auto 模式下**也**传等级（原来这里直接跳过）。
+     *
+     *    原来的逻辑是「只有显式指定模型才校验并传」，理由是 auto 时逐个
+     *    候选校验太贵。但那等于 auto 用户永远拿不到思考强度设置 ——
+     *    而 `qq.model = magpie/auto/deepseek-v4.1-flash` 里的 `auto`
+     *    只是「渠道内自动选模型」，用户仍然期望能调强度。
+     *
+     *    现在改成：**查候选里第一个支持该等级的模型**。查到就传
+     *    （大概率会和实际路由到的模型一致）；查不到就退回默认。
+     *    只看前 3 个候选，避免一堆网络请求。
+     */
     if (typeof this.cfg.effort === 'string' && this.cfg.effort !== '') {
       const wanted = this.cfg.effort
-      // 只对**显式指定**的模型校验：auto 模式下每个候选模型的等级集合都不同，
-      // 逐候选校验代价太高（每个都要 resolveModelInfo）。auto 时宁可不传等级，
-      // 让适配器用自己的默认 —— 这样永远不会因为等级不匹配而整轮失败。
       const explicit = this.cfg.model !== undefined && this.cfg.model !== '' && this.cfg.model !== 'auto'
-      if (explicit) {
-        let ok = false
+      let ok = false
+      const probe = explicit ? candidates.slice(0, 1) : candidates.slice(0, 3)
+      for (const c of probe) {
         try {
-          const info = await this.gateway?.resolveModelInfo?.(candidates[0]?.provider, candidates[0]?.model)
-          const list = (info?.reasoning?.efforts ?? []).map((e) => (typeof e === 'string' ? e : e?.id)).filter(Boolean)
-          ok = list.includes(wanted)
-          if (!ok && list.length > 0) {
-            this.log.warn?.(`bridge：模型 ${candidates[0]?.provider}/${candidates[0]?.model} 不支持推理等级 "${wanted}"（支持：${list.join('/')}），本次改用默认`)
+          const info = await this.gateway?.resolveModelInfo?.(c?.provider, c?.model)
+          const list = (info?.reasoning?.efforts ?? [])
+            .map((e) => (typeof e === 'string' ? e : e?.id))
+            .filter(Boolean)
+          if (list.includes(wanted)) { ok = true; break }
+          if (list.length > 0) {
+            this.log.warn?.(`bridge：模型 ${c?.provider}/${c?.model} 不支持推理等级 "${wanted}"（支持：${list.join('/')}）`)
           }
-        } catch { ok = true /* 查不到就照传，交给适配器判断 */ }
-        if (ok) request.reasoningEffort = wanted
+        } catch { ok = true /* 查不到就照传，交给适配器判断 */; break }
       }
+      if (ok) request.reasoningEffort = wanted
     }
 
-    const opened = await openFirstAvailable({
-      llm: this.gateway,
-      candidates,
-      request,
-      onAttempt: (a) => {
-        if (!a.ok) this.log.debug?.(`bridge：渠道 ${a.provider}/${a.model} 不可用 — ${a.error}`)
-      },
-    })
+    /*
+     * 发请求。如果**所有候选都因为推理等级不支持而失败**，去掉等级重试一次。
+     *
+     * ⚠️ 为什么要这一层（2026-10-27）：
+     *
+     * 用户在 auto 模式下选了等级后，`candidates` 里的模型集合是会变的
+     * （免费渠道轮转）。今天支持 `medium` 的模型明天可能换成不支持的。
+     * 那种情况下 `openFirstAvailable` 会把每个候选都试一遍然后整体抛错 ——
+     * 用户看到的是「机器人不回复了」，完全联想不到是等级问题。
+     *
+     * 判断依据是错误文案里有没有 `reasoning effort` / `does not support`，
+     * 这是各家适配器报这个错时的共同措辞。命中就去掉等级重来一次，
+     * 保证「最坏情况是等级不生效」，而不是整轮失败。
+     */
+    let opened
+    try {
+      opened = await openFirstAvailable({
+        llm: this.gateway,
+        candidates,
+        request,
+        onAttempt: (a) => {
+          if (!a.ok) this.log.debug?.(`bridge：渠道 ${a.provider}/${a.model} 不可用 — ${a.error}`)
+        },
+      })
+    } catch (e) {
+      const msg = String(e?.message ?? '')
+      const effortProblem = request.reasoningEffort && /reasoning.?effort|does not support/i.test(msg)
+      if (!effortProblem) throw e
+      this.log.warn?.(
+        `bridge：推理等级 "${request.reasoningEffort}" 当前模型都不支持 —— 去掉等级重试（原始错误：${msg.slice(0, 120)}）`,
+      )
+      delete request.reasoningEffort
+      opened = await openFirstAvailable({
+        llm: this.gateway,
+        candidates,
+        request,
+        onAttempt: (a) => {
+          if (!a.ok) this.log.debug?.(`bridge：渠道 ${a.provider}/${a.model} 不可用 — ${a.error}`)
+        },
+      })
+    }
 
     // 图片进没进请求 + 路由到了哪个模型 —— 两者决定"它到底看没看到图"：
     //   · imageCache 为空 → 模型只看到 "[图片]" 文字，当然"看不见"
