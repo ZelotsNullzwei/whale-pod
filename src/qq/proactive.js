@@ -77,6 +77,20 @@ export class ProactiveState {
     /** 今天讨了几次 */
     this.begCount = 0
     /** 今天主动说了几次 */
+    /*
+     * 每日主动发言次数 —— **群聊和私聊分开算**（2026-10-27 用户要求）。
+     *
+     * 原来是一个全局 `speakCount`，群和私聊共用 maxPerDay（3 次）。
+     * 问题：它早上在群里冒过两次泡，下午想找你时额度已经用完了 ——
+     * 而这两个场景根本不是一回事：
+     *   · 群里冒泡是「维持存在感」，额度该小一点
+     *   · 私聊找你是「主动联系熟人」，不该被群聊的消耗挤掉
+     *
+     * 所以拆成两份各自计数、各自封顶 3 次。
+     */
+    this.speakCountGroup = 0
+    this.speakCountPrivate = 0
+    /** 旧字段名，只为了读老 state.json 时迁移，见构造函数里的反序列化 */
     this.speakCount = 0
     /** 这两个计数属于哪一天 */
     this.day = dayKey()
@@ -96,7 +110,19 @@ export class ProactiveState {
       const raw = this.fs.readFileSync(this.file, 'utf8')
       const d = JSON.parse(raw)
       if (Number.isFinite(d?.begCount)) this.begCount = d.begCount
-      if (Number.isFinite(d?.speakCount)) this.speakCount = d.speakCount
+    if (Number.isFinite(d?.speakCountGroup)) this.speakCountGroup = d.speakCountGroup
+    if (Number.isFinite(d?.speakCountPrivate)) this.speakCountPrivate = d.speakCountPrivate
+    /*
+     * ⚠️ 向后兼容：老 state.json 只有一个 `speakCount`，分不清群还是私聊。
+     *
+     * 保守做法 —— 把它算进**群**：
+     *   · 群额度本来就更容易用完，算错方向影响小
+     *   · 反过来把未知消耗算到私聊，会让「主动找你」在升级当天就失效
+     */
+    if (Number.isFinite(d?.speakCount) && !Number.isFinite(d?.speakCountGroup)) {
+      this.speakCountGroup = d.speakCount
+    }
+    this.speakCount = this.speakCountGroup + this.speakCountPrivate
       if (typeof d?.day === 'string') this.day = d.day
       if (Number.isFinite(d?.lastBegAt)) this.lastBegAt = d.lastBegAt
       if (Number.isFinite(d?.lastSpeakAt)) this.lastSpeakAt = d.lastSpeakAt
@@ -113,7 +139,8 @@ export class ProactiveState {
       const payload = JSON.stringify({
         day: this.day,
         begCount: this.begCount,
-        speakCount: this.speakCount,
+      speakCountGroup: this.speakCountGroup,
+      speakCountPrivate: this.speakCountPrivate,
         lastBegAt: this.lastBegAt,
         lastSpeakAt: this.lastSpeakAt,
         lastBalanceCheckAt: this.lastBalanceCheckAt,
@@ -138,6 +165,8 @@ export class ProactiveState {
     if (this.day === today) return false
     this.day = today
     this.begCount = 0
+    this.speakCountGroup = 0
+    this.speakCountPrivate = 0
     this.speakCount = 0
     return true
   }
@@ -226,11 +255,14 @@ export class ProactiveScheduler {
     if (this.cfg.enabled === true && this.onSpeak) {
       const idleNeed = Math.max(1, Number(this.cfg.idleMinutes ?? 45)) * 60_000
       const cooldown = Math.max(1, Number(this.cfg.cooldownMinutes ?? 180)) * 60_000
-      const left = Math.max(0, Number(this.cfg.maxPerDay ?? 3) - this.state.speakCount)
+      /*
+       * ⚠️ 额度按**类别**算（群/私聊各 3 次），不是总数 3 次。
+       *    所以这里要问「有没有哪一类还有额度」，而不是「总数还有没有」。
+       */
+      const usable = this.scopesWithQuota()
       const quietEnough = this.idleMs() >= idleNeed
       const cooled = t - this.state.lastSpeakAt >= cooldown
-      const hasScope = this.scopes().length > 0
-      if (quietEnough && cooled && left > 0 && hasScope) wantSpeak = true
+      if (quietEnough && cooled && usable.length > 0) wantSpeak = true
     }
 
     // 讨钱优先：它是「有实际用处的」；主动发言是锦上添花，让路。
@@ -279,6 +311,30 @@ export class ProactiveScheduler {
   }
 
   /**
+   * 某类会话今天还能说几次。
+   *
+   * @param {'group'|'private'} kind
+   * @returns {number}
+   */
+  speakLeft(kind) {
+    const max = Math.max(0, Number(this.cfg.maxPerDay ?? 3))
+    const used = kind === 'private' ? this.state.speakCountPrivate : this.state.speakCountGroup
+    return Math.max(0, max - used)
+  }
+
+  /**
+   * 现在还能说话的会话类别。
+   *
+   * ⚠️ 必须按**具体会话**判断额度，不能只看「还有没有额度」——
+   *    否则会出现「群额度用完了、说没有会话可发」但它其实还能找你。
+   *
+   * @returns {Array<object>} 过滤后的 scope 列表
+   */
+  scopesWithQuota() {
+    return this.scopes().filter((s) => this.speakLeft(s.kind === 'private' ? 'private' : 'group') > 0)
+  }
+
+  /**
    * 单独判断「现在能不能发言」。
    *
    * 抽出来是为了在讨钱失败时复用 —— 否则那段条件得写两遍。
@@ -292,8 +348,13 @@ export class ProactiveScheduler {
     if (!inActiveHours(this.cfg.hours, now)) return { ok: false, reason: '不在时段' }
     const idleNeed = Math.max(1, Number(this.cfg.idleMinutes ?? 45)) * 60_000
     const cooldown = Math.max(1, Number(this.cfg.cooldownMinutes ?? 180)) * 60_000
-    const left = Math.max(0, Number(this.cfg.maxPerDay ?? 3) - this.state.speakCount)
-    if (left <= 0) return { ok: false, reason: '今日已说满' }
+    const usable = this.scopesWithQuota()
+    if (usable.length === 0) {
+      // 分开报数 —— 只说「今日已说满」会让人以为两类都用完了
+      const g = this.speakLeft('group')
+      const p2 = this.speakLeft('private')
+      return { ok: false, reason: `今日已说满（群剩 ${g} / 私聊剩 ${p2}）` }
+    }
     if (t - this.state.lastSpeakAt < cooldown) return { ok: false, reason: '冷却中' }
     const idle = this.idleMs()
     const idleMin = idle === Infinity ? '∞' : Math.round(idle / 60_000)
@@ -304,9 +365,10 @@ export class ProactiveScheduler {
         reason: `还不够安静（静默 ${idleMin} 分钟 / 需要 ${Math.round(idleNeed / 60_000)}）`,
       }
     }
-    const scopeList = this.scopes()
-    if (scopeList.length === 0) return { ok: false, reason: '没有可发言的会话' }
-    return { ok: true, reason: `可以发言（静默 ${idleMin} 分钟，${scopeList.length} 个会话）` }
+    return {
+      ok: true,
+      reason: `可以发言（静默 ${idleMin} 分钟，${usable.length} 个会话还有额度）`,
+    }
   }
 
   /**
@@ -338,13 +400,21 @@ export class ProactiveScheduler {
 
   async _doSpeak(now) {
     const t = now.getTime()
-    const list = this.scopes()
+    /*
+     * 只从**还有额度**的会话里挑（群/私聊各算各的）。
+     *
+     * 随机挑是为了不让第一个群觉得它在盯人；但随机范围要先按额度过滤，
+     * 否则会挑到「这一类今天已经说满」的会话，发出去就超了。
+     */
+    const list = this.scopesWithQuota()
     if (list.length === 0) return
-    // 随机挑一个 —— 总挑第一个的话，第一个群会以为它在盯人
     const scope = list[Math.floor(Math.random() * list.length)]
     const ok = await this.onSpeak(scope)
     if (ok) {
-      this.state.speakCount += 1
+      // 按实际发到哪一类来计数
+      if (scope.kind === 'private') this.state.speakCountPrivate += 1
+      else this.state.speakCountGroup += 1
+      this.state.speakCount = this.state.speakCountGroup + this.state.speakCountPrivate
       this.state.lastSpeakAt = t
     }
     this.state.save()

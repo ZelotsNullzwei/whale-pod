@@ -58,21 +58,22 @@ await ok('dayKey 用本地时区', () => {
 await ok('跨天把每日计数清零', () => {
   const s = new ProactiveState()
   s.begCount = 2
-  s.speakCount = 3
+  s.speakCountGroup = 3
   s.day = '2026-10-25'
   const reset = s.rollDay(at(10))
   assert.equal(reset, true)
   assert.equal(s.begCount, 0)
-  assert.equal(s.speakCount, 0)
+  assert.equal(s.speakCountGroup, 0)
+  assert.equal(s.speakCountPrivate, 0)
   assert.equal(s.day, '2026-10-26')
 })
 
 await ok('同一天不重置', () => {
   const s = new ProactiveState()
   s.day = dayKey(at(10))
-  s.speakCount = 2
+  s.speakCountGroup = 2
   assert.equal(s.rollDay(at(11)), false)
-  assert.equal(s.speakCount, 2)
+  assert.equal(s.speakCountGroup, 2)
 })
 
 // ── 开关互不影响 ────────────────────────────────────────────
@@ -154,7 +155,7 @@ await ok('静默不够久 → 不发言', async () => {
 
 await ok('每日上限用完 → 不发言', async () => {
   const { s, state, calls } = speakOn({ cfg: { enabled: true, idleMinutes: 45, cooldownMinutes: 0, maxPerDay: 2, hours: [0, 24] } })
-  state.speakCount = 2
+  state.speakCountGroup = 2
   await s.tick(at(10))
   assert.equal(calls.speak, 0, '已经 2 次了（上限 2）')
 })
@@ -188,7 +189,7 @@ await ok('半夜 → 两个都不做', async () => {
 await ok('发言成功后记一次 + 记时间', async () => {
   const { s, state } = speakOn()
   await s.tick(at(10))
-  assert.equal(state.speakCount, 1)
+  assert.equal(state.speakCountGroup, 1)
   assert.equal(state.lastSpeakAt, at(10).getTime())
 })
 
@@ -274,6 +275,77 @@ await ok('planSpeak 单独判断可用', () => {
   })
   assert.equal(s.planSpeak(at(10)).ok, true)
   assert.match(s.planSpeak(at(10)).reason, /可以发言/)
+})
+
+
+// ── 群 / 私聊额度分开算（2026-10-27 用户要求）────────────────
+function mkSched(kinds) {
+  const state = new ProactiveState({ fs: { writeFileSync() {}, renameSync() {} }, file: '/tmp/none.json' })
+  const scopeList = kinds.map((k, i) => (k === 'private'
+    ? { kind: 'private', scope: `private:1000${i}` }
+    : { kind: 'group', scope: `group:2000${i}` }))
+  const sched = new ProactiveScheduler({
+    cfg: { enabled: true, maxPerDay: 3, idleMinutes: 1, cooldownMinutes: 0, hours: [0, 24] },
+    begCfg: { enabled: false },
+    state,
+    scopes: () => scopeList,
+    onSpeak: async () => true,
+    now: () => new Date('2026-10-27T10:00:00+08:00').getTime(),
+    log: {},
+  })
+  return { state, sched }
+}
+
+await ok('群额度用完不影响私聊额度', () => {
+  const { state, sched } = mkSched(['group', 'private'])
+  state.speakCountGroup = 3
+  assert.equal(sched.speakLeft('group'), 0)
+  assert.equal(sched.speakLeft('private'), 3)
+})
+
+await ok('私聊额度用完不影响群额度', () => {
+  const { state, sched } = mkSched(['group', 'private'])
+  state.speakCountPrivate = 3
+  assert.equal(sched.speakLeft('group'), 3)
+  assert.equal(sched.speakLeft('private'), 0)
+})
+
+await ok('scopesWithQuota 只留还有额度的类别', () => {
+  const { state, sched } = mkSched(['group', 'private'])
+  state.speakCountGroup = 3
+  const list = sched.scopesWithQuota()
+  assert.equal(list.length, 1, '应该只剩私聊')
+  assert.equal(list[0].kind, 'private')
+})
+
+await ok('两类都满 → planSpeak 报出各自剩余', () => {
+  const { state, sched } = mkSched(['group', 'private'])
+  state.speakCountGroup = 3
+  state.speakCountPrivate = 3
+  const r = sched.planSpeak(new Date('2026-10-27T10:00:00+08:00'))
+  assert.equal(r.ok, false)
+  assert.ok(/群剩 0/.test(r.reason), 'reason 要说明群剩多少')
+  assert.ok(/私聊剩 0/.test(r.reason), 'reason 要说明私聊剩多少')
+})
+
+await ok('老 state.json 只有 speakCount → 迁移进群额度', () => {
+  /*
+   * ⚠️ ProactiveState **没有静态 fromJSON**，反序列化只发生在
+   *    `load()` 里（`file` + `fs` 齐了才调）。所以测试要给一个
+   *    假的 fs 去「读」那段老 JSON —— 直接传 opts.data 是无效的
+   *    （这坑当场踩过两次）。
+   */
+  const oldJson = JSON.stringify({ day: dayKey(new Date()), speakCount: 2 })
+  const st = new ProactiveState({
+    file: '/tmp/fake-state.json',
+    fs: {
+      readFileSync: () => oldJson,
+      writeFileSync() {},
+      renameSync() {},
+    },
+  })
+  assert.equal(st.speakCountGroup, 2, '未知来源的消耗算进群（保守）')
+  assert.equal(st.speakCountPrivate, 0, '私聊不该被扣')
 })
 
 console.log(`\n通过 ${pass} / 失败 ${fail}`)

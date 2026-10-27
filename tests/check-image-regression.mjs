@@ -80,5 +80,36 @@ ok('解析失败有明确日志', () => {
   assert.ok(/日程生成：模型输出无法解析/.test(INDEX))
 })
 
+
+// ── ④ 主动发言必须走 _send（分段/表情/剥句都要生效）────────
+ok('主动发言不再直接 onebot.sendGroup/sendPrivate', () => {
+  /*
+   * 实测症状（群里 16:03 那条）：
+   *   「显卡那事啊，我不懂行情，就知道贵，打游戏没用就是纯坑。
+   *
+   *    要问还得问番茄」
+   * 本该是**两条**消息（空行 = 显式分段意图），结果挤在一条里，
+   * 中间一个空行，看起来像卡住了没发完。
+   *
+   * 根因是 onSpeak 直接调 onebot.sendGroup，绕过了 _send 里的
+   * splitMessage / 表情标记解析 / [SILENT] 剥离。
+   */
+  const code = BRIDGE.split('\n')
+    .filter((l) => !l.trim().startsWith('*') && !l.trim().startsWith('//'))
+  const badLines = code.filter((l) =>
+    /onebot\.send(Group|Private)\(msg\.(groupId|userId),\s*clean\)/.test(l))
+  assert.equal(badLines.length, 0,
+    'onSpeak 里不该再有 onebot.sendX(msg.x, clean) —— 要改走 _send')
+})
+
+ok('主动发言用 _send 并且记了自己的 message_id', () => {
+  const code = BRIDGE.split('\n')
+    .filter((l) => !l.trim().startsWith('*') && !l.trim().startsWith('//'))
+    .join('\n')
+  assert.ok(/_send\(full,\s*clean\)/.test(code), '应该 _send(full, clean)')
+  assert.ok(/proactive：\[我主动\].*\$\{sentIds\.length\}/.test(code),
+    '日志应该带实际发了几条')
+})
+
 console.log(`\n通过 ${pass} / 失败 ${fail}`)
 process.exit(fail > 0 ? 1 : 0)

@@ -951,6 +951,49 @@ export class QQBridge {
     try {
       const scene = await this.sceneOf(msg)
       const self = { id: this.selfId, name: this.selfName }
+      /*
+       * ── 按「距上次有人说话」分成两档 ────────────────────────
+       *
+       * ⚠️ 这是用户明确指出的问题（2026-10-27）：
+       *
+       *   16:03 主动说「显卡那事啊，我不懂行情…」
+       *   而群里聊显卡是 13:xx 前后 —— **隔了两个多小时**。
+       *
+       * 真人不会在沉默两小时后突然接两小时前的话题，那太怪了。
+       * 「接着刚才的话题」这句话在**小间隔**下是对的（补一句话），
+       * 在**大间隔**下就成了「翻旧账」。
+       *
+       * 分界定在 20 分钟：
+       *   · < 20 分钟 = 同一个话头还没散，可以接
+       *   · ≥ 20 分钟 = 已经翻篇了，只能开**新**话题（今日状态里的小事）
+       *
+       * 触发阈值是 45 分钟，所以实际上大部分主动发言都会落在
+       * 「新话题」这一档 —— 这正是想要的效果。
+       */
+      const idle = (() => {
+        try {
+          const v = mem?.sinceLastMessage?.()
+          return Number.isFinite(v) ? v : Infinity
+        } catch { return Infinity }
+      })()
+      const FRESH_MS = 20 * 60_000
+      const gapText = idle === Infinity
+        ? '（这个会话之前没有记录）'
+        : `（距上次有人说话已经 ${Math.round(idle / 60_000)} 分钟）`
+
+      const speakHint = idle < FRESH_MS
+        ? `（没有人在说话。你自己找个话头开口 —— 接着刚才的话题、或者随便聊点什么都行。不要说"没人说话"这种话，直接说你想说的。）`
+        : `（没有人说话已经有一阵了。${gapText}
+
+**不要接之前的话题** —— 那已经翻篇了，现在再提显得很奇怪（像翻旧账）。
+
+要开口就开一个**新的**话头，从这些里挑一个：
+· 你自己今天的一件小事（吃了什么、在干嘛、看到什么）—— 按「今天我」的状态说
+· 一个没有上下文的通用感慨（天气、困、想睡觉）
+· 或者干脆别开口 —— 输出 [SILENT]
+
+⚠️ 不要提「刚才那个」「之前说的」「那个事」这类指代 —— 没人记得你说的是哪件。`
+
       // 私聊时 sender 就是对方；群里没有具体发言人，留空。
       const full = {
         ...msg,
@@ -967,8 +1010,8 @@ export class QQBridge {
          * 场景说明改由 `speakHint` 单独传给 `_generate`，不进 text。
          */
         text: '',
-        speakHint: '（没有人在说话。你自己找个话头开口 —— 接着刚才的话题、'
-          + '或者随便聊点什么都行。不要说"没人说话"这种话，直接说你想说的。）',
+        // 场景说明：按「距上次说话多久」分两档，见本方法开头的说明
+        speakHint,
         isMe: false,
         at: Date.now(),
       }
@@ -983,11 +1026,34 @@ export class QQBridge {
         this.log.info?.('proactive：模型选择不说')
         return false
       }
-      if (msg.kind === 'group') await this.onebot.sendGroup(msg.groupId, clean)
-      else await this.onebot.sendPrivate(msg.userId, clean)
+      /*
+       * ⚠️ 走 `_send`，不要直接 `onebot.sendGroup`（2026-10-27 修）。
+       *
+       * 原来这里是：
+       *   if (group) await this.onebot.sendGroup(msg.groupId, clean)
+       *   else       await this.onebot.sendPrivate(msg.userId, clean)
+       *
+       * 直接发原始文本 = **绕过了 `_send` 里的所有处理**：
+       *   · 分段（`splitMessage`）—— 模型输出里的空行本该拆成两条消息
+       *   · 表情标记（`[表情:N]` / `[表情包]`）—— 不解析会原样发出方括号
+       *   · `[SILENT]` 剥离、超长截断、引用回复
+       *
+       * 实测症状（群里 16:03 那条）：
+       *   「显卡那事啊，我不懂行情，就知道贵，打游戏没用就是纯坑。
+       *
+       *    要问还得问番茄」
+       * 本该是**两条**消息（空行 = 显式分段意图），结果挤在一条里，
+       * 中间一个空行，看起来像卡住了没发完。
+       *
+       * `_send` 的第一个参数需要 `{ scope, kind, groupId, userId }` ——
+       * `full` 就是 msg 的展开，字段齐。
+       */
+      const sentIds = await this._send(full, clean)
       mem.push(makeMessage({ sender: this.selfId ?? '0', senderName: this.selfName, text: clean, isMe: true, at: Date.now() }))
       this.stats.replied++
-      this.log.info?.(`proactive：[我主动] ${msg.scope}「${clean.slice(0, 100)}」`)
+      const where = msg.kind === 'group' ? `群` : `私聊`
+      this.log.info?.(`proactive：[我主动] ${msg.scope}（${where}，${sentIds.length} 条）「${clean.slice(0, 100)}」`)
+      this._rememberMyReplyIds(msg.scope, sentIds)
       return true
     } catch (e) {
       this.log.warn?.(`proactive：主动发言失败 — ${String(e?.message ?? e)}`)
