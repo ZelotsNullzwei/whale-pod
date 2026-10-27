@@ -2045,8 +2045,33 @@ export class QQBridge {
       return out
     }
 
-    // 从最新往前找，只取一条
-    const withImg = [...recent].reverse().find((m) => !m.isMe && (m.images ?? []).length > 0)
+    /*
+     * ⚠️ 只取**当前这条消息**的图（2026-10-27 修）。
+     *
+     * 原来是 `[...recent].reverse().find(m => m.images.length > 0)` ——
+     * 从**整个历史**里倒着找最近一条带图的。
+     *
+     * 后果非常糟：群里有人发了一张图之后，**接下来每一条纯文本消息**
+     * 都会把那张旧图重新附一遍。实测私聊里：
+     *
+     *   11:43:50  有人发表情包 → 附图 1 张（正确）
+     *   11:44:36  「？」        → 又附图 1 张（错！这是上一张图）
+     *   11:44:50  「？」        → 还是那张图
+     *   11:45:08  「这里啊」    → 还是那张图
+     *
+     * 而且它还会拿这张旧图回答「图呢」这种问题，等于答非所问。
+     *
+     * 正确行为：只有**当前消息本身**带图时才附图。
+     * 历史里的图对模型没用 —— 要看也只是「对方之前发过图」，
+     * 那个信息已经在文本里了（`[表情包]` / `[图片]` 标记）。
+     */
+    const withImg = (() => {
+      // history 的最后一条就是当前正在处理的这条消息
+      const cur = recent[recent.length - 1]
+      if (!cur || cur.isMe) return null
+      if ((cur.images ?? []).length > 0) return cur
+      return null
+    })()
     if (!withImg) return out
 
     /*

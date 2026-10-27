@@ -666,10 +666,19 @@ export async function main(argv = process.argv.slice(2)) {
         request: { messages: [{ role: 'user', content: [{ type: 'text', text: prompt }] }] },
       })
       let out = ''
+      /*
+       * ⚠️ 消费方式和 summarize 保持一致（2026-10-27 修）。
+       *
+       * 原来这里分 type 取不同字段（'text' → chunk.text、'text-delta' →
+       * chunk.textDelta），实测**拿到空串** —— 日志「日程生成：模型输出
+       * 无法解析 — 」后面什么都没有。同一个网关，summarize 用
+       * `chunk.text` 就好好的，说明 chunk 里的字段名和 type 不是一一对应。
+       *
+       * 所以统一读 `chunk.text`，不猜 type。
+       */
       for await (const chunk of opened.stream) {
         if (typeof chunk === 'string') { out += chunk; continue }
-        if (chunk?.type === 'text' && typeof chunk.text === 'string') out += chunk.text
-        else if (chunk?.type === 'text-delta' && typeof chunk.textDelta === 'string') out += chunk.textDelta
+        if (typeof chunk?.text === 'string') out += chunk.text
       }
       const plan = parseDayPlan(out)
       if (!plan) {

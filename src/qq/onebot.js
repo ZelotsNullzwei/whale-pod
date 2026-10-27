@@ -650,6 +650,43 @@ export class OneBotClient {
   }
 
   /**
+   * 重新向协议端要一份**新鲜的**图片地址。
+   *
+   * ## 为什么需要
+   *
+   * QQ 的图片下载地址带时效签名（rkey），几分钟就失效。而我们的链路
+   * 「收到消息 → 生成回复」中间可能隔好几秒（排日程、排队、模型思考），
+   * 等真去下载时签名已经烂了 —— 上游直接回 HTTP 400。
+   *
+   * 实测（2026-10-27）：
+   *   11:43:41  onebot：图片下载失败 HTTP 400
+   *             https://multimedia.nt.qq.com.cn/download?appid=1406&fileid=…
+   *   11:43:41  bridge：有图片但一张都没入库，本条按纯文本发送
+   *
+   * 那一刻恰好是当天第一次回复，前面多跑了一次日程生成，把时间拖过了。
+   *
+   * 拿到新地址后调用方会重试下载，通常就能成功。
+   *
+   * @param {string} ref  原始的图片 ref（file / file_id）
+   * @returns {Promise<string|null>}
+   */
+  async _freshImageUrl(ref) {
+    const raw = String(ref ?? '').trim()
+    if (!raw) return null
+    // 已经是 http(s) 的说明拿不到更新的了（协议端没给 id）
+    for (const arg of [{ file: raw }, { file_id: raw }]) {
+      try {
+        const res = await this.call('get_image', arg, 8000)
+        const d = res?.data ?? {}
+        const url = d.url ?? d.file ?? d.path
+        if (url && /^https?:\/\//i.test(String(url))) return String(url)
+      } catch { /* 换下一个参数名 */ }
+    }
+    return null
+  }
+
+
+  /**
    * 把一条图片消息解析成 base64 data URL（供多模态模型用）。
    *
    * OneBot 的图片段可能是这些形式：
@@ -722,6 +759,9 @@ export class OneBotClient {
       return null
     }
 
+    // 是否已经为重试换过一次 URL（防止无限递归）
+    let retried = opts.__retried === true
+
     // 下载（带大小限制）
     try {
       const ctl = new AbortController()
@@ -740,10 +780,32 @@ export class OneBotClient {
         clearTimeout(timer)
       }
       if (!res.ok) {
+        /*
+         * ⚠️ HTTP 400 / 403 = QQ 图片 URL 的 rkey 过期了（2026-10-27 实测）。
+         *
+         * QQ 给的下载地址带时效签名，几分钟内有效。而我们的链路里
+         * 「收到消息 → 生成回复」可能隔几秒（生成日程、排队、模型思考），
+         * 等真去下载时签名已经烂了，上游直接 400。
+         *
+         * 原来的行为是直接放弃 → 日志「有图片但一张都没入库」，
+         * 模型只能对着「（对方发了一张图）」瞎猜。
+         *
+         * 现在：400/403 时**重新问一次 get_image** 换新签名再下载。
+         * 只重试一次 —— 再失败就说明不是签名问题，继续重试没意义。
+         */
+        const expired = res.status === 400 || res.status === 403
+        if (expired && !retried) {
+          retried = true
+          this.log.info?.(`onebot：图片地址可能过期（HTTP ${res.status}），换新地址重试一次`)
+          const fresh = await this._freshImageUrl(ref)
+          if (fresh && fresh !== target) {
+            target = fresh
+            return this.fetchImage(fresh, { ...opts, __retried: true })
+          }
+        }
         this.log.warn?.(`onebot：图片下载失败 HTTP ${res.status}（${target.slice(0, 80)}）`)
         return null
       }
-      // 兜底通道返回的是 {headers, body}，标准 fetch 返回 Response —— 统一取值
       const headerOf = (k) => (typeof res.headers?.get === 'function'
         ? res.headers.get(k)
         : res.headers?.[k.toLowerCase()] ?? res.headers?.[k] ?? null)
