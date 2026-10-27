@@ -29,6 +29,7 @@ import { createDecisionLayer } from './decision/index.js'
 import { createWebServer } from './web/server.js'
 import { MemoryStore } from './memory/short.js'
 import { LongTermStore } from './memory/long.js'
+import { DayPlanStore } from './memory/dayPlan.js'
 import { PeopleStore } from './memory/person.js'
 import { PersonaStore } from './persona/store.js'
 import { OneBotClient } from './qq/onebot.js'
@@ -515,6 +516,15 @@ export async function main(argv = process.argv.slice(2)) {
         return text.trim()
       },
     })
+
+  /*
+   * 今日状态：每天一份日程（几点起、三餐、在干嘛、心情）。
+   *
+   * 抄自 X 上大肥鱼的做法 —— 作者说这是「活人感」最大来源。
+   * 没有它时，别人问「在干嘛」模型只能现编，而且同一天里
+   * 对不同的人会编出互相矛盾的答案（「刚吃完午饭」又说「还没吃」）。
+   */
+  const dayPlan = new DayPlanStore({ dir: memoryDir, log }).load()
     longMemory.load()
 
     // 人物档案：按 QQ 号认人。跨会话共享。
@@ -624,7 +634,55 @@ export async function main(argv = process.argv.slice(2)) {
       log.info(`QQ：把 AstrBot 的 API 地址指向 ${hint.apiBase}`)
     } else if (cfg.qq?.enabled === true) {
       const onebot = new OneBotClient(cfg.qq.onebot ?? {}, { log })
-      const bridge = new QQBridge({
+      /**
+   * 生成「今天」的日程（JSON）。
+   *
+   * 抄自 X 上大肥鱼 —— 每天一次，要求平平常常、具体、有一两件小事，
+   * 并参考前几天避免重样。结果存进 DayPlanStore，一整天都用它回答
+   * 「在干嘛 / 吃了吗」。
+   *
+   * ⚠️ 失败返回 null（不影响聊天）—— 那天就没有今日状态，
+   *    模型回到「现编」的老样子，但至少不会崩。
+   */
+  const generateDayPlan = async ({ recent = [] } = {}) => {
+    try {
+      const { buildDayPlanPrompt, parseDayPlan } = await import('./memory/dayPlan.js')
+      const prompt = buildDayPlanPrompt({
+        selfName: cfg.persona?.name ?? '蓝色大肥鱼',
+        recent,
+      })
+      const candidates = resolveCandidates('auto', {
+        freeProviders: llm.providers,
+        freeOrder: cfg.gateway?.freeProviders ?? [],
+        disabledProviders: cfg.gateway?.disabledProviders ?? [],
+        catalog: llm.catalog,
+        selfModels: llm.defaultModels?.() ?? {},
+        fallback: cfg.gateway?.fallback,
+      })
+      if (candidates.length === 0) return null
+      const opened = await openFirstAvailable({
+        llm,
+        candidates,
+        request: { messages: [{ role: 'user', content: [{ type: 'text', text: prompt }] }] },
+      })
+      let out = ''
+      for await (const chunk of opened.stream) {
+        if (typeof chunk === 'string') { out += chunk; continue }
+        if (chunk?.type === 'text' && typeof chunk.text === 'string') out += chunk.text
+        else if (chunk?.type === 'text-delta' && typeof chunk.textDelta === 'string') out += chunk.textDelta
+      }
+      const plan = parseDayPlan(out)
+      if (!plan) {
+        log.warn?.('日程生成：模型输出无法解析 — ' + out.slice(0, 120))
+        return null
+      }
+      return plan
+    } catch (e) {
+      log.warn?.('日程生成失败（今天没有今日状态）— ' + String(e?.message ?? e))
+      return null
+    }
+  }
+  const bridge = new QQBridge({
         cfg: {
           ...cfg.qq,
           /*
@@ -646,6 +704,8 @@ export async function main(argv = process.argv.slice(2)) {
         decision,
         memory,
         longMemory,
+    dayPlan,
+    generateDayPlan,
         persona,
         people,
         usage,

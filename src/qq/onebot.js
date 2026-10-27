@@ -489,6 +489,104 @@ export class OneBotClient {
   }
 
   /**
+   * 禁言 / 解除禁言。
+   *
+   * OneBot v11 `set_group_ban`：
+   *   params: { group_id, user_id, duration }   duration 单位**秒**
+   *   duration = 0 表示解除禁言
+   *
+   * ⚠️ 两个坑（都实测过）：
+   *   ① `duration` 是**秒**，不是分钟。传分钟会变成禁言几十秒。
+   *   ② 目标 QQ 号不存在时返回 `uid error`（retcode 1200），
+   *      不是「接口不存在」—— 别被这个报错误导。
+   *
+   * 这个方法是**底层**能力，不做任何校验。
+   * 目标合法性/时长上限/频率限制都在 `groupAdmin.validateBan`
+   * 和 bridge 的调用处完成 —— 那里才是安全边界。
+   *
+   * @param {string|number} groupId
+   * @param {string|number} userId
+   * @param {number} seconds  0 = 解除
+   */
+  async banMember(groupId, userId, seconds) {
+    const sec = Math.max(0, Math.round(Number(seconds) || 0))
+    const res = await this.call('set_group_ban', {
+      group_id: Number(groupId),
+      user_id: Number(userId),
+      duration: sec,
+    }, 10000)
+    if (res?.status === 'failed' || (typeof res?.retcode === 'number' && res.retcode !== 0)) {
+      throw new Error(`set_group_ban 失败：${res?.message ?? res?.wording ?? JSON.stringify(res).slice(0, 120)}`)
+    }
+    return true
+  }
+
+  /** 取群成员列表（校验目标角色要用）。 */
+  async getGroupMembers(groupId) {
+    const res = await this.call('get_group_member_list', { group_id: Number(groupId) }, 10000)
+    if (res?.status === 'failed' || (typeof res?.retcode === 'number' && res.retcode !== 0)) {
+      throw new Error(`get_group_member_list 失败：${res?.message ?? JSON.stringify(res).slice(0, 120)}`)
+    }
+    return Array.isArray(res?.data) ? res.data : []
+  }
+
+  /**
+   * 处理一条好友申请（同意或拒绝）。
+   *
+   * OneBot v11 `set_friend_add_request`：
+   *   params: { flag, approve, remark? }
+   *
+   * ⚠️ `flag` 是**申请事件的唯一标识**，由 OneBot 在
+   *    `post_type: 'request'` 且 `request_type: 'friend'` 的事件里给出。
+   *    它不能自己编 —— 编一个必然返回 `No such request`（实测过）。
+   *
+   * ⚠️ 这里**只能被动响应**：QQ 没有「主动加好友」的 OneBot API，
+   *    所以码风只能等人来加，不能去加别人。
+   *
+   * @param {string} flag
+   * @param {boolean} approve
+   * @param {string} [remark]  同意时给对方设的备注
+   */
+  async handleFriendRequest(flag, approve, remark) {
+    const params = { flag: String(flag), approve: Boolean(approve) }
+    if (remark) params.remark = String(remark).slice(0, 20)
+    const res = await this.call('set_friend_add_request', params, 10000)
+    if (res?.status === 'failed' || (typeof res?.retcode === 'number' && res.retcode !== 0)) {
+      throw new Error(`set_friend_add_request 失败：${res?.message ?? res?.wording ?? JSON.stringify(res).slice(0, 120)}`)
+    }
+    return true
+  }
+
+  /**
+   * 改自己的 QQ 昵称（**全局**，所有群和好友都看到）。
+   *
+   * ⚠️ 和 `set_group_card` 的区别要记清楚：
+   *   · `set_group_card` → 只影响**一个群**里的显示名，改错了无所谓
+   *   · `set_qq_profile` → 影响**所有地方**，改成一个怪名字
+   *     别人会以为这号被盗了
+   *
+   * 所以调用前必须过 `groupAdmin.validateNickname`。
+   * 这个方法和 `banMember` 一样是**裸能力**，不做校验。
+   *
+   * 实测返回：`{ status:'ok', retcode:0, data:{ result:0, errMsg:'' } }`
+   * —— 注意 `result`/`errMsg` 在 data 里，是 QQ 协议层自己的错误码，
+   * retcode 为 0 时它也可能非 0（比如昵称违规）。两个都要看。
+   *
+   * @param {string} nickname
+   */
+  async setSelfNickname(nickname) {
+    const res = await this.call('set_qq_profile', { nickname: String(nickname) }, 10000)
+    const failed = res?.status === 'failed' || (typeof res?.retcode === 'number' && res.retcode !== 0)
+    const inner = Number(res?.data?.result ?? 0)
+    if (failed || inner !== 0) {
+      throw new Error(
+        `set_qq_profile 失败：${res?.data?.errMsg || res?.message || res?.wording || JSON.stringify(res).slice(0, 120)}`,
+      )
+    }
+    return true
+  }
+
+  /**
    * 把一张本地图片加进账号的「收藏表情」。
    *
    * ## 为什么用这个私有接口
