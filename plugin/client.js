@@ -1618,16 +1618,33 @@ window.__ModuleLoader__.load({
       /**
        * 可选等级。
        *
-       * ⚠️ auto 模式下**不再列出所有模型的并集**。
-       *    之前就是这么做的，结果用户选了一个只有 gemini 支持的 `tiered`，
-       *    之后模型切到 buddy（不支持 tiered）→ 每次生成都失败，机器人
-       *    整个不回复了（实测踩过）。
-       *    现在 auto 模式不提供等级选择（各模型默认不同，强行统一没有意义），
-       *    只有**明确选中某个模型**时才列出它自己支持的等级。
+       * ## auto 模式下取并集（2026-10-27）
+       *
+       * 早期 auto 模式列并集，用户选了 gemini 独有、buddy 不支持的 `tiered`
+       * → 每次生成都失败、机器人不回复，所以当时改成「auto 不显示等级」。
+       * 现在后端补了校验 + 「不支持就去掉等级重试」的兜底，可以放开了。
+       *
+       * ## ⚠️ 上游不上报时的兜底（2026-10-27 修）
+       *
+       * 实测 `magpie` 渠道的 8 个模型 `efforts` **全是空数组** ——
+       * 它的 `resolveModelInfo` 不返回 `reasoning`。于是并集也是空，
+       * 下拉框照样不渲染，用户看到的还是「只能默认强度」。
+       *
+       * 但 `reasoningEffort` 是 OpenAI 兼容协议的通用字段，主流等级是固定的。
+       * 上游不报不等于模型不支持，所以这里给一张**内置表**兜底。
+       * 真不支持的话后端会 warn 并退回默认（不会整轮失败）。
+       *
+       * 注意 `model.effortFallback` 这个标记：只有**完全拿不到上游信息**
+       * 时才用内置表。如果某个渠道明确上报了它支持的那几个，
+       * 就只列那几个，不掺通用表 —— 免得列出它真不支持的。
        */
+      const BUILTIN_EFFORTS = ['minimal', 'low', 'medium', 'high']
       const currentEfforts = selectedModel?.efforts?.length > 0
         ? sortEfforts(selectedModel.efforts)
-        : []
+        : (() => {
+          const union = sortEfforts(allModels.flatMap((m) => m.efforts ?? []))
+          return union.length > 0 ? union : BUILTIN_EFFORTS
+        })()
       const currentEffortDefault = selectedModel?.effortDefault ?? null
 
       /**
