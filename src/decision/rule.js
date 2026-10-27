@@ -47,7 +47,7 @@ export class RuleDecisionProvider extends DecisionProvider {
        * 正常连发完全不受影响。设成 0 则私聊完全不冷却。
        */
       privateCooldownMs: cfg.privateCooldownMs ?? 1500,
-      maxConsecutiveTurns: cfg.maxConsecutiveTurns ?? 3,
+      maxConsecutiveTurns: cfg.maxConsecutiveTurns ?? 8,
       mentionProbability: cfg.mentionProbability ?? 0.95,
       idleChatterProbability: cfg.idleChatterProbability ?? 0.04,
       shortMessagePenalty: cfg.shortMessagePenalty ?? 0.25,
@@ -353,7 +353,7 @@ export class RuleDecisionProvider extends DecisionProvider {
       && !last.mentionsMe
       && !followUp.hit
       && !isPrivate
-      && input.consecutiveTurns < (this.cfg.maxConsecutiveTurns ?? 3)
+      && input.consecutiveTurns < (this.cfg.maxConsecutiveTurns ?? 8)
       && !(input.sinceMyLastMessage < (this.cfg.cooldownMs ?? 15000))) {
       const base = Number(this.cfg.mediaEmojiProbability ?? 0.12)
       // 话题连续（在刷梗图）→ 参与意愿更高，但上限 0.6，别喧宾夺主
