@@ -303,6 +303,30 @@ export function createFallbackLlm(opts = {}) {
 
             const fin = j.choices?.[0]?.finish_reason
             if (fin) {
+              /*
+               * ⚠️ **finish 之前先检查有没有正文**（2026-10-28 修）。
+               *
+               * 原来这里直接 `yield finish; return` —— 而下面那段
+               * `if (!sawAny) yield errorChunk(...)` 只在「流自然结束、
+               * 没收到 finish_reason」时才走到。于是**上游明确回了
+               * finish_reason 但正文为空**这种情况被静默放过去了。
+               *
+               * 实测（推理模型 + maxTokens 偏小的典型症状）：
+               *   上游把 token 全花在 reasoning_content 上，只回一个
+               *   `finish_reason: "length"`，`delta.content` 一个字都没有。
+               *   → 静默返回空 → 调用方（决策层）拼出 `raw=""`
+               *   → 「解析不出 verdict」→ 降级 rule → 群里该回的不回。
+               *
+               * 报错而不是静默空：router 会据此换下一个渠道，
+               * 调用方也能看到真实原因（而不是一句「无法解析」）。
+               */
+              if (!sawAny) {
+                yield errorChunk(
+                  `上游只给了 finish_reason(${fin}) 但没有正文`
+                  + '（推理内容可能吃光了 maxTokens；判断类请求要留足预算）',
+                )
+                return
+              }
               yield { type: 'finish', reason: { kind: fin === 'length' ? 'length' : 'stop' } }
               return
             }

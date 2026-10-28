@@ -365,8 +365,22 @@ export class ModelDecisionProvider extends DecisionProvider {
         { role: 'system', content: system },
         { role: 'user', content: user },
       ],
-      // 512 而不是 8：推理模型的草稿可能吃掉几百 token，正文还没开始就截断了
-      maxTokens: Number(this.cfg.maxTokens ?? 64),
+      /*
+       * ⚠️ 预算必须够推理模型写完草稿（2026-10-28 重定）。
+       *
+       * 原来这里写 `?? 64`，而紧邻的注释却写着「512 而不是 8」—— 代码和注释
+       * 早就对不上了。实测（真实决策提示词，上下文 15 条）：
+       *
+       *   max_tokens=64   → **4 次里空 3 次**（推理吃光预算，正文一个字没有）
+       *   max_tokens=1024 → 6 次全对，reasoning 0~1041 字
+       *
+       * 推理长度能到 2200 字，64 token 只装得下 64~100 个汉字 —— 草稿自己
+       * 就把预算吃光了。正文为空 → 拿不到 verdict → 降级 rule →
+       * 群聊「没 @ 我」直接沉默（用户看到「为什么回沉默」）。
+       *
+       * 已有的配置项 `cfg.maxTokens` 仍然优先，这里只是**默认值**。
+       */
+      maxTokens: Number(this.cfg.maxTokens ?? 1024),
       temperature: Number(this.cfg.temperature ?? 0),
       signal: AbortSignal.timeout(Number(this.cfg.timeoutMs ?? 8000)),
     })
