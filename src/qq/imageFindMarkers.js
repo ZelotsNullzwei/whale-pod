@@ -35,6 +35,52 @@
 import { findImages } from '../gateway/imageFind.js'
 
 /**
+ * 找图关键词的归一化键（去空白 + 小写）。
+ *
+ * 用于判重：「明日方舟 终末地 祀 立绘」和「明日方舟终末地 祀 立绘」
+ * 应该算同一个需求 —— 实测它俩就差一个空格，却各搜了一次。
+ *
+ * @param {string} q
+ * @returns {string}
+ */
+export function findImageKey(q) {
+  return String(q ?? '').toLowerCase().replace(/[\s\u3000]+/g, '')
+}
+
+/**
+ * 这个关键词是不是**刚找过**（同一会话、窗口内）。
+ *
+ * ## 为什么要判重（2026-10-28 用户报「一直找图」）
+ *
+ * 实测群里 5 次找图，关键词几乎是同一个：
+ * ```
+ * 15:07:52 「明日方舟 终末地 祀 立绘」
+ * 15:08:36 「明日方舟终末地 祀 立绘」
+ * 15:18:59 「明日方舟终末地 祀 角色立绘」
+ * 17:06:06 「明日方舟终末地 祀 立绘」
+ * 17:07:32 「明日方舟终末地 祀 角色立绘」
+ * ```
+ * 17:07:50 它自己还说「图没出去，刚重搜了一张」。
+ *
+ * 模型每输出一次 `[找图:...]` 就真去搜一次 —— 没有去重、没有冷却。
+ * 一次半分钱，而且同一张图反复发进群很像复读。
+ *
+ * ⚠️ 按**会话**分别计（不同群各找各的图是合理的）。
+ * ⚠️ 只在**成功找到图之后**才记（失败要允许立刻重试 —— 实测
+ *    15:07 失败、15:08 换词重试就成功了，那是想要的行为）。
+ *
+ * @param {Array<{key:string, scope:string, at:number}>} recent
+ * @param {{key:string, scope:string, now:number, windowMs?:number}} o
+ * @returns {boolean}
+ */
+export function isDuplicateFindImage(recent, o = {}) {
+  const windowMs = Number.isFinite(o.windowMs) ? o.windowMs : 10 * 60_000
+  return (recent ?? []).some(
+    (x) => x?.key === o.key && x?.scope === o.scope && o.now - x.at < windowMs,
+  )
+}
+
+/**
  * 找出文本里所有 `[找图:关键词]` 标记。
  *
  * 兼容全角冒号（模型经常写成 `[找图：xxx]`）。

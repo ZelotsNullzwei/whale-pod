@@ -27,9 +27,10 @@ import { needsFreshInfo, webSearch, formatSearchContext, pickCoverImage, checkBa
 import FACE_TABLE from './faces.json' with { type: 'json' }
 import { InteractionTracker, BegState, decideBeg } from './beg.js'
 import { ProactiveScheduler, ProactiveState } from './proactive.js'
-import { extractFindImageMarkers, stripFindImageMarkers, resolveFindImage } from './imageFindMarkers.js'
+import { extractFindImageMarkers, stripFindImageMarkers, resolveFindImage, findImageKey, isDuplicateFindImage } from './imageFindMarkers.js'
 import { extractBanMarkers, stripBanMarkers, validateBan, describeBanMinutes, extractNicknameMarkers, stripNicknameMarkers, validateNickname } from './groupAdmin.js'
 import { applyQuestionOverride } from './questionGate.js'
+import { shouldAnswerSticker } from './stickerGate.js'
 import { buildVarietyHint, buildExpressionHint } from '../persona/variety.js'
 import { currentSlot, renderDayPlan } from '../memory/dayPlan.js'
 
@@ -914,21 +915,46 @@ export class QQBridge {
      */
     if (isSticker) {
       /*
-       * 防连发：最近 3 条自己的发言里已经有 2 条是「只回表情」时，
-       * 不再因为表情包开口 —— 那就是在斗图刷屏了。
+       * ⚠️ 表情包：**只在「明确在跟它互动」时才回**（2026-10-28 第五次调，用户选 B）。
        *
-       * 注意看的是**自己发过什么**，不是别人在聊什么。
+       * ## 为什么又调
+       *
+       * 实测群 704291282：同一张青蛙表情包（fileid=EhSMnq3BrcHwXn2TbGaPI）
+       * 出现 **4 次，它 4 次都回了**：
+       * ```
+       * 15:23:34 → 15:23:37 回「[表情包]」
+       * 15:24:48 → 15:24:51 回「这青蛙看着还挺心宽体胖的」
+       * 16:26:42 → 16:26:58 回「[表情包]」
+       * 17:45:29 → 17:45:38 回「[表情包]」
+       * ```
+       * 用户原话：「还是反应青蛙，为啥啊」。
+       *
+       * 根因：这条路径**完全没有「是不是在跟我说话」的判断**。
+       * 决策层给的是 `p=0.75「纯图片 → 交给生成层看图判断像不像自己」`，
+       * 唯一抑制是下面那个「最近 3 条里已有 2 条纯表情」——
+       * 而青蛙前后夹着大量别人的聊天，计数器根本攒不到 2。
+       *
+       * ## 现在的规则（放行条件，满足其一即可）
+       *   ① **@ 它**
+       *   ② **引用它自己的消息**
+       *   ③ **斗图**：它上一条回复就是纯表情，且这条紧随其后（≤ 60s）
+       *   ④ **刚跟它说完话**：它上一条是文字，同一个人 ≤ 20s 内接着发表情
+       *
+       * 其余情况**一律不接** —— 表情包只是情绪信号，别人互相斗图不关它的事。
+       *
+       * ## 和前四次的区别（别再走回头路）
+       *   ① 无条件放行 → 见表情就回
+       *   ② 整个排除   → 连**跟它斗图**都不接了
+       *   ③ 按「群里有没有人热聊」判断 → 错，那些话恰恰是在聊它
+       *   ④ 放行 + 只防连发 → **还是每张都回**（本次要修的）
+       *   ⑤ **只在明确互动时回** ← 现在
        */
-      const mine = (mem?.recent?.(8) ?? []).filter((m) => m?.isMe).slice(-3)
-      const pureStickerReplies = mine.filter((m) => {
-        const t = String(m?.text ?? '')
-          .replace(/\[表情包(?::[^\]]*)?\]/g, '')
-          .replace(/\[表情:\d+\]/g, '')
-          .replace(/\s+/g, '')
-        return t.length === 0 && /\[表情/.test(String(m?.text ?? ''))
-      }).length
-      if (pureStickerReplies >= 2) return false
-      return true
+      // 判定逻辑抽到 stickerGate.js（可单测，见 tests/check-sticker-gate.mjs）
+      return shouldAnswerSticker({
+        msg,
+        selfId: this.selfId,
+        recent: mem?.recent?.(20) ?? [],
+      })
     }
 
     /*
@@ -1946,21 +1972,45 @@ export class QQBridge {
         // 一次回复只找一张 —— 找图要花半分钱，而且多图会刷屏
         const q = marks[0].query
         text = stripFindImageMarkers(text)
-        this.log.info?.(`bridge：回复里要求找图「${q.slice(0, 40)}」`)
-        try {
-          const r = await resolveFindImage({
-            query: q,
-            apiKey: this.searchKey,
-            log: (m) => this.log.info?.(`bridge：${m}`),
-          })
-          if (r.ok && r.images.length > 0) {
-            findImage = r.images[0]
-            this.log.info?.(`bridge：找到图 ${findImage.url.slice(0, 80)}（${Math.round(findImage.buffer.length / 1024)}KB）`)
-          } else {
-            this.log.warn?.(`bridge：找图失败（按纯文字发）— ${r.error}`)
+
+        /*
+         * ⚠️ 同会话判重（2026-10-28，用户报「一直找图」）。
+         *
+         * 实测同一关键词反复搜了 5 次（见 imageFindMarkers.js 注释）。
+         * 只在**成功**之后才记进历史 —— 失败要允许立刻换词重试。
+         */
+        const nowFind = Date.now()
+        const FIND_WINDOW = 10 * 60_000
+        this._findImageRecent = (this._findImageRecent ?? [])
+          .filter((x) => nowFind - x.at < FIND_WINDOW)
+        const dup = isDuplicateFindImage(this._findImageRecent, {
+          key: findImageKey(q),
+          scope: msg.scope,
+          now: nowFind,
+        })
+
+        if (dup) {
+          this.log.info?.(
+            `bridge：找图跳过 —— 「${q.slice(0, 40)}」这个会话 10 分钟内刚找过，省一次搜索`,
+          )
+        } else {
+          this.log.info?.(`bridge：回复里要求找图「${q.slice(0, 40)}」`)
+          try {
+            const r = await resolveFindImage({
+              query: q,
+              apiKey: this.searchKey,
+              log: (m) => this.log.info?.(`bridge：${m}`),
+            })
+            if (r.ok && r.images.length > 0) {
+              findImage = r.images[0]
+              this._findImageRecent.push({ key: findImageKey(q), scope: msg.scope, at: nowFind })
+              this.log.info?.(`bridge：找到图 ${findImage.url.slice(0, 80)}（${Math.round(findImage.buffer.length / 1024)}KB）`)
+            } else {
+              this.log.warn?.(`bridge：找图失败（按纯文字发）— ${r.error}`)
+            }
+          } catch (e) {
+            this.log.warn?.(`bridge：找图出错（按纯文字发）— ${String(e?.message ?? e)}`)
           }
-        } catch (e) {
-          this.log.warn?.(`bridge：找图出错（按纯文字发）— ${String(e?.message ?? e)}`)
         }
         // 剥完标记如果什么都不剩，就只发图（不硬凑文字）
         if (!text.trim() && !findImage) {

@@ -129,34 +129,46 @@ export class DecisionRegistry {
       const t0 = Date.now()
       try {
         const d = await p.decide(input)
+        /*
+         * ⚠️ **先 `...d` 全量透传，再覆盖要规范化的几个字段**（2026-10-28 改）。
+         *
+         * 原来这里是**白名单**（只列 reply/probability/reason/delayMs/cost/
+         * provider/raw/ms/decided/defer）—— 任何**新加的**字段都会被静默吃掉。
+         * 同一个坑已经踩过两次：
+         *
+         *   · `defer`（见下面那段注释）——
+         *     「冷却中，晚点补回」的世界变成「直接丢弃」。
+         *
+         *   · `emojiReply`（2026-10-28，用户报「一直找图」+「还是反应青蛙」）——
+         *     rule 对纯表情消息返回 `emojiReply: true`，含义是
+         *     「**只回一个收藏表情，不调模型**」。白名单里没有它 →
+         *     bridge 的 `if (d.emojiReply)` 永远不成立 → **每次都走生成层**：
+         *       · 白花一次模型调用
+         *       · 把表情包的图喂给模型 → 它开始描述画面（「这青蛙看着
+         *         还挺心宽体胖的」）→ 正是用户抱怨的那句
+         *       · 还有机会输出 `[找图:...]` → 反复联网找图
+         *
+         * 白名单的本意是「别把 provider 内部状态泄给上层」，但代价太大 ——
+         * 加字段的人不会记得回来登记。所以改成透传 + 覆盖。
+         */
         const out = {
+          ...d,
           reply: Boolean(d?.reply),
           probability: typeof d?.probability === 'number' ? d.probability : undefined,
-          reason: d?.reason,
-          delayMs: d?.delayMs,
-          cost: d?.cost ?? p.costPerCall,
+          // provider 用注册表里的 id，不信 provider 自己填的
           provider: p.id,
-          raw: d?.raw,
           ms: Date.now() - t0,
+          cost: d?.cost ?? p.costPerCall,
           // provider 自己已经做出最终二元结论（如 rule 掷过骰子）→ 标 true。
           // 外层 shouldReply 看到它就不再套阈值，避免二次过滤造成
           // 「概率 0.8 却沉默」这种自相矛盾的界面。见 decision/index.js。
           decided: d?.decided === true,
           /**
-           * ⚠️ `defer` **必须透传**（2026-10-23 修）。
+           * ⚠️ `defer` **必须透传**（2026-10-23 修，现在由 `...d` 覆盖）。
            *
            * 它是「冷却中，晚点补回」的标记 —— rule 在冷却分支返回
            * `defer:{waitMs}`，bridge 看到它就排队重试而不是丢弃。
-           *
-           * 这里原来没有这个字段，于是**整条链路把它吃掉了**：
-           * 决策层明明算出「冷却中，59 秒后补回」，bridge 收到的
-           * 结果里却没有 defer，走到「真的不想回」那条分支把消息丢掉。
-           * 症状：冷却期内问它的话永久丢失，用户看到的是「问了不理我」，
-           * 而设计意图明明是「晚几秒再回」。
-           *
-           * 这个 bug 从 rule.js 引入 defer 那天就在，一直没被发现 ——
-           * 因为原来没有任何测试覆盖「决策结果经注册表后 defer 还在不在」。
-           * 现在 tests/check-concurrency.mjs 第 8 项会盯着它。
+           * tests/check-concurrency.mjs 第 8 项盯着它。
            */
           defer: d?.defer,
         }
