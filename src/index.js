@@ -487,9 +487,26 @@ export async function main(argv = process.argv.slice(2)) {
       log,
       summarize: async ({ messages, previous, scene, self }) => {
         const { SUMMARY_PROMPT } = await import('./memory/long.js')
+        /*
+         * ⚠️ 每条消息必须带上**QQ 号**（2026-10-28 修，用户报「老是记小事」）。
+         *
+         * 原来只写 `昵称: 文本` —— 而 SUMMARY_PROMPT 要求【人】段按
+         * `QQ号 | 昵称 | 一句话印象` 输出。模型**物理上拿不到 QQ 号**，
+         * 于是干脆整段不写【人】。后果连锁：
+         *   ① 人像机制整个失效（长期记忆里一条【人】都没有）
+         *   ② merge() 见不到【人】→ 走「整段替换」→ 旧印象被冲掉
+         *   ③ 于是「记住人」退化成「记最近聊了什么」→ 满屏琐事
+         *
+         * 昵称会变、也可能重名，**QQ 号才是稳定标识**（这也是 parsePeople
+         * 靠 `match(/(\d{4,12})/)` 认人的原因）。
+         */
         const prompt = SUMMARY_PROMPT
           .replace('{previous}', previous || '（无）')
-          .replace('{messages}', messages.map((m) => `${m.isMe ? '[我]' : m.senderName}: ${m.text}`).join('\n'))
+          .replace('{messages}', messages.map((m) => (
+            m.isMe
+              ? `[我]${m.senderName ? `(${m.senderName})` : ''}: ${m.text}`
+              : `${m.senderName}(${m.sender}): ${m.text}`
+          )).join('\n'))
 
         const candidates = resolveCandidates('auto', {
           freeProviders: llm.providers,
@@ -503,10 +520,28 @@ export async function main(argv = process.argv.slice(2)) {
         const opened = await openFirstAvailable({
           llm,
           candidates,
-          // content 用数组块（与 bridge 保持一致）。纯文本时字符串也能跑，
-          // 但一旦某条消息带图，上游会遍历所有消息调 content.some(...)，
-          // 字符串会直接抛错 —— 统一用数组块就不用记这个坑。
-          request: { messages: [{ role: 'user', content: [{ type: 'text', text: prompt }] }], maxTokens: 512 },
+          /*
+           * content 用数组块（与 bridge 保持一致）。纯文本时字符串也能跑，
+           * 但一旦某条消息带图，上游会遍历所有消息调 content.some(...)，
+           * 字符串会直接抛错 —— 统一用数组块就不用记这个坑。
+           *
+           * ⚠️ **不要传 maxTokens**（2026-10-28 实测，用户报「老是记小事」）。
+           *
+           * 原来写的是 `maxTokens: 512`，而当前模型（deepseek-v4.1-flash）
+           * 是**推理模型**：它先输出一大段 reasoning，再写正文。512 token
+           * 会被推理**吃光**，正文是空的，实测：
+           *
+           *   max_tokens=512  → finish_reason=stop，completion=512，
+           *                     reasoning 1536 字，**content = null**
+           *   max_tokens=2000 → reasoning 588 字，content 234 字，格式正常
+           *
+           * 正文为空会被 `maybeSummarize` 判成「没拿到摘要」直接丢掉 ——
+           * 长期记忆于是长期不更新。
+           *
+           * 这也是 bridge.js 里早记下的经验：**maxTokens 不传 = 不限制，
+           * 让上游用自己的上限，反而最快且正文正常。**
+           */
+          request: { messages: [{ role: 'user', content: [{ type: 'text', text: prompt }] }] },
           onAttempt: () => { },
         })
         let text = ''
