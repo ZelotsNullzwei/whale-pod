@@ -936,3 +936,5 @@ See the Chinese sections above for configuration details, the full CLI reference
 ## 许可
 
 MIT
+
+运行时会导入的宿主机组件、数据处理方式与协议端合规提醒，见 [NOTICE](NOTICE)。
