@@ -296,6 +296,52 @@ export class LongTermStore {
 
     // 累计口径优先；没传就退回窗口长度（兼容老调用，但会退化）
     const total = Number.isFinite(ctx.total) ? ctx.total : msgs.length
+
+    /*
+     * ⚠️ **计数回退就重置基线**（2026-10-28 修，用户报「记不住事」）。
+     *
+     * ## 现象
+     *
+     * `memory-long.json` 整整 24 小时没更新过 —— 昨天下午到今天说的所有事，
+     * 长期记忆里一个字都没有。
+     *
+     * 实测数值：短期 `totalPushed = 37`，长期 `summarizedTotal = 60`：
+     *
+     *     unsummarized = 37 - 60 = -23   ← 负数，永远 < summarizeAfter(20)
+     *
+     * ## 根因
+     *
+     * `total` 来自**短期**记忆的 `totalPushed`，`summarizedTotal` 存在**长期**记忆里。
+     * 两个计数器不在一个对象里，生命周期也不一样：
+     *
+     *   · 短期记忆有 6 小时过期（`maxAgeMs`）。隔一夜之后重启，
+     *     所有消息都过期 → 那个会话**整个不恢复**（`short.js` 里
+     *     `if (m.messages.length > 0) sessions.set(...)`）→ `totalPushed` 归零
+     *   · 长期记忆的 `summarizedTotal` **不会跟着归零**（它没这个感知）
+     *
+     * 于是每天早上的第一次聊天，`unsummarized` 就是一个大负数，
+     * 而且**要等新消息累计超过 `summarizedTotal + 20` 才可能回正** ——
+     * 以 60 为例要 80 条，实际等于「记忆永久冻结」。
+     *
+     * ## 修法
+     *
+     * `total < summarizedTotal` 只可能意味着「短期那边重置过」。
+     * 这时把基线拉回 0，让增量重新从当前累计数算起。
+     *
+     * ⚠️ 不能简单 `Math.max(0, total - summarizedTotal)` —— 那样结果是 0，
+     *    照样到不了阈值，等于没修。
+     * ⚠️ 也不能把短期记忆的 `totalPushed` 持久化跨过期 —— 那会让
+     *    「昨天说了 500 句」的账算到今天头上，一次重启就误摘要。
+     */
+    if (total < (mem.summarizedTotal ?? 0)) {
+      this.log.info?.(
+        `长期记忆：${scope} 的累计计数回退（${total} < ${mem.summarizedTotal}）`
+        + ' —— 短期记忆过期或重启过，重置摘要基线',
+      )
+      mem.summarizedTotal = 0
+      this._dirty = true
+    }
+
     const unsummarized = total - (mem.summarizedTotal ?? 0)
     if (unsummarized < this.summarizeAfter) return false
 

@@ -162,7 +162,8 @@ await ok('每日上限用完 → 不发言', async () => {
 
 await ok('冷却期内 → 不发言', async () => {
   const { s, state, calls } = speakOn()
-  state.lastSpeakAt = at(9).getTime()   // 1 小时前说过（冷却 180 分钟）
+  // 冷却按**类别**各算各的（2026-10-28）：speakOn 默认是 group:1，所以动群的时间戳
+  state.lastSpeakAtGroup = at(9).getTime()   // 1 小时前说过（冷却 180 分钟）
   await s.tick(at(10))
   assert.equal(calls.speak, 0, '冷却还没过')
 })
@@ -190,7 +191,7 @@ await ok('发言成功后记一次 + 记时间', async () => {
   const { s, state } = speakOn()
   await s.tick(at(10))
   assert.equal(state.speakCountGroup, 1)
-  assert.equal(state.lastSpeakAt, at(10).getTime())
+  assert.equal(state.lastSpeakAtGroup, at(10).getTime())
 })
 
 await ok('讨钱成功后才记次数', async () => {
@@ -279,13 +280,18 @@ await ok('planSpeak 单独判断可用', () => {
 
 
 // ── 群 / 私聊额度分开算（2026-10-27 用户要求）────────────────
-function mkSched(kinds) {
+function mkSched(kinds, cfgOver = {}) {
   const state = new ProactiveState({ fs: { writeFileSync() {}, renameSync() {} }, file: '/tmp/none.json' })
-  const scopeList = kinds.map((k, i) => (k === 'private'
-    ? { kind: 'private', scope: `private:1000${i}` }
-    : { kind: 'group', scope: `group:2000${i}` }))
+  /*
+   * ⚠️ 生产代码 `computeScopes()` 返回的是**字符串**（`group:123` / `private:456`），
+   *    不是对象！这里原来造的是 `{ kind: 'private', scope: ... }` 对象，
+   *    于是 `s.kind` 在测试里有值、在真机上恒为 undefined ——
+   *    测试全绿但线上「私聊发言被记成群」+「群满了私聊也被过滤」。
+   *    2026-10-28 发现这个 test/production 口径不一致，正是它掩盖了真 bug。
+   */
+  const scopeList = kinds.map((k, i) => (k === 'private' ? `private:1000${i}` : `group:2000${i}`))
   const sched = new ProactiveScheduler({
-    cfg: { enabled: true, maxPerDay: 3, idleMinutes: 1, cooldownMinutes: 0, hours: [0, 24] },
+    cfg: { enabled: true, maxPerDay: 3, idleMinutes: 1, cooldownMinutes: 0, hours: [0, 24], ...cfgOver },
     begCfg: { enabled: false },
     state,
     scopes: () => scopeList,
@@ -315,7 +321,7 @@ await ok('scopesWithQuota 只留还有额度的类别', () => {
   state.speakCountGroup = 3
   const list = sched.scopesWithQuota()
   assert.equal(list.length, 1, '应该只剩私聊')
-  assert.equal(list[0].kind, 'private')
+  assert.ok(String(list[0]).startsWith('private:'), `剩下的应该是私聊，实际 ${list[0]}`)
 })
 
 await ok('两类都满 → planSpeak 报出各自剩余', () => {
@@ -324,8 +330,8 @@ await ok('两类都满 → planSpeak 报出各自剩余', () => {
   state.speakCountPrivate = 3
   const r = sched.planSpeak(new Date('2026-10-27T10:00:00+08:00'))
   assert.equal(r.ok, false)
-  assert.ok(/群剩 0/.test(r.reason), 'reason 要说明群剩多少')
-  assert.ok(/私聊剩 0/.test(r.reason), 'reason 要说明私聊剩多少')
+  assert.ok(/群：剩 0/.test(r.reason), `reason 要说明群剩多少，实际：${r.reason}`)
+  assert.ok(/私聊：剩 0/.test(r.reason), `reason 要说明私聊剩多少，实际：${r.reason}`)
 })
 
 await ok('老 state.json 只有 speakCount → 迁移进群额度', () => {
@@ -346,6 +352,50 @@ await ok('老 state.json 只有 speakCount → 迁移进群额度', () => {
   })
   assert.equal(st.speakCountGroup, 2, '未知来源的消耗算进群（保守）')
   assert.equal(st.speakCountPrivate, 0, '私聊不该被扣')
+})
+
+// ── scope 是字符串 / 分类冷却（2026-10-28 用户报「群里主动发言没触发」）──
+await ok('kindOf 能解析字符串 scope', () => {
+  const { sched } = mkSched(['group', 'private'])
+  assert.equal(sched.kindOf('private:10000'), 'private')
+  assert.equal(sched.kindOf('group:20000'), 'group')
+  assert.equal(sched.kindOf('private:'), 'private')
+  assert.equal(sched.kindOf(undefined), 'group', '兜底当群，不能崩')
+})
+
+await ok('私聊刚说过 → 群不受影响（分类冷却）', () => {
+  const { state, sched } = mkSched(['group', 'private'], { cooldownMinutes: 180 })
+  const now = new Date('2026-10-27T10:00:00+08:00').getTime()
+  state.lastSpeakAtPrivate = now          // 刚在私聊主动说过
+  const usable = sched.usableScopes(now)
+  assert.ok(usable.some((s) => String(s).startsWith('group:')), '群应该还能说')
+  assert.ok(!usable.some((s) => String(s).startsWith('private:')), '私聊应该还在冷却')
+})
+
+await ok('群里刚说过 → 私聊不受影响', () => {
+  const { state, sched } = mkSched(['group', 'private'], { cooldownMinutes: 180 })
+  const now = new Date('2026-10-27T10:00:00+08:00').getTime()
+  state.lastSpeakAtGroup = now
+  const usable = sched.usableScopes(now)
+  assert.ok(usable.some((s) => String(s).startsWith('private:')), '私聊应该还能说')
+  assert.ok(!usable.some((s) => String(s).startsWith('group:')), '群应该还在冷却')
+})
+
+await ok('私聊发言 → 记进 speakCountPrivate（不是 group）', async () => {
+  const { state, sched } = mkSched(['private'], { cooldownMinutes: 0 })
+  await sched._doSpeak(new Date('2026-10-27T10:00:00+08:00'))
+  assert.equal(state.speakCountPrivate, 1, '应该记进私聊')
+  assert.equal(state.speakCountGroup, 0, '不能记到群头上（这就是原 bug）')
+  assert.ok(state.lastSpeakAtPrivate > 0, '应该更新私聊的冷却时间')
+  assert.equal(state.lastSpeakAtGroup, 0, '不该动群的冷却时间')
+})
+
+await ok('群满但私聊还有额度 → 私聊仍可用（不被误过滤）', () => {
+  const { state, sched } = mkSched(['group', 'private'], { cooldownMinutes: 0 })
+  state.speakCountGroup = 3               // 群说满
+  const usable = sched.usableScopes(Date.now())
+  assert.equal(usable.length, 1, '应该只剩私聊')
+  assert.ok(String(usable[0]).startsWith('private:'), `实际：${usable[0]}`)
 })
 
 console.log(`\n通过 ${pass} / 失败 ${fail}`)

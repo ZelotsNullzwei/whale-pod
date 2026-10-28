@@ -96,7 +96,19 @@ export class ProactiveState {
     this.day = dayKey()
     /** 上次讨钱的时间戳 */
     this.lastBegAt = 0
-    /** 上次主动发言的时间戳 */
+    /*
+     * 上次主动发言的时间戳 —— **群聊和私聊分开记**（2026-10-28 修）。
+     *
+     * 原来是一个全局 `lastSpeakAt` + 统一的 cooldown（3 小时）。
+     * 后果：**私聊主动说了一次，群里就 3 小时开不了口**。
+     * 实测：11:44 私聊主动发言 → 群里到 14:44 一直「冷却中」，
+     *       用户报「群里的主动发言还是没有触发」。
+     *
+     * 群冒泡和私聊找人本来就该分开计时。
+     */
+    this.lastSpeakAtGroup = 0
+    this.lastSpeakAtPrivate = 0
+    /** 老字段，只用于读旧 state 时迁移 */
     this.lastSpeakAt = 0
     /** 上次查余额的时间戳 */
     this.lastBalanceCheckAt = 0
@@ -125,7 +137,20 @@ export class ProactiveState {
     this.speakCount = this.speakCountGroup + this.speakCountPrivate
       if (typeof d?.day === 'string') this.day = d.day
       if (Number.isFinite(d?.lastBegAt)) this.lastBegAt = d.lastBegAt
-      if (Number.isFinite(d?.lastSpeakAt)) this.lastSpeakAt = d.lastSpeakAt
+      if (Number.isFinite(d?.lastSpeakAtGroup)) this.lastSpeakAtGroup = d.lastSpeakAtGroup
+      if (Number.isFinite(d?.lastSpeakAtPrivate)) this.lastSpeakAtPrivate = d.lastSpeakAtPrivate
+      /*
+       * ⚠️ 老 state 只有一个 `lastSpeakAt`，分不清是哪一类。
+       *
+       * 迁移策略：**算进群**（和 speakCount 的迁移方向一致 —— 群更容易被卡住，
+       * 宁可让群多等一会儿，也不要把「主动找你」立刻放开导致重复说话）。
+       * 这次的真实数据里 11:44 那次其实是私聊，但代码没法从旧字段反推；
+       * 错判方向是「更保守」，安全。
+       */
+      if (Number.isFinite(d?.lastSpeakAt) && !Number.isFinite(d?.lastSpeakAtGroup)) {
+        this.lastSpeakAtGroup = d.lastSpeakAt
+      }
+      this.lastSpeakAt = Math.max(this.lastSpeakAtGroup, this.lastSpeakAtPrivate)
       if (Number.isFinite(d?.lastBalanceCheckAt)) this.lastBalanceCheckAt = d.lastBalanceCheckAt
       if (Number.isFinite(d?.lastBalanceCny)) this.lastBalanceCny = d.lastBalanceCny
     } catch {
@@ -142,7 +167,8 @@ export class ProactiveState {
       speakCountGroup: this.speakCountGroup,
       speakCountPrivate: this.speakCountPrivate,
         lastBegAt: this.lastBegAt,
-        lastSpeakAt: this.lastSpeakAt,
+        lastSpeakAtGroup: this.lastSpeakAtGroup,
+        lastSpeakAtPrivate: this.lastSpeakAtPrivate,
         lastBalanceCheckAt: this.lastBalanceCheckAt,
         lastBalanceCny: this.lastBalanceCny,
       })
@@ -254,15 +280,15 @@ export class ProactiveScheduler {
     let wantSpeak = false
     if (this.cfg.enabled === true && this.onSpeak) {
       const idleNeed = Math.max(1, Number(this.cfg.idleMinutes ?? 45)) * 60_000
-      const cooldown = Math.max(1, Number(this.cfg.cooldownMinutes ?? 180)) * 60_000
       /*
-       * ⚠️ 额度按**类别**算（群/私聊各 3 次），不是总数 3 次。
-       *    所以这里要问「有没有哪一类还有额度」，而不是「总数还有没有」。
+       * ⚠️ 额度和冷却都按**类别**算（群/私聊各 3 次、各 3 小时冷却）。
+       *    `usableScopes` 已同时过滤「还有额度」和「不在冷却」，
+       *    所以这里不再单独判全局 cooled —— 那正是
+       *    「私聊说一次、群里哑三小时」的元凶。
        */
-      const usable = this.scopesWithQuota()
+      const usable = this.usableScopes(t)
       const quietEnough = this.idleMs() >= idleNeed
-      const cooled = t - this.state.lastSpeakAt >= cooldown
-      if (quietEnough && cooled && usable.length > 0) wantSpeak = true
+      if (quietEnough && usable.length > 0) wantSpeak = true
     }
 
     // 讨钱优先：它是「有实际用处的」；主动发言是锦上添花，让路。
@@ -323,15 +349,56 @@ export class ProactiveScheduler {
   }
 
   /**
-   * 现在还能说话的会话类别。
+   * 会话是群还是私聊。
    *
-   * ⚠️ 必须按**具体会话**判断额度，不能只看「还有没有额度」——
+   * ⚠️ **`scopes()` 返回的是字符串**（`group:123` / `private:456`），不是对象！
+   *    原来这里写 `s.kind === 'private'` —— 字符串上没有 `kind`，恒为 undefined，
+   *    于是**一切都当群处理**：
+   *      · 私聊主动发言被记进 `speakCountGroup`
+   *      · 群额度用完时，连私聊会话也被过滤掉
+   *    实测症状：`speakCountGroup=1 / speakCountPrivate=0`，而那次其实是私聊。
+   *
+   * @param {string} scope
+   * @returns {'group'|'private'}
+   */
+  kindOf(scope) {
+    return String(scope ?? '').startsWith('private:') ? 'private' : 'group'
+  }
+
+  /** 某类上次主动发言的时间戳。 */
+  lastSpeakAtOf(kind) {
+    return kind === 'private' ? this.state.lastSpeakAtPrivate : this.state.lastSpeakAtGroup
+  }
+
+  /** 某类是否已经过了冷却（按类别各算各的）。 */
+  isCooled(kind, t) {
+    const cooldown = Math.max(1, Number(this.cfg.cooldownMinutes ?? 180)) * 60_000
+    return t - this.lastSpeakAtOf(kind) >= cooldown
+  }
+
+  /**
+   * 现在真的能说话的会话（**额度 + 冷却都满足**）。
+   *
+   * ⚠️ 必须按**具体会话**判断，不能只看「还有没有额度」——
    *    否则会出现「群额度用完了、说没有会话可发」但它其实还能找你。
    *
-   * @returns {Array<object>} 过滤后的 scope 列表
+   * @param {number} [t] 当前时间戳
+   * @returns {Array<string>} 过滤后的 scope 列表（字符串）
+   */
+  usableScopes(t = Date.now()) {
+    return this.scopes().filter((s) => {
+      const k = this.kindOf(s)
+      return this.speakLeft(k) > 0 && this.isCooled(k, t)
+    })
+  }
+
+  /**
+   * 只看额度的过滤（不含冷却）。保留给测试和老调用方。
+   *
+   * @returns {Array<string>}
    */
   scopesWithQuota() {
-    return this.scopes().filter((s) => this.speakLeft(s.kind === 'private' ? 'private' : 'group') > 0)
+    return this.scopes().filter((s) => this.speakLeft(this.kindOf(s)) > 0)
   }
 
   /**
@@ -347,15 +414,18 @@ export class ProactiveScheduler {
     if (this.cfg.enabled !== true || !this.onSpeak) return { ok: false, reason: '发言未开启' }
     if (!inActiveHours(this.cfg.hours, now)) return { ok: false, reason: '不在时段' }
     const idleNeed = Math.max(1, Number(this.cfg.idleMinutes ?? 45)) * 60_000
-    const cooldown = Math.max(1, Number(this.cfg.cooldownMinutes ?? 180)) * 60_000
-    const usable = this.scopesWithQuota()
+    const usable = this.usableScopes(t)
     if (usable.length === 0) {
-      // 分开报数 —— 只说「今日已说满」会让人以为两类都用完了
+      /*
+       * 分开报数 —— 只说「今日已说满」会让人以为两类都用完了。
+       * 同时把「额度」和「冷却」两件事都说清楚，排查才不用猜。
+       */
       const g = this.speakLeft('group')
       const p2 = this.speakLeft('private')
-      return { ok: false, reason: `今日已说满（群剩 ${g} / 私聊剩 ${p2}）` }
+      const gTxt = g > 0 ? (this.isCooled('group', t) ? '可发' : '冷却中') : '已满'
+      const pTxt = p2 > 0 ? (this.isCooled('private', t) ? '可发' : '冷却中') : '已满'
+      return { ok: false, reason: `没有可用会话（群：剩 ${g} ${gTxt} / 私聊：剩 ${p2} ${pTxt}）` }
     }
-    if (t - this.state.lastSpeakAt < cooldown) return { ok: false, reason: '冷却中' }
     const idle = this.idleMs()
     const idleMin = idle === Infinity ? '∞' : Math.round(idle / 60_000)
     if (!(idle >= idleNeed)) {
@@ -406,16 +476,22 @@ export class ProactiveScheduler {
      * 随机挑是为了不让第一个群觉得它在盯人；但随机范围要先按额度过滤，
      * 否则会挑到「这一类今天已经说满」的会话，发出去就超了。
      */
-    const list = this.scopesWithQuota()
+    const list = this.usableScopes(t)
     if (list.length === 0) return
     const scope = list[Math.floor(Math.random() * list.length)]
+    const kind = this.kindOf(scope)
     const ok = await this.onSpeak(scope)
     if (ok) {
-      // 按实际发到哪一类来计数
-      if (scope.kind === 'private') this.state.speakCountPrivate += 1
-      else this.state.speakCountGroup += 1
+      // 按**实际**发到哪一类来计数（scope 是字符串，必须用 kindOf 解析）
+      if (kind === 'private') {
+        this.state.speakCountPrivate += 1
+        this.state.lastSpeakAtPrivate = t
+      } else {
+        this.state.speakCountGroup += 1
+        this.state.lastSpeakAtGroup = t
+      }
       this.state.speakCount = this.state.speakCountGroup + this.state.speakCountPrivate
-      this.state.lastSpeakAt = t
+      this.state.lastSpeakAt = Math.max(this.state.lastSpeakAtGroup, this.state.lastSpeakAtPrivate)
     }
     this.state.save()
   }
