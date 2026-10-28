@@ -13,5 +13,12 @@
     "dev": "node --watch src/index.js",
     "test": "node tests/run.mjs"
   },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ZelotsNullzwei/whale-pod.git"
+  },
+  "bugs": {
+    "url": "https://github.com/ZelotsNullzwei/whale-pod/issues"
+  },
   "license": "MIT"
 }

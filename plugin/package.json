@@ -38,6 +38,14 @@
     }
   },
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ZelotsNullzwei/whale-pod.git",
+    "directory": "plugin"
+  },
+  "bugs": {
+    "url": "https://github.com/ZelotsNullzwei/whale-pod/issues"
+  },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.2",
     "@deepseek-ai/dsh-credentials": "^0.1.2-rc.1 || ^0.1.7-rc.2 || ^0.2.0-rc.1",
