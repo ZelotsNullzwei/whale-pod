@@ -29,8 +29,19 @@ import { InteractionTracker, BegState, decideBeg } from './beg.js'
 import { ProactiveScheduler, ProactiveState } from './proactive.js'
 import { extractFindImageMarkers, stripFindImageMarkers, resolveFindImage } from './imageFindMarkers.js'
 import { extractBanMarkers, stripBanMarkers, validateBan, describeBanMinutes, extractNicknameMarkers, stripNicknameMarkers, validateNickname } from './groupAdmin.js'
+import { applyQuestionOverride } from './questionGate.js'
 import { buildVarietyHint, buildExpressionHint } from '../persona/variety.js'
 import { currentSlot, renderDayPlan } from '../memory/dayPlan.js'
+
+/**
+ * 单张图下载上限的兜底值。
+ *
+ * ⚠️ 必须和 `config/store.js` 的 `reply.maxImageBytes` 默认值保持一致。
+ *    原来这里写死 4MB，而线上 `config.json` 里根本没有 `reply` 段 ——
+ *    所以真正生效的一直是**这个硬编码值**，改 store 的默认值等于没改。
+ *    2026-10-28 实测：4.7MB 的游戏截图被这个 4MB 挡在门外，模型看不到图。
+ */
+const DEFAULT_MAX_IMAGE_BYTES = 8 * 1024 * 1024
 
 /** 模型表示"不说话"的标记。 */
 export const SILENT = '[SILENT]'
@@ -1733,6 +1744,28 @@ export class QQBridge {
     const imgBrief = (msg.images ?? []).length > 0 ? ` 图×${msg.images.length}` : ''
     this.log.info?.(`bridge：${msg.scope}「${textBrief}」${imgBrief} 决策 → ${this.decision.explain?.(d) ?? JSON.stringify(d)}`)
 
+    /*
+     * ⚠️ 提问就要答（2026-10-28 用户要求：「问要回啊，这都没回」）。
+     *
+     * 实测：群里问「你知道祀是谁吗」，决策层判「这段跟我无关」→ 沉默，
+     * 于是连搜索都没走到（搜索在生成层，生成层只在决策说"回"之后才跑）。
+     *
+     * 具体判定和理由见 `questionGate.js` 的注释。
+     */
+    if (!d.reply) {
+      const before = d
+      d = applyQuestionOverride(d, msg.text, {
+        isMe: msg.isMe,
+        enabled: this.cfg.reply?.questionGate !== false,
+      })
+      if (d !== before) {
+        this.log.info?.(
+          `bridge：这条是提问（${before.reason}）→ 覆盖沉默，改成回答`
+          + (d.questionQuery ? `（查「${d.questionQuery}」）` : ''),
+        )
+      }
+    }
+
     if (!d.reply) {
       // ── 因冷却而沉默 → 排队，冷却结束后再回 ────────────────
       //
@@ -2215,7 +2248,7 @@ export class QQBridge {
           continue
         }
 
-        const img = await this.onebot.fetchImage(ref, { maxBytes: this.cfg.reply?.maxImageBytes ?? 4 * 1024 * 1024 })
+        const img = await this.onebot.fetchImage(ref, { maxBytes: this.cfg.reply?.maxImageBytes ?? DEFAULT_MAX_IMAGE_BYTES })
         if (!img?.dataUrl) {
           this.log.warn?.(`bridge：取图失败（拿不到可下载内容）ref=${String(ref).slice(0, 80)}`)
           continue
@@ -2775,6 +2808,31 @@ export class QQBridge {
       selfName: this.selfName ?? '',
     })
 
+    /*
+     * ⚠️ 图没加载出来时**必须如实告诉模型**（2026-10-28）。
+     *
+     * 实测翻车：群主发了张 4.7MB 的游戏截图，超过当时的 4MB 上限 →
+     * 没下载 → 提示词里仍然写着「（对方发了一张图）」但**没有图块**。
+     * 模型看不到画面，只能按人格规则「答不上来就说看不清，别瞎编」
+     * 回了句「这图是啥，看不清诶」—— 用户观感就是「它连图都看不了」。
+     *
+     * 光加上限治不了全部（超大图、rkey 过期、防盗链都会失败），
+     * 所以这里补一句**事实说明**：让它知道自己没看到图，
+     * 不要猜画面、也不要用「看不清」把锅甩给图片质量。
+     */
+    const askedWithImage = history[history.length - 1]
+    if (askedWithImage?.images?.length && imageCache.size === 0) {
+      const tail = messages[messages.length - 1]
+      if (Array.isArray(tail?.content)) {
+        tail.content.push({
+          type: 'text',
+          text: '（⚠️ 这张图没能加载出来，你看不到内容。'
+            + '别猜画面、别问“这是什么图”、也别说“看不清”。'
+            + '要么直接问正事，要么用一句话自然带过。）',
+        })
+      }
+    }
+
     // 走网关的路由（免费优先）
     // 用 _candidatesAsync —— 它会先等目录就绪（冷启动那几秒目录是空的）
     const candidates = await this._candidatesAsync()
@@ -3163,24 +3221,12 @@ export class QQBridge {
     /** @type {string[]} */
     const sentIds = []
 
-    // 先按表情标记切分：纯文本走原来的分句逻辑，表情单独成段
-    const pieces = splitFaceMarkers(text)
-
-    // 整体分句（只在连续文本段上做，避免把表情和文本混切）
-    const segments = []
-    for (const piece of pieces) {
-      if (piece.kind === 'face' || piece.kind === 'mface') { segments.push(piece); continue }
-      const chunks = reply.segment === true ? splitMessage(piece.text, maxChars) : [piece.text]
-      for (const c of chunks) if (String(c).trim()) segments.push({ kind: 'text', text: String(c) })
-    }
-
-    // 搜索时备下的封面图：接在回复最后发出去。
-    //
-    // cover 只在**真的聊到具体作品/产品**时才有（由 _generate 随返回值带出）。
-    // 它是锦上添花 —— 发送失败静默跳过，不能因此让整条回复失败。
-    if (cover?.url && segments.length > 0) {
-      segments.push({ kind: 'image', url: cover.url })
-    }
+    // 先按表情标记切分，再做整体分句，最后接上配图。
+    // 逻辑抽到 `buildOutgoingSegments()` 是为了能单测（见 tests/check-segments.mjs）。
+    const segments = buildOutgoingSegments(text, cover, {
+      maxChars,
+      segment: reply.segment === true,
+    })
 
     for (let i = 0; i < segments.length; i++) {
       const seg = segments[i]
@@ -3219,6 +3265,13 @@ export class QQBridge {
       if (i < segments.length - 1) {
         await sleep(400 + Math.random() * 600)
       }
+    }
+    // 一条都没发出去要留痕 —— 否则调用方以为「回过了」，实际上群里什么都没看到。
+    if (sentIds.length === 0) {
+      this.log.warn?.(
+        `bridge：这条回复没有任何可发送内容（正文 ${JSON.stringify(String(text ?? '').slice(0, 20))}`
+        + `，配图=${cover?.url ? '有' : '无'}）—— 什么都没发`,
+      )
     }
     return sentIds
   }
@@ -3296,7 +3349,7 @@ export class QQBridge {
 
     for (const ref of refs.slice(0, 3)) {
       try {
-        const img = await this.onebot.fetchImage(String(ref), { maxBytes: this.cfg.reply?.maxImageBytes ?? 4 * 1024 * 1024 })
+        const img = await this.onebot.fetchImage(String(ref), { maxBytes: this.cfg.reply?.maxImageBytes ?? DEFAULT_MAX_IMAGE_BYTES })
         if (!img?.dataUrl) continue
         const m = /^data:([^;]+);base64,(.*)$/s.exec(img.dataUrl)
         if (!m) continue
@@ -3508,6 +3561,40 @@ export class QQBridge {
       },
     }
   }
+}
+
+/**
+ * 把「模型输出文本 + 可选配图」拆成待发送的段。
+ *
+ * ## 为什么要单独成一个函数
+ *
+ * 它踩过一个致命 bug（2026-10-28）：
+ * 原来配图那行是 `if (cover?.url && segments.length > 0)` ——
+ * 只有**已经有文字**才附图。但用户让「去找张图回来」时，模型往往只输出
+ * `[找图:...]` 标记、没有正文；标记剥掉后 text 为空 → segments 为空 →
+ * **已经下好的图被一起丢掉**，结果一个字一张图都没发。
+ *
+ * 抽出来还能单独测（tests/check-segments.mjs），不必起整个 bridge。
+ *
+ * @param {string} text  已剥掉标记的正文（可以为空）
+ * @param {{url?:string}|null} cover 配图（base64 data URL 或 http 链接）
+ * @param {{maxChars?:number, segment?:boolean}} [opts]
+ * @returns {Array<object>} 段列表，kind ∈ text|face|mface|image
+ */
+export function buildOutgoingSegments(text, cover = null, opts = {}) {
+  const maxChars = Number.isFinite(opts.maxChars) ? opts.maxChars : 500
+  const segment = opts.segment === true
+
+  const segments = []
+  for (const piece of splitFaceMarkers(text)) {
+    if (piece.kind === 'face' || piece.kind === 'mface') { segments.push(piece); continue }
+    const chunks = segment ? splitMessage(piece.text, maxChars) : [piece.text]
+    for (const c of chunks) if (String(c).trim()) segments.push({ kind: 'text', text: String(c) })
+  }
+
+  // ⚠️ 配图**不**依赖已有文字 —— 见上方注释
+  if (cover?.url) segments.push({ kind: 'image', url: cover.url })
+  return segments
 }
 
 /** 按句读 + 长度拆分成多条消息（像人发消息那样）。 */

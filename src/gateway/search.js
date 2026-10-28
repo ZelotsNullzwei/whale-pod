@@ -171,6 +171,19 @@ export function needsFreshInfo(text) {
     return { need: true, why: `提到具体名字「${properNoun}」`, query: cleanQuery(t) }
   }
 
+  /*
+   * ③.5 「X 是谁 / 谁是 X / 某人是干嘛的」—— 最直白的求知问句。
+   *
+   * 2026-10-28 实测漏判：群里问「祀是谁啊」，`needsFreshInfo` 返回 need=false
+   * （不含「吗」、也不是时效词），于是决策层沉默时连这道兜底也捞不住它。
+   *
+   * ⚠️ 只认「是谁 / 谁是 / 是啥人 / 干嘛的 / 干什么的」，
+   *    **不认裸的「是什么」** —— 那个太宽（「这是什么」「那是什么颜色」都会中）。
+   */
+  if (/(是谁|谁是|是啥人|干嘛的|干什么的)/.test(t)) {
+    return { need: true, why: '在问某个人/东西是谁', query: cleanQuery(t) }
+  }
+
   return { need: false, why: '', query: '' }
 }
 

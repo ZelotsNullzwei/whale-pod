@@ -91,9 +91,21 @@ console.log('\n=== 2. 长期记忆：窗口满了之后仍能连续多轮摘要 
   check('第 3 轮：仍能触发（证明不是只触发一次）', r3 === true, `calls=${calls}`)
   check('第 3 轮：calls 累计到 3', calls === 3, String(calls))
 
-  // 摘要内容应该是累积的
+  /*
+   * ⚠️ 2026-10-28：这条原来断言「第1/2/3次摘要」都必须留在 summary 里 ——
+   *    那是 `merge()` 引入「【人】/【事】」格式**之前**的语义（纯拼接）。
+   *
+   *    现在 `merge()` 对**非【人】格式**明确走「替换」分支
+   *    （见 long.js 注释：「宁可丢掉旧细节，也不该让摘要无限膨胀」）。
+   *    所以这里只保留最后一次是**设计如此**，不是回归。
+   *
+   *    真正要守住的是「多轮都能触发」——上面三个 `calls === N` 已经覆盖；
+   *    这里再确认「留下的是最后一轮」且「能看到上一版（previous 有值）」，
+   *    即确实是增量摘要，而不是每次都当首轮。
+   */
   const s = lt.get('group:1').summary
-  check('摘要累积了多轮内容', s.includes('第1次摘要') && s.includes('第2次摘要') && s.includes('第3次摘要'), s.slice(0, 120))
+  check('摘要保留最后一轮（merge 非【人】格式为替换语义）', s.includes('第3次摘要'), s.slice(0, 120))
+  check('第3轮摘要看到了上一版（证明是增量，不是首轮）', s.includes('上次：有'), s.slice(0, 120))
 
   fs.rmSync(home, { recursive: true, force: true })
 }
