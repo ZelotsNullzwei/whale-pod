@@ -1191,7 +1191,27 @@ window.__ModuleLoader__.load({
       const act = async (path, body) => {
         setBusy(true)
         try {
-          await post(path, body)
+          /*
+           * ⚠️ 启停类动作**必须给足超时**（2026-10-28 修）。
+           *
+           * 症状（B 站评论原话）：「点了一键启动之后没有反应，这个是什么原因呀」
+           *
+           * 根因：两边的等待时间对不上 ——
+           *   · 服务端 `daemon.js` 的 `ensureRunning` 最多等 **25 秒**
+           *     （`readyTimeoutMs ?? 25_000`）才判定后端就绪
+           *   · 而 `api()` 默认超时只有 **8 秒**
+           *
+           * 于是：点「一键启动」→ 8 秒时客户端 `ctrl.abort()`
+           *   → fetch 抛 AbortError（文本含 "aborted"）
+           *   → 下面的 benign 正则把它当「预期内」
+           *   → 只闪一句「已发出指令，状态刷新中…」
+           *   → 刷新时后端还没起来 → 界面依旧「后端未运行」
+           * **用户看到的就是「点了没反应」，而且真正的失败原因也被吞掉。**
+           *
+           * 所以启停走 45 秒（> 服务端 25 秒），别的接口维持 8 秒。
+           */
+          const isLifecycle = /\/qq\/(start|stop)|\/daemon\/(start|stop)/.test(String(path))
+          await post(path, body, isLifecycle ? 45_000 : undefined)
         } catch (error) {
           // 关闭类动作的"错误"往往只是进程退出导致的连接中断，
           // 属于预期内，提示写得模糊一点，别吓人。

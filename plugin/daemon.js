@@ -180,6 +180,43 @@ export async function listProcesses() {
 }
 
 /**
+ * 读文件末尾若干字节（诊断用）。
+ *
+ * ## 为什么需要（2026-10-28，B 站评论「点了一键启动之后没有反应」）
+ *
+ * `ensureRunning` 原来 spawn 时用 `stdio: 'ignore'` —— 后端进程的
+ * stdout/stderr **全部丢弃**。于是「后端一起来就崩」这种情况：
+ *   · 日志里一行都没有
+ *   · 用户只等到一句「启动超时（25 秒内端口未监听）」（而且前端 8 秒就
+ *     abort 了，连这句都看不到）
+ * 排查完全靠猜。
+ *
+ * 现在把子进程输出落到 `<home>/daemon-boot.log`，并把**末尾几行**
+ * 附在错误消息里 —— 让「没反应」变成一条能看懂的报错。
+ *
+ * @param {string} file
+ * @param {number} [maxBytes=1200]
+ * @returns {string} 文件末尾内容；读不到返回空串
+ */
+export function readTail(file, maxBytes = 1200) {
+  try {
+    const st = fs.statSync(file)
+    const start = Math.max(0, st.size - maxBytes)
+    const fd = fs.openSync(file, 'r')
+    try {
+      const len = st.size - start
+      const buf = Buffer.alloc(len)
+      fs.readSync(fd, buf, 0, len, start)
+      return buf.toString('utf8').trim()
+    } finally {
+      try { fs.closeSync(fd) } catch { /* ignore */ }
+    }
+  } catch {
+    return ''
+  }
+}
+
+/**
  * 确保 WhalePod 进程在跑。已在服务 → 立刻返回；没在 → 启动并等就绪。
  * @param {object} [opts]
  * @param {string} [opts.home]      WhalePod 数据目录
@@ -194,6 +231,9 @@ export async function ensureRunning(opts = {}) {
 
   const entry = path.join(WHALE_POD_ROOT, 'src', 'index.js')
   if (!fs.existsSync(entry)) throw new Error(`WhalePod 入口不存在：${entry}`)
+
+  const homeDir = opts.home ?? path.join(process.env.DSH_HOME ?? path.join(process.env.USERPROFILE ?? '', '.dsh'), 'whale-pod')
+  const bootLog = path.join(homeDir, 'daemon-boot.log')
 
   starting = true
   try {
@@ -243,16 +283,36 @@ export async function ensureRunning(opts = {}) {
     //
     // 代价是「机器人 24 小时在线」这个能力没有了 —— 但那本来就该由
     // 独立启动（双击 bat）承担，不该让 DSH 的子进程去兼。
+    /*
+     * ⚠️ 子进程输出**必须留痕**（2026-10-28 修，B 站评论
+     *    「点了一键启动之后没有反应」）。
+     *
+     * 原来写 `stdio: 'ignore'` —— 后端一起来就崩时，日志一行都没有，
+     * 用户（和排查的人）只能看到一句「启动超时」，等于没有任何线索。
+     *
+     * 现在重定向到 `<home>/daemon-boot.log`；失败时把末尾几行附进错误消息。
+     * 打不开日志文件就退回 ignore —— 诊断能力不能反过来把启动搞挂。
+     */
+    let bootFd = null
+    try {
+      fs.mkdirSync(homeDir, { recursive: true })
+      bootFd = fs.openSync(bootLog, 'a')
+      fs.writeSync(bootFd, `\n=== ${new Date().toISOString()} 启动 ${node.exe} ===\n`)
+    } catch { bootFd = null }
+
     child = spawn(node.exe, args, {
       detached: false,
       windowsHide: true,
-      stdio: 'ignore',
+      stdio: bootFd === null ? 'ignore' : ['ignore', bootFd, bootFd],
       cwd: WHALE_POD_ROOT,
       env: node.env,
     })
     log.info?.(`WhalePod 守护进程已启动（pid ${child.pid}）`)
 
     // ── 等就绪 ──────────────────────────────────────────────────
+    //
+    // ⚠️ 加**早退检测**：进程要是几秒内就死了，别白等到 25 秒 ——
+    //    直接把它的最后输出捞出来报错，用户立刻知道为什么起不来。
     const deadline = Date.now() + (opts.readyTimeoutMs ?? 25_000)
     while (Date.now() < deadline) {
       if (await isAlive(800)) {
@@ -260,9 +320,23 @@ export async function ensureRunning(opts = {}) {
         log.info?.('WhalePod 已就绪')
         return { started: true, already: false, pid: child.pid }
       }
+      // exitCode 非 null = 已经退出；signalCode 非 null = 被信号杀掉
+      if (child.exitCode !== null || child.signalCode !== null) {
+        failCount++
+        const tail = readTail(bootLog)
+        throw new Error(
+          `WhalePod 进程启动后立刻退出（code=${child.exitCode ?? '-'} signal=${child.signalCode ?? '-'}）`
+          + (tail ? `\n最后输出：\n${tail}` : `\n（没有输出，日志文件：${bootLog}）`),
+        )
+      }
       await new Promise((r) => setTimeout(r, 500))
     }
-    throw new Error('WhalePod 启动超时（25 秒内端口未监听）')
+    failCount++
+    const tail = readTail(bootLog)
+    throw new Error(
+      `WhalePod 启动超时（${Math.round((opts.readyTimeoutMs ?? 25_000) / 1000)} 秒内端口未监听）`
+      + (tail ? `\n最后输出：\n${tail}` : `\n（没有输出，日志文件：${bootLog}）`),
+    )
   } finally {
     starting = false
   }

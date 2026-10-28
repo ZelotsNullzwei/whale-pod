@@ -24,7 +24,15 @@ const OUT_DIR = path.join(REPO, 'dist')
 //    产出「0.3.0 的代码、0.2.5 的文件名」，人和脚本都会被误导。
 const PKG = JSON.parse(fs.readFileSync(path.join(REPO, 'package.json'), 'utf8'))
 const VERSION = String(process.argv[2] ?? PKG.version).replace(/^v/, '')
-const ZIP = path.join(OUT_DIR, `dsh-whale-pod-v${VERSION}.zip`)
+/*
+ * ⚠️ 命名要和**已发布的 asset** 对齐。
+ *
+ * 历史：v0.1~v0.3.0 叫 `dsh-whale-pod-v0.3.0.zip`，
+ *        v0.3.1 / v0.3.2 改成了 `whale-pod-0.3.1.zip`。
+ * 这里跟上后者 —— 脚本产出的名字必须和 Release 上的名字一致，
+ * 否则发布的人得手动改名，迟早漏掉。
+ */
+const ZIP = path.join(OUT_DIR, `whale-pod-${VERSION}.zip`)
 
 fs.mkdirSync(OUT_DIR, { recursive: true })
 if (fs.existsSync(ZIP)) fs.unlinkSync(ZIP)

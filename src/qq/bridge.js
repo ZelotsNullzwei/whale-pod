@@ -31,6 +31,7 @@ import { extractFindImageMarkers, stripFindImageMarkers, resolveFindImage, findI
 import { extractBanMarkers, stripBanMarkers, validateBan, describeBanMinutes, extractNicknameMarkers, stripNicknameMarkers, validateNickname } from './groupAdmin.js'
 import { applyQuestionOverride } from './questionGate.js'
 import { shouldAnswerSticker } from './stickerGate.js'
+import { buildBalanceHint } from './balanceHint.js'
 import { buildVarietyHint, buildExpressionHint } from '../persona/variety.js'
 import { currentSlot, renderDayPlan } from '../memory/dayPlan.js'
 
@@ -2791,15 +2792,19 @@ export class QQBridge {
         //
         // ⚠️ 不写"请充值"这种客服腔 —— 大肥鱼的人格里有「Token 是脑力口粮」
         //    「我要 token」「白米饭」这一串设定，直接让她按性格抱怨就行。
-        //    也不用每条都说：只在 searchEnabled 且确实低的时候挂一句，
-        //    而且明确"最多提一两次"，免得变成复读机。
-        this._balanceLow
-          ? `## 你的 Token 快没了
-你查资料用的钱包里只剩 ¥${this._balance?.cny ?? 0} 了（搜索是要花钱的，聊天不用）。
-这属于**你自己的脑力口粮**，符合你会念叨 Token 的性格 —— 可以自然地抱怨一句，
-比如"钱包要空了""再不喂我要饿死了""白米饭！"之类。
-⚠️ 但**最多提一次**，别每条都念，也别把话题整个带跑。`
-          : '',
+        //
+        // ⚠️⚠️ **只挂一次**（2026-10-28 修，用户报「要饭感觉今天触发很多次了」）。
+        //    原来这里内联判断 `this._balanceLow`，并在下一项写了
+        //    `this._balanceWarned = this._balanceLow` —— 但那个变量
+        //    **从来没被读过**，于是「最多提一次」形同虚设：
+        //    余额只要低于阈值，**每一次生成**都挂着「钱包只剩 ¥X」，
+        //    它自然每条回复都念叨钱包。
+        //    现在交给 buildBalanceHint 判 `warned`，下一项再更新状态。
+        buildBalanceHint({
+          low: this._balanceLow,
+          warned: this._balanceWarned,
+          cny: this._balance?.cny ?? 0,
+        }),
         (this._balanceWarned = this._balanceLow, ''),
         // ⚠️ 关键：告诉模型"该不该说话已经由决策层定好了"。
         //

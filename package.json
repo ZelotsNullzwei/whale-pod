@@ -1,6 +1,6 @@
 {
   "name": "whale-pod",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "private": true,
   "type": "module",
   "description": "QQ bot runtime with a free-first LLM gateway. Tray-resident, zero windows.",
