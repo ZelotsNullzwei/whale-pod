@@ -1252,10 +1252,25 @@ export class QQBridge {
 
     // 人物档案：记一次「这个人又出现了」，顺带更新昵称别名。
     //
-    // 认人一律按 QQ 号（`msg.sender`）—— 昵称会换、会撞，用它当 key
+    // 认人一律按 QQ 号 —— 昵称会换、会撞，用它当 key
     // 会把同一个人拆成好几个，或把两个人的印象串在一起。
-    if (!msg.isMe && msg.sender) {
-      this.people?.touch(msg.sender, msg.senderName)
+    //
+    // ⚠️ **字段是 `msg.userId`，不是 `msg.sender`**（2026-10-29 修）。
+    //
+    // `msg` 来自 `ev.__normalized`（本函数开头 1237 行），而
+    // `normalizeEvent()` 返回的字段是 `userId` —— **根本没有 `sender`**
+    // （见 onebot.js:1180-1198 的返回字面量）。
+    //
+    // 原来这里写 `msg.sender`，于是：
+    //   · `if (!msg.isMe && msg.sender)` 恒假 → `touch()` **一次都没执行过**
+    //   · `touch()` 不跑 → `_dirty` 永远 false → `flush()` 什么都不写
+    //   · 结果：`people.json` **从未落盘**，重启后人物档案全丢
+    //     （进程内 `toPrompt()` 仍然工作，所以线上不易察觉；
+    //      磁盘上连 `.tmp` 都没有，就是这么来的）
+    //
+    // 保留 `?? msg.sender` 只是防御：万一别处递进来的对象带 `sender`。
+    if (!msg.isMe && (msg.userId || msg.sender)) {
+      this.people?.touch(msg.userId ?? msg.sender, msg.senderName)
     }
 
     // ⚠️ 重复事件去重（2026-10-23 补）

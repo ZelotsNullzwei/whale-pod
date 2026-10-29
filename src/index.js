@@ -563,7 +563,9 @@ export async function main(argv = process.argv.slice(2)) {
     longMemory.load()
 
     // 人物档案：按 QQ 号认人。跨会话共享。
-    const people = new PeopleStore({ home: store.home })
+    // 带上 log —— 落盘失败要能看见（以前 `catch {}` 全吞，people.json
+    // 从没写出来都没人发现）。
+    const people = new PeopleStore({ home: store.home, log })
     state.people = people
 
     /*

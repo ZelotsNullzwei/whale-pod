@@ -174,6 +174,8 @@ export class PeopleStore {
     this.people = new Map()
     this._now = opts.now ?? (() => Date.now())
     this._dirty = false
+    /** 日志（可空）。只用来把「落盘失败」这种沉默问题暴露出来。 */
+    this.log = opts.log ?? {}
     if (this.file) this.load()
   }
 
@@ -201,7 +203,23 @@ export class PeopleStore {
   }
 
   save() {
-    if (!this.file) return
+    /*
+     * ⚠️ 两条「静默失败」的路径都要能看见（2026-10-29 修）。
+     *
+     * 之前这里 `if (!this.file) return` + `catch {}` 全吞 ——
+     * 结果 `people.json` **从来没写出来过**，日志里却一个字都没有，
+     * 只能靠人肉去磁盘上数文件才发现。沉默的失败比报错难查得多。
+     *
+     * 现在：两条路径各告警**一次**（`_warnedX` 去重，避免每 30 秒 flush 刷屏）。
+     * 默认 `log={}` 时是 no-op，不改变任何既有行为。
+     */
+    if (!this.file) {
+      if (!this._warnedNoFile) {
+        this._warnedNoFile = true
+        this.log?.warn?.('人物档案未启用落盘（没给 home）—— 重启后人物印象会丢')
+      }
+      return
+    }
     try {
       const people = {}
       for (const [key, p] of this.people) people[key] = p.toJSON()
@@ -210,8 +228,12 @@ export class PeopleStore {
       fs.writeFileSync(tmp, JSON.stringify({ version: 1, people }), { mode: 0o600 })
       fs.renameSync(tmp, this.file)
       this._dirty = false
-    } catch {
-      // 写失败不影响主流程
+    } catch (e) {
+      // 写失败不影响主流程，但必须**留痕**（否则下次还是查不到）
+      if (!this._warnedSaveErr) {
+        this._warnedSaveErr = true
+        this.log?.warn?.(`人物档案落盘失败（${this.file}）：${String(e?.message ?? e)}`)
+      }
     }
   }
 
