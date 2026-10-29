@@ -486,7 +486,7 @@ export async function main(argv = process.argv.slice(2)) {
       dir: cfg.memory?.dir,
       log,
       summarize: async ({ messages, previous, scene, self }) => {
-        const { SUMMARY_PROMPT } = await import('./memory/long.js')
+        const { SUMMARY_PROMPT, parsePersonLines } = await import('./memory/long.js')
         /*
          * ⚠️ 每条消息必须带上**QQ 号**（2026-10-28 修，用户报「老是记小事」）。
          *
@@ -548,7 +548,41 @@ export async function main(argv = process.argv.slice(2)) {
         for await (const chunk of opened.stream) {
           if (chunk?.type === 'text-delta' || chunk?.type === 'text') text += chunk.text ?? ''
         }
-        return text.trim()
+        const out = text.trim()
+
+        /*
+         * ── 把【人】段落同步进**跨会话人物档案**（2026-10-29 补接线）──
+         *
+         * 这是 `PeopleStore` 存在的全部意义：`index.js` 里那句注释写着
+         * 「一个人会出现在多个群和私聊里，但『他是谁』跨会话只有一个答案」。
+         *
+         * 但在这个 sync 之前，`setImpression()` **全项目零调用方** ——
+         * 于是 `impression` 永远是空串 →
+         * `toPromptLine()` 走 `if (parts.length === 0) return ''`（person.js:158）
+         * → `toPrompt()` 里 `lines.filter(Boolean)` 全被滤掉 → **返回空串**
+         * → `bridge.js` 的 `memory: [memoryText, peopleText].filter(Boolean)`
+         *   里 peopleText 恒为空。
+         *
+         * 也就是说：人物档案那条链**一直是死的**，线上实测
+         * `people.json` 里只有「见过 23 次」，一句印象都没有。
+         *
+         * 摘要的【人】段本来就产出 `QQ号 | 昵称 | 一句话印象`，
+         * 这里按 QQ 号写进去 —— 群和私聊提炼到的印象会**汇总到同一个人**身上。
+         *
+         * 失败**不能影响摘要本身**（摘要是主线，档案是附加），所以整段吞错。
+         * 用 `people?` 是因为它在本函数后面才构造（闭包，调用时已就绪）。
+         */
+        try {
+          if (out && people) {
+            for (const p of parsePersonLines(out)) {
+              if (p?.id) people.setImpression(p.id, p.impression, p.name)
+            }
+          }
+        } catch (e) {
+          log.warn?.(`人物档案同步失败（不影响摘要）：${String(e?.message ?? e)}`)
+        }
+
+        return out
       },
     })
 

@@ -258,6 +258,52 @@ export class PeopleStore {
     return p
   }
 
+  /**
+   * 写入/覆盖一条人物印象（跨会话）。
+   *
+   * ## 为什么单独开一个方法，而不是复用 `touch()`
+   *
+   * `touch()` 是「**这个人又说话了**」，会把 `seen` 加一 —— 那是"见过多少次"的
+   * 计数，用来排序「常聊的人」。
+   * 而摘要提炼是「**模型对这个人有了一句判断**」，跟他说没说话无关：
+   * 一条消息里可能同时更新好几个人（群里别人提到的人），
+   * 用它去 `touch()` 会让 `seen` 虚高、把排序搞乱。
+   *
+   * 所以这里：**只写印象和别名，不动 `seen` / `lastSeen`**。
+   *
+   * ## 调用方
+   * `index.js` 的 summarize 回调 —— 长期摘要每产出一次【人】段落，
+   * 就同步一次。这补上的是整条链路里缺的那一环：
+   * 在这个方法被接线之前，`impression` 永远是空串，
+   * 于是 `toPromptLine()` 返回 `''`、`toPrompt()` 返回 `''`
+   * —— **跨会话人物档案对提示词毫无贡献**（线上实测如此）。
+   *
+   * @param {string|number} id QQ 号
+   * @param {string} text 一句话印象（空串 = 忽略，不覆盖已有）
+   * @param {string} [name] 当前昵称，作为别名记下
+   * @returns {PersonProfile|null}
+   */
+  setImpression(id, text, name) {
+    const key = personKey(id)
+    if (!key) return null
+    const s = String(text ?? '').trim()
+    const n = String(name ?? '').trim()
+    if (!s && !n) return null
+    let p = this.people.get(key)
+    if (!p) {
+      p = new PersonProfile(String(id))
+      this.people.set(key, p)
+    }
+    // 昵称只当别名累积，不改 seen —— 见上面的说明
+    if (n && !p.aliases.includes(n)) {
+      p.aliases.push(n)
+      if (p.aliases.length > MAX_ALIASES) p.aliases = p.aliases.slice(-MAX_ALIASES)
+    }
+    p.setImpression(s)
+    this._dirty = true
+    return p
+  }
+
   /** @param {string|number} id */
   get(id) {
     return this.people.get(personKey(id)) ?? null
