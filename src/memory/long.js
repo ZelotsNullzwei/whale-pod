@@ -99,8 +99,18 @@ export class LongTermMemory {
     if (!incoming.includes('【人】')) {
       const keepPeople = parsePeople(this.summary)
       const topics = parseTopics(incoming) || parseTopics(this.summary)
+      /*
+       * 【我】也要保住 —— 和【人】同理：
+       * 模型偶尔忘格式，不该把攒了几周的「我说话方式变了」整段冲掉。
+       */
+      const selfNote = parseSelf(incoming) || parseSelf(this.summary)
+      /*
+       * 【梗】同样要保住 —— 术语库是"这个群怎么说话"，
+       * 一次格式失误丢掉，等于它又开始听不懂黑话。
+       */
+      const gloss = parseGloss(incoming) || parseGloss(this.summary)
       this.summary = keepPeople.size > 0
-        ? renderPeople(keepPeople, topics)
+        ? renderPeople(keepPeople, topics, selfNote, gloss)
         : incoming.slice(-MAX_SUMMARY_CHARS)
       this.updatedAt = Date.now()
       return
@@ -113,13 +123,69 @@ export class LongTermMemory {
     for (const [id, line] of next) prev.set(id, line)
 
     const topics = parseTopics(incoming) || parseTopics(this.summary)
-    this.summary = renderPeople(prev, topics)
+    const selfNote = parseSelf(incoming) || parseSelf(this.summary)
+    const gloss = parseGloss(incoming) || parseGloss(this.summary)
+    this.summary = renderPeople(prev, topics, selfNote, gloss)
     this.updatedAt = Date.now()
   }
 }
 
 /** 摘要总长上限。够装 ~40 个人 + 话题，再多说明该淘汰了。 */
 const MAX_SUMMARY_CHARS = 3000
+
+/**
+ * 「事」段（话题）单独的上限。
+ *
+ * 取总预算的一半左右：人物印象是长期资产、话题是近期消耗品，
+ * 不能让一段跑飞的话题把位置全占掉。
+ */
+const MAX_TOPIC_CHARS = 1400
+
+/** 单条人物印象的上限。提示词要求 ≤30 字，这里放 4 倍余量容模型偶尔啰嗦。 */
+const MAX_PERSON_CHARS = 120
+
+/**
+ * 「我」段（它对自己的叙述）的上限。
+ *
+ * 提示词只要求 1~2 句，400 字是很宽的余量。
+ * 这一段**最短也最难重建** —— 所以裁剪顺序里它**最后一个让位**。
+ */
+const MAX_SELF_CHARS = 400
+
+/**
+ * 「梗」段（术语库）的上限。
+ *
+ * 提示词要求只写**这个群内部的**黑话，一行一个「词 | 意思」，10 行以内。
+ * 300 字够装 10~15 条 —— 再多就说明它在抄网络流行语大全，
+ * 而那些恰恰是最没用的（隔两周就过时）。
+ */
+const MAX_GLOSS_CHARS = 300
+
+/**
+ * 话题文本的裁剪：**优先保住「我说过：」那一段**。
+ *
+ * 提示词要求【事】里必须有一句「我说过：…」（机器人自己表达过的立场）。
+ * 它是人设连续性的核心 —— 直接从头截断很容易正好把它切掉。
+ *
+ * @param {string} text
+ * @param {number} max
+ * @returns {string}
+ */
+function clipTopics(text, max) {
+  const s = String(text ?? '').trim()
+  if (s.length <= max) return s
+  const at = s.indexOf('我说过：')
+  if (at >= 0) {
+    const said = s.slice(at).trim()
+    if (said.length <= max) {
+      const headKeep = max - said.length - 1
+      if (headKeep > 20) return `${s.slice(0, headKeep).trim()}\n${said}`
+      return said.slice(0, max)
+    }
+    return said.slice(0, max)
+  }
+  return s.slice(0, max)
+}
 
 /**
  * 从摘要文本里取出「【人】→ QQ号 → 那一行」的映射。
@@ -151,21 +217,104 @@ export function parsePeople(text) {
 /**
  * 把「人 + 话题」渲染回摘要文本。
  *
+ * ## 必须**保证终止**（2026-10-29 修）
+ *
+ * 原来是递归收缩：
+ * ```js
+ * const keep = [...people.entries()].slice(-Math.floor(people.size * 0.7))
+ * return renderPeople(new Map(keep), topics).slice(0, MAX_SUMMARY_CHARS)
+ * ```
+ * 这条有两个致命问题（实测 4/4 栈溢出）：
+ *
+ *   ① **`slice(-0)` 就是 `slice(0)`** —— `Math.floor(0 * 0.7) === 0`，
+ *      于是「保留后面 0%」被当成「保留全部」，数组**一条都没少** →
+ *      同一组参数无限递归 → `RangeError: Maximum call stack size exceeded`。
+ *      只要人数 < 2 就必然踩到（1 人时 `floor(0.7)=0`，2 人时收缩到 1 人后
+ *      下一轮又是 0）。
+ *   ② **`topics` 原样透传** —— 话题文本自己超过总上限时，递归里它永远不缩短，
+ *      无论几个人都终止不了。
+ *
+ * 现在改成**迭代收缩**，顺序按「先砍消耗品、后砍资产」：
+ *   1. 先把话题裁到 `MAX_TOPIC_CHARS`（保住「我说过：」那段）
+ *   2. 再逐条移除**最旧**的人物印象（Map 保序，`shift()` 从头删）
+ *   3. 人砍光了还超 → 从话题尾部精确减去超出量
+ *   4. 最后再套一次硬 `slice`，兜住分隔符之类的极端情况
+ *
+ * 终止性：第 2 步每轮至少少一条（严格递减）；第 3、4 步是常数次操作。
+ *
  * @param {Map<string, string>} people
  * @param {string} topics
  * @returns {string}
  */
-export function renderPeople(people, topics) {
-  const lines = [...people.values()]
-  const head = lines.length > 0 ? `【人】\n${lines.join('\n')}` : ''
-  const tail = topics ? `【事】\n${topics}` : ''
-  const body = [head, tail].filter(Boolean).join('\n\n')
-  // 兜底：真超了就砍最早的人（Map 保序，前面的最先加）
-  if (body.length > MAX_SUMMARY_CHARS) {
-    const keep = [...people.entries()].slice(-Math.floor(people.size * 0.7))
-    return renderPeople(new Map(keep), topics).slice(0, MAX_SUMMARY_CHARS)
+export function renderPeople(people, topics, self, gloss) {
+  let topicText = clipTopics(topics, MAX_TOPIC_CHARS)
+  /*
+   * 「我」段（2026-10-29 加）。
+   *
+   * 省略 `self` 时**输出与旧版逐字节相同** —— 这条有测试锁着
+   * （`check-selfnote`）。所以任何既有调用方不受影响。
+   */
+  let selfText = String(self ?? '').trim()
+  if (selfText.length > MAX_SELF_CHARS) selfText = selfText.slice(0, MAX_SELF_CHARS)
+  /*
+   * 「梗」段（术语库，2026-10-29 加）—— 这个群的黑话。
+   *
+   * 同样：省略 `gloss` 时输出与上一版逐字节相同（`check-glossary` 锁着）。
+   * 它排在最后，所以 `parseSelf` 要在「【梗】」处收边界。
+   */
+  let glossText = String(gloss ?? '').trim()
+  if (glossText.length > MAX_GLOSS_CHARS) glossText = glossText.slice(0, MAX_GLOSS_CHARS)
+
+  const lines = []
+  for (const v of people?.values?.() ?? []) {
+    const s = String(v ?? '').trim()
+    if (!s) continue
+    lines.push(s.length > MAX_PERSON_CHARS ? s.slice(0, MAX_PERSON_CHARS) : s)
   }
-  return body
+
+  const build = () => {
+    const head = lines.length > 0 ? `【人】\n${lines.join('\n')}` : ''
+    const mid = topicText ? `【事】\n${topicText}` : ''
+    const tail = selfText ? `【我】\n${selfText}` : ''
+    const last = glossText ? `【梗】\n${glossText}` : ''
+    return [head, mid, tail, last].filter(Boolean).join('\n\n')
+  }
+
+  let body = build()
+
+  // ① 逐条移除最旧的人（Map 保序：最早 set 的排在最前）
+  while (body.length > MAX_SUMMARY_CHARS && lines.length > 0) {
+    lines.shift()
+    body = build()
+  }
+
+  // ② 人已经砍光 → 按超出量精确截短话题
+  if (body.length > MAX_SUMMARY_CHARS && topicText) {
+    const overflow = body.length - MAX_SUMMARY_CHARS
+    topicText = topicText.slice(0, Math.max(0, topicText.length - overflow))
+    body = build()
+  }
+
+  /*
+   * ③ 【我】与【梗】最后让位。
+   *
+   * 顺序是刻意的：人是长期资产、话题是近期消耗品、【我】和【梗】是
+   * 最难重建的东西（性格的连续性、这个群怎么说话）—— 留到最后一个动。
+   * 两者都有硬上限（400 / 300 字），正常根本走不到这一步。
+   */
+  if (body.length > MAX_SUMMARY_CHARS && selfText) {
+    const overflow = body.length - MAX_SUMMARY_CHARS
+    selfText = selfText.slice(0, Math.max(0, selfText.length - overflow))
+    body = build()
+  }
+  if (body.length > MAX_SUMMARY_CHARS && glossText) {
+    const overflow = body.length - MAX_SUMMARY_CHARS
+    glossText = glossText.slice(0, Math.max(0, glossText.length - overflow))
+    body = build()
+  }
+
+  // ④ 硬上限兜底
+  return body.length > MAX_SUMMARY_CHARS ? body.slice(0, MAX_SUMMARY_CHARS) : body
 }
 
 /**
@@ -351,12 +500,46 @@ export class LongTermStore {
      * ⚠️ 也不能把短期记忆的 `totalPushed` 持久化跨过期 —— 那会让
      *    「昨天说了 500 句」的账算到今天头上，一次重启就误摘要。
      */
-    if (total < (mem.summarizedTotal ?? 0)) {
-      this.log.info?.(
-        `长期记忆：${scope} 的累计计数回退（${total} < ${mem.summarizedTotal}）`
-        + ' —— 短期记忆过期或重启过，重置摘要基线',
-      )
-      mem.summarizedTotal = 0
+    const prevTotal = mem.summarizedTotal ?? 0
+    if (total < prevTotal) {
+      /*
+       * ⚠️ 回退有**两种**成因，处理方式相反，不能一概归零（2026-10-29 补）。
+       *
+       * ① **短期记忆重置**（过夜过期后重建）：`totalPushed` 归零再累计，
+       *    `summarizedTotal` 是"上个会话"的账 → 该归零，让新内容尽快摘要。
+       *
+       * ② **丢增量**（被硬杀/崩溃，2 秒防抖还没落盘）：`totalPushed` 少了十几个，
+       *    但**那批刚刚已经摘要过** → 归零就会把同一批内容**再摘一遍**。
+       *    实测：41 分钟里摘要跑了两次（23:14:44、23:15:55）。
+       *
+       * ## 判据：看**摘要发生在哪个会话里**
+       *
+       *   · `summarizedAt >= sessionAt` → 摘要在**本会话内**发生
+       *     → 回退只可能是丢增量 → **对齐基线，不重摘**
+       *   · `summarizedAt < sessionAt` → 摘要属于**上一个**会话
+       *     → 归零，尽快摘
+       *   · `sessionAt` 未知（老调用 / 老文件没有 createdAt）
+       *     → 保守按"重置"处理（宁可多摘一次，也别把新内容冻住）
+       *
+       * ⚠️ **不能用"回退了多少比例"判断** —— 过夜后聊几十句，比例同样高。
+       *    实测那个真实案例是 `60 → 37`（剩 62%），而它其实是过夜重置。
+       */
+      const summarizedAt = Number(mem.updatedAt ?? 0)
+      const sessionAt = Number(ctx.sessionStartedAt ?? 0)
+      const lostIncrements = sessionAt > 0 && summarizedAt >= sessionAt
+      if (lostIncrements) {
+        this.log.info?.(
+          `长期记忆：${scope} 的累计计数回退（${total} < ${prevTotal}）`
+          + ` —— 判断为"丢了未落盘的增量"（摘要在本会话内），基线对齐到 ${total}，不重复摘要`,
+        )
+        mem.summarizedTotal = total
+      } else {
+        this.log.info?.(
+          `长期记忆：${scope} 的累计计数回退（${total} < ${prevTotal}）`
+          + ' —— 判断为"短期记忆重置"（摘要属于上个会话），重置摘要基线',
+        )
+        mem.summarizedTotal = 0
+      }
       this._dirty = true
     }
 
@@ -438,7 +621,7 @@ export class LongTermStore {
 /** 默认的摘要提示词（上层可覆盖）。 */
 export const SUMMARY_PROMPT = `你在维护一个 QQ 群聊机器人的长期记忆。目标**不是复述聊天，而是记住人**。
 
-按下面的格式输出，一共两部分：
+按下面的格式输出，一共四部分（【人】【事】【我】【梗】）：
 
 【人】
 每行一个人，格式：QQ号 | 昵称 | 一句话印象
@@ -461,6 +644,29 @@ export const SUMMARY_PROMPT = `你在维护一个 QQ 群聊机器人的长期记
 这条**很重要**：明天有人追问「你昨天不是这么说的吗」，
 你得能想起自己说过什么。没说过就别硬编。
 
+【我】
+**你自己**最近有什么变化、对自己有什么认识。1~2 句，写「我」：
+
+- 说话方式 / 态度上的变化（例如：「我好像越来越会等对方把话说完再接了」）
+- 对什么开始有反应了、学会了什么、改掉了什么毛病
+- 跟不同的人相处，方式上有区别吗
+
+⚠️ **这一段只写你自己**，别写成【人】或【事】：
+  · 「番茄爱揪年份」 → 那是【人】
+  · 「今天聊完了渲染图」 → 那是【事】
+  · 「我发现被揪年份时我会先认，而不是硬编」 → **这才是【我】**
+
+没变化就照抄上一次的；**别为了填满而硬编**。写不出来就整段留空。
+
+【梗】
+**这个群内部**的黑话 / 叫法。一行一个，格式：词 | 一句话意思
+
+- 只写**你们群里真在用**的：给谁起的绰号、内部才懂的说法、反复玩的梗
+- 例：减速器 | 丢包的加速器，反着加速　／　睡鲸 | 睡过头，我自己也认了
+- ⚠️ **不写网络上烂大街的流行语**（「绝绝子」「YYDS」这类）——
+  那不用记，你本来就知道；记下来只会让你显得像在学舌
+- 过时的就删掉，别攒着。**最多 10 行**
+
 【不要做的事】
 - 不要复述对话，不要点名谁说了哪句话
 - 不要编造没人提过的事
@@ -473,7 +679,7 @@ export const SUMMARY_PROMPT = `你在维护一个 QQ 群聊机器人的长期记
 - 能进【事】的只有**明天以后还用得上**的东西；拿不准就别写。
 - 总长度控制在 300 字以内
 
-${'【已有印象】是上一次的结论。请在此基础上**更新**：\n- 印象变了就整行替换，不要叠加\n- 事实没有变化的人可以省略不写\n- 已经明显过时的内容直接删掉\n- 「我说过：」那一段也要更新 —— 旧说法被推翻就换成新的'}
+${'【已有印象】是上一次的结论。请在此基础上**更新**：\n- 印象变了就整行替换，不要叠加\n- 事实没有变化的人可以省略不写\n- 已经明显过时的内容直接删掉\n- 「我说过：」那一段也要更新 —— 旧说法被推翻就换成新的\n- 【我】那一段：变了就换，没变就**照抄上一次的**（别为了填满硬编）\n- 【梗】那一段：**过时的直接删**，别攒着；最多 10 行'}
 
 【已有印象】
 {previous}
@@ -481,7 +687,7 @@ ${'【已有印象】是上一次的结论。请在此基础上**更新**：\n- 
 【新的聊天记录】
 {messages}
 
-只输出上述两部分，不要任何前后缀。`
+只输出上述四部分，不要任何前后缀。`
 
 /**
  * 解析摘要输出里的「【人】」段。
@@ -531,6 +737,13 @@ export function parsePersonLines(text) {
 /**
  * 解析摘要输出里的「【事】」段。
  *
+ * ⚠️ **必须在 `【我】` 处停下**（2026-10-29 加）。
+ * 摘要末尾多了一段【我】（它对自己的叙述），而它排在【事】后面 ——
+ * 不收边界的话【我】会被整段当成话题吞掉。
+ *
+ * 顺序是 `【人】→【事】→【我】`，这样 `parsePeople`（取【人】..【事】）
+ * 和 `parsePersonLines` 都不用改。（反过来把【我】插在中间会同时破坏两者。）
+ *
  * @param {string} text
  * @returns {string}
  */
@@ -538,5 +751,51 @@ export function parseTopics(text) {
   const s = String(text ?? '')
   const start = s.indexOf('【事】')
   if (start < 0) return ''
-  return s.slice(start + 3).trim()
+  const selfAt = s.indexOf('【我】', start + 3)
+  const seg = selfAt > start ? s.slice(start + 3, selfAt) : s.slice(start + 3)
+  return seg.trim()
+}
+
+/**
+ * 解析摘要输出里的「【我】」段 —— **它对自己的叙述**。
+ *
+ * 前三段记的都是「你」（谁是谁、在聊什么、我说过什么），这一段记「它」：
+ * 说话方式有没有变、对什么开始有反应、学到了什么。
+ *
+ * 参考 `qq-dsh-bridge` 的 selfNote：
+ * > 以前它记得「你常熬夜」，但不记得「我好像越来越会等你说完再回了」。
+ * > 前者是资料，后者才是性格的连续性。
+ *
+ * @param {string} text
+ * @returns {string}
+ */
+export function parseSelf(text) {
+  const s = String(text ?? '')
+  const at = s.indexOf('【我】')
+  if (at < 0) return ''
+  // ⚠️ 必须在「【梗】」处停下 —— 它排在【我】后面，
+  //    不收边界的话术语库会被当成自我叙述吞掉。
+  const end = s.indexOf('【梗】', at + 4)
+  return (end > at ? s.slice(at + 4, end) : s.slice(at + 4)).trim()
+}
+
+/**
+ * 解析摘要输出里的「【梗】」段 —— **这个群里的黑话/术语**。
+ *
+ * 前三段记的是「谁」「聊什么」「我自己」，这一段记**这个群怎么说话**：
+ * 哪个词是他们内部的黑话、什么意思。
+ *
+ * 为什么独立成段而不是塞进【事】：
+ *   · 【事】是"最近在聊什么" = **近期消耗品**，会被新话题冲掉、会被裁剪
+ *   · 术语是**结构化的词→释义**，不是散文
+ *   · 同一个梗第二次出现时，它需要的是"这词什么意思"，不是"上周聊过"
+ *
+ * @param {string} text
+ * @returns {string}
+ */
+export function parseGloss(text) {
+  const s = String(text ?? '')
+  const at = s.indexOf('【梗】')
+  if (at < 0) return ''
+  return s.slice(at + 4).trim()
 }

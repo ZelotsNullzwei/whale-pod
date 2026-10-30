@@ -373,6 +373,26 @@ function buildBody(ch, o) {
   if (o.maxTokens) body.max_tokens = o.maxTokens
   if (typeof o.temperature === 'number') body.temperature = o.temperature
   if (o.topP !== undefined) body.top_p = o.topP
+  /*
+   * 推理等级（2026-10-29 加）。
+   *
+   * ⚠️ 原来这里**没有这一项** —— 于是调用方设的 `reasoningEffort`
+   *    到这一层就被**静默丢掉**了。实测 magpie 其实是认的：
+   *    同一段 8.3k 字 prompt，`low` 让 reasoning 从 662 字降到 106 字、
+   *    耗时 7140ms → 2958ms；四档（不传/low/medium/high）输出质量
+   *    看不出差别。
+   *
+   * ⚠️ 字段名必须是 **`reasoning_effort`（下划线）** —— OpenAI 风格。
+   *    实测 `reasoning: {effort}` 和 `thinking: {type}` 都**不被识别**
+   *    （推理长度不降反升，说明只是被当成无关字段忽略）。
+   *
+   * 上游要是不认，`openFirstAvailable` 那一层本来就有兜底：
+   * 报 `reasoning effort` 相关错时会**去掉等级重试一次**
+   * （见 qq/bridge.js 的 effort 兜底），最坏是「等级不生效」而不是整轮失败。
+   */
+  if (typeof o.reasoningEffort === 'string' && o.reasoningEffort !== '') {
+    body.reasoning_effort = o.reasoningEffort
+  }
   if (Array.isArray(o.tools) && o.tools.length > 0) {
     body.tools = o.tools
     body.tool_choice = o.toolChoice ?? 'auto'

@@ -416,7 +416,7 @@ export const DEFAULTS = {
        * ⚠️ 注意 base64 会膨胀 ~33%：8MB 的图变成请求体约 10.7MB。
        *    如果上游渠道因此报错（body too large），就把这里调回 4~6MB。
        */
-      maxImageBytes: 8 * 1024 * 1024,
+      maxImageBytes: 16 * 1024 * 1024,
     },
     /**
      * 联网搜索。

@@ -142,9 +142,27 @@ export function needsFreshInfo(text) {
    *    「你不是/你才/你刚」这类**指向对方刚才行为的反问**，
    *    不是在查资料，是在怼人。
    */
-  const chitchat = /^你?(吃了|睡了|走了|来了|好了|行吧|好吧|在吗|忙吗|醒了吗|下班了吗|到家了吗)/
+  const chitchat = /^你?(吃了|吃饭了|睡了|睡爽|醒了|起了|走了|来了|好了|行吧|好吧|在吗|忙吗|累吗|困吗|醒了吗|下班了吗|到家了吗)/
+  /*
+   * 状态 / 反问类 —— 不是求知。
+   *
+   * ⚠️ 2026-10-29 实测：今天联网 **11 次，该搜的 0 次**，全是这类：
+   *    「吃饭了吗」「睡爽了吗？」「闲着不好吗」「不是还有吗」
+   *    「你非得有事做吗」「你看不到消息谁发的吗」
+   *    「你都没有什么想对我说的吗」「你有自我意识吗」
+   * 搜了只是一次 5~15 秒的等待 + 一次搜索费（当时余额 ¥0.86）。
+   */
+  const stateAsk = /(不好吗|不是(吗|嘛)|不香|不就|对不对|是不是啊|爽了|闲着|有事做|在干嘛|干嘛呢|还有吗|没了|没什么想|自我意识)/
   const retort = /^(你不是|你才|你刚|不是才|不是刚|你没|你不是刚|你不是才)/
-  if (shortAsk && !chitchat.test(t) && !retort.test(t)) {
+  /*
+   * 「质问 / 抱怨」—— 在怼人，不是在查资料。
+   *
+   * ⚠️ 这里**故意用具体形态、不用"以你开头"这种宽规则**：
+   *    宽规则会把「你玩过影之刃零吗」也拦掉 —— 那句含"你"，
+   *    但问的是**外部作品**，是该搜的。漏搜（编事实）比多搜一次严重得多。
+   */
+  const complaint = /(你看不到|谁发的|你不|你都没|你非|你倒|你就)/
+  if (shortAsk && !chitchat.test(t) && !retort.test(t) && !stateAsk.test(t) && !complaint.test(t)) {
     return { need: true, why: '在问某个东西好不好', query: cleanQuery(t) }
   }
   if (fresh.test(t) && question) {
@@ -180,7 +198,14 @@ export function needsFreshInfo(text) {
    * ⚠️ 只认「是谁 / 谁是 / 是啥人 / 干嘛的 / 干什么的」，
    *    **不认裸的「是什么」** —— 那个太宽（「这是什么」「那是什么颜色」都会中）。
    */
-  if (/(是谁|谁是|是啥人|干嘛的|干什么的)/.test(t)) {
+  /*
+   * ⚠️ 加「不是在问」的排除门（2026-10-29）。
+   *
+   * 实测误判：「那你不知道饭是谁的」—— 这是**质问**，不是求知，
+   * 却因为含「是谁」被搜了一次。判据统一走 `isRhetorical()`，
+   * 和 `detectProperNoun` 的 isWho 分支共用同一套标志。
+   */
+  if (/(是谁|谁是|是啥人|干嘛的|干什么的)/.test(t) && !isRhetorical(t)) {
     return { need: true, why: '在问某个人/东西是谁', query: cleanQuery(t) }
   }
 
@@ -193,6 +218,17 @@ export function needsFreshInfo(text) {
  * ⚠️ 这里有意做得"敏感"：误判的代价只是多花 5 秒查一次，
  *    而漏判的代价是模型编造一个名人/作品的事实 —— 后者严重得多。
  */
+/**
+ * 是不是**反问 / 质问 / 否定** —— 在怼人，不是在查资料。
+ *
+ * ⚠️ 2026-10-29：实测「那你不知道饭是谁的」被搜了两次路径（`needsFreshInfo`
+ * 的 ③.5 和 `detectProperNoun` 的 isWho）。两处都要用这个判据，
+ * 所以抽出来。
+ */
+function isRhetorical(t) {
+  return /(不知道|不是|你以为|你猜|谁不知道|哪是|反正|你懂)/.test(String(t ?? ''))
+}
+
 function detectProperNoun(t) {
   // ① 书名号 / 各种引号包起来的 —— 几乎必然是作品名
   const quoted = /[《「『"'"]([^》」』"'"\n]{2,20})[》」』"'"」]/.exec(t)
@@ -203,6 +239,13 @@ function detectProperNoun(t) {
   const STOP = new Set([
     'the', 'and', 'for', 'you', 'are', 'was', 'not', 'but', 'all', 'can',
     'qq', 'ok', 'hhh', 'www', 'lol', 'gg', 'api', 'url', 'cpu', 'gpu',
+    /*
+     * 群里天天说的**梗词**，不是要查的东西（2026-10-29 加）。
+     *
+     * 实测：「等会给你充token」「你也没token」被判成"提到具体名字「token」"
+     * → 白搜两次。在这个群里 token 是口粮梗，跟"查资料"毫无关系。
+     */
+    'token', 'tokens', 'bug', 'emmm', 'emm', 'prompt', 'llm',
   ])
   for (const m of t.matchAll(/[A-Za-z][A-Za-z0-9.\-]{2,}/g)) {
     const w = m[0]
@@ -234,8 +277,9 @@ function detectProperNoun(t) {
   const aboutTitle = /^([\u4e00-\u9fa5A-Za-z0-9]{2,16}?)(?:的)?(?:作者|导演|编剧|主演|声优|制作|公司|工作室|发行商|开发商|出品方)/.exec(t)
   if (aboutTitle) return trimTail(aboutTitle[1])
 
+  // ⚠️ 反问句不走这条（「那你不知道饭是谁的」是质问，不是查人）
   const isWho = /([\u4e00-\u9fa5A-Za-z0-9]{2,12}?)(?:是谁|是啥|是什么|怎么样|好看吗|好玩吗|值得看吗|值得买吗)/.exec(t)
-  if (isWho) return trimTail(isWho[1])
+  if (isWho && !isRhetorical(t)) return trimTail(isWho[1])
 
   // ⑤ 裸名词：只有个名字、没有问句结构（「终末地新干员」）。
   //

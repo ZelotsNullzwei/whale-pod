@@ -34,6 +34,7 @@ import { shouldAnswerSticker } from './stickerGate.js'
 import { buildBalanceHint } from './balanceHint.js'
 import { buildVarietyHint, buildExpressionHint } from '../persona/variety.js'
 import { currentSlot, renderDayPlan } from '../memory/dayPlan.js'
+import { fetchHotTopics, filterTopics } from './hot-topics.js'
 
 /**
  * 单张图下载上限的兜底值。
@@ -43,7 +44,7 @@ import { currentSlot, renderDayPlan } from '../memory/dayPlan.js'
  *    所以真正生效的一直是**这个硬编码值**，改 store 的默认值等于没改。
  *    2026-10-28 实测：4.7MB 的游戏截图被这个 4MB 挡在门外，模型看不到图。
  */
-const DEFAULT_MAX_IMAGE_BYTES = 8 * 1024 * 1024
+const DEFAULT_MAX_IMAGE_BYTES = 16 * 1024 * 1024
 
 /** 模型表示"不说话"的标记。 */
 export const SILENT = '[SILENT]'
@@ -384,6 +385,49 @@ export function cleanModelText(raw) {
    */
   s = s.replace(/[（(]\s*\+\s*\d+\s*(秒|分钟|小时|天)\s*[）)]/g, '')
   s = s.replace(/[（(]\s*\d+\s*(秒|分钟|小时|天)\s*前\s*[）)]/g, '')
+  /*
+   * ⚠️ 第三种形态（2026-10-29 补，用户第二次截图）：
+   * ```
+   * （8 秒）神秘黄豆群是吧，那地方天天瞎传，你也信。      ← 既没 + 也没 前
+   * （12 秒）去吧，慢慢找。
+   * ```
+   *
+   * 输入端只生成两种（`（8 秒前）` 和 `（+8 秒）`），**是模型复述时自己丢了
+   * `+` 或 `前`** —— 上面两条正则都要求那个标记，于是整段漏了出去。
+   *
+   * 所以这里改成**更宽的规则**：括号里只要是「可选的 +/数字 + 时间单位
+   * （+ 可选的前/以前）」就整段剥掉，不再依赖那个会被丢的标记。
+   *
+   * ⚠️ 不会误伤正常句子 —— 正则要求括号**在时间单位处就结束**：
+   *    「（2 天没睡了）」不匹配（后面还有字），只有「（2 天）」才剥。
+   */
+  s = s.replace(/^[ \t]*[（(]\s*[+＋]?\s*\d+\s*(秒|分钟|小时|天)\s*(前|之前|以前)?\s*[）)][ \t]*/gm, '')
+  /*
+   * 还有一种同源的注解：主动发言那条 prompt 里写着
+   * `（距上次有人说话已经 18 分钟）`。它也可能被照抄。
+   */
+  s = s.replace(/[（(]\s*距[^）)\n]{0,16}\d+\s*(秒|分钟|小时|天)[^）)\n]{0,8}[）)]/g, '')
+
+  /*
+   * ⑨b 剥掉「**决策旁白**」——它把自己的判断当台词念出来了。
+   *
+   * ⚠️ 2026-10-29 实测（用户截图）：
+   *   「（风堇那表情包……不回，转话题）大晚上不睡觉，都在刷图呢」
+   *   「（开会还惦记着回我，挺闲啊）」
+   *
+   * 根因不在管道（`text-delta` / `reasoning-delta` 是分开攒的），
+   * 而是**人格教它用括号写舞台提示**（persona:82「（然后小声）」），
+   * 模型把这套扩展到"决策/内心话"上 —— 它分不清「（小声）」是表演、
+   * 「（不回）」是思考。
+   *
+   * 判据（写在这里，以后加规则照这个来）：
+   *   · 括号里是**说给人听的表演提示** → 留（（小声）（心虚）（护食））
+   *   · 括号里是**它对自己说的判断** → 剥（（不回）（该不该）（转话题））
+   *
+   * 只剥**行首**、且括号内**必须命中决策词** —— 不误伤正文里的括号。
+   */
+  const DECIDE_ASIDE = /不回|别说|要说|转话题|该不该|要不要|接不接|没兴趣|先不|别理|装没看见|敷衍|提一句|换话题|算了|别接/
+  s = s.replace(/^[ \t]*[（(][^）)\n]{1,80}[）)][ \t]*/gm, (m) => (DECIDE_ASIDE.test(m) ? '' : m))
 
   /*
    * ⑩ 剥掉**「昵称: 内容」前缀**。
@@ -425,7 +469,20 @@ export function cleanModelText(raw) {
   // 清掉 emoji 后可能留下多余空格（「好 😄」→「好 」），压一下
   s = s.replace(/[ \t]{2,}/g, ' ').replace(/ +([，。！？、；：])/g, '$1')
 
-  return s.trim()
+  /*
+   * ⑫ 整条就是一个括号旁白 → 丢掉（返回空串，调用方当"什么都没说"）。
+   *
+   * 例：「（开会还惦记着回我，挺闲啊）」—— 纯内心话，没有一句是对人说的。
+   * 这种连"剥掉旁白还剩什么"都没有，只能整条不发。
+   *
+   * ⚠️ 只认「整条就是一个括号」，不做更宽的推断 ——
+   *    「（小声）我不是大肥鱼」必须保住（括号只是前缀）。
+   */
+
+  const trimmed = s.trim()
+  if (/^[（(][^）)\n]{1,120}[）)]$/.test(trimmed)) return ''
+
+  return trimmed
 }
 
 /**
@@ -552,6 +609,14 @@ export class QQBridge {
     this.dayPlan = opts.dayPlan ?? null
     /** 生成今日日程的函数（由 index.js 注入，可空） */
     this.generateDayPlan = opts.generateDayPlan ?? null
+    /**
+     * 免费热点源（可空）—— 今天外面在聊什么。
+     *
+     * ⚠️ 定位是「**接话的料**」，不是「开口的理由」：
+     *    只有跟本群近期话题挂得上钩的才进提示词，挂不上就什么都不注入。
+     *    群聊里最烦的是转发新闻的机器人，这条是防线。
+     */
+    this.hotTopics = opts.hotTopics ?? null
     this.persona = opts.persona
     /**
      * 人物档案（可空）—— 按 **QQ 号**认人，昵称只当别名。     *
@@ -1201,27 +1266,81 @@ export class QQBridge {
    * ⚠️ 并发保护：同一时刻多条消息进来时，不能每个都去生成
    *    （那会一天烧掉好几次调用，而且互相覆盖）。用一个
    *    in-flight promise 兜住，后来者等同一个结果。
+   *
+   * ## ⚠️ `wait`：别把它卡在回复路径上（2026-10-29 加）
+   *
+   * 这是**一次完整的模型调用**，实测**单独花了 42 秒**
+   * （16:47:44 收到消息 → 16:48:26 才生成出来，那条回复在 16:48:30 才发出）。
+   *
+   * 它一天只跑一次，但那一次会**整整卡住当条回复 42 秒** —— 用户感受到的就是
+   * 「今天第一条回得特别慢」，而且完全猜不到原因。
+   *
+   * 所以调用方用 `wait: false`：**把生成踢到后台，本轮不等**。
+   * 这一条回复先用「今天暂无日程」（`today()` 返回 undefined，
+   * 提示词里就没有今日状态那段），下一条回来时它已经就绪。
+   *
+   * 代价是**今天第一条**没有今日状态 —— 但比卡 42 秒好得多，
+   * 而且它本来就是「随手编的日常」这种锦上添花的东西。
    */
-  async _ensureDayPlan() {
+  async _ensureDayPlan({ wait = true } = {}) {
     if (!this.dayPlan || !this.generateDayPlan) return
     if (this.dayPlan.today()) return
-    if (this._dayPlanPending) { await this._dayPlanPending; return }
-    this._dayPlanPending = (async () => {
-      try {
-        const plan = await this.generateDayPlan({ recent: this.dayPlan.recentHints() })
-        if (plan) {
-          this.dayPlan.setToday(plan)
-          this.log.info?.(
-            'bridge：今日状态已生成 — ' + [plan.morning, plan.noon, plan.afternoon].filter(Boolean).join(' / '),
-          )
+    if (!this._dayPlanPending) {
+      this._dayPlanPending = (async () => {
+        try {
+          const plan = await this.generateDayPlan({ recent: this.dayPlan.recentHints() })
+          if (plan) {
+            this.dayPlan.setToday(plan)
+            this.log.info?.(
+              'bridge：今日状态已生成 — ' + [plan.morning, plan.noon, plan.afternoon].filter(Boolean).join(' / '),
+            )
+          }
+        } catch (e) {
+          this.log.warn?.('bridge：今日状态生成失败 — ' + String(e?.message ?? e))
+        } finally {
+          this._dayPlanPending = null
         }
-      } catch (e) {
-        this.log.warn?.('bridge：今日状态生成失败 — ' + String(e?.message ?? e))
-      } finally {
-        this._dayPlanPending = null
-      }
-    })()
-    await this._dayPlanPending
+      })()
+    }
+    // 后到者要不要一起等，也跟着调用方的意思
+    if (wait) await this._dayPlanPending
+  }
+
+  /**
+   * 今天第一次回复时取一次热点（一天最多一次）。
+   *
+   * 跟 `_ensureDayPlan` 同一套：**踢到后台、本轮不等**（`wait: false`），
+   * 因为这是一次网络请求（贴吧实测 103ms，但 B站会限流、可能重试），
+   * 不该让回复等它。
+   *
+   * 失败不影响任何东西 —— 没有热点就只是"没有料"，本来也不该硬说。
+   */
+  async _ensureHotTopics({ wait = true } = {}) {
+    if (!this.hotTopics) return
+    if (this.hotTopics.today()) return
+    if (!this._hotTopicsPending) {
+      this._hotTopicsPending = (async () => {
+        try {
+          const r = await fetchHotTopics()
+          if (!r.ok) {
+            this.log.warn?.(`热点：取失败（今天先不用）— ${r.error}`)
+            return
+          }
+          const items = filterTopics(r.items).slice(0, 30)
+          if (items.length === 0) {
+            this.log.warn?.('热点：过滤后一条不剩（黑名单可能太严）')
+            return
+          }
+          this.hotTopics.setToday(r.source, items)
+          this.log.info?.(`热点：已取 ${items.length} 条（${r.source}，${r.ms}ms）`)
+        } catch (e) {
+          this.log.warn?.(`热点：出错（今天先不用）— ${String(e?.message ?? e)}`)
+        } finally {
+          this._hotTopicsPending = null
+        }
+      })()
+    }
+    if (wait) await this._hotTopicsPending
   }
   async onEvent(ev) {
     this.stats.received++
@@ -1953,10 +2072,27 @@ export class QQBridge {
     //    计数里 replied 一直是 0。
     //
     //    正确做法：剥掉标记，**看剩下的还有没有实质内容**。
-    const stripped = String(text ?? '').replace(/[\[［]\s*[SILENTsilent]{6}\s*[\]］]/g, '').trim()
+    const rawText = String(text ?? '')
+    const hadSilent = /[\[［]\s*[SILENTsilent]{6}\s*[\]］]/.test(rawText)
+    const stripped = rawText.replace(/[\[［]\s*[SILENTsilent]{6}\s*[\]］]/g, '').trim()
     if (!stripped) {
       this.stats.silent++
-      this._record(msg, d, null, 'model-silent')
+      /*
+       * ⚠️ 两种"什么都不剩"要分开记（2026-10-29）。
+       *
+       * `persona-declined` = **人格主动选择不说**。这是正常结论，不是矛盾 ——
+       * 以前它被当成"发言了却没回"的 bug，于是干脆禁止人格输出 [SILENT]，
+       * 结果人格失去了"要不要开口"的权力（用户观感：太乖、38% 纯表情搪塞）。
+       *
+       * `empty-after-clean` = 清理完什么都不剩（例如整条只是个括号旁白）。
+       * 那是输出侧的毛病，不是人格的决定。
+       *
+       * 分开之后：`persona-declined` 多 = 它有主见；`empty-after-clean` 多 = 清理规则太狠。
+       */
+      this._record(msg, d, null, hadSilent ? 'persona-declined' : 'empty-after-clean')
+      if (hadSilent) {
+        this.log.info?.(`bridge：人格选择不说（[SILENT]）— ${msg.scope}`)
+      }
       this._maybeSummarize(msg.scope, mem, scene)
       return
     }
@@ -2192,7 +2328,10 @@ export class QQBridge {
        * 完全无法对照 —— 只能切到 QQ 窗口人眼看，而且看完就滚走了。
        * 现在一行里有对方说了什么、自己回了什么，时序一目了然。
        */
-      this.log.info?.(`bridge：[我] ${msg.scope}「${String(text).slice(0, 120)}」`)
+      // ⚠️ 截断长度从 120 提到 400（2026-10-29）：
+    //    查「思考内容外泄」时被 120 卡住 —— 超过 120 字的回复，日志只剩
+    //    干净的前半段，泄漏的后半段根本看不到，白白浪费好几轮排查。
+    this.log.info?.(`bridge：[我] ${msg.scope}「${String(text).slice(0, 400)}」`)
       // 记下自己发出的 message_id —— 过时检测要靠它认出
       // 「后续消息引用了我的回复」= 有人在追问我，不能判过时。
       this._rememberMyReplyIds(msg.scope, sentIds)
@@ -2663,8 +2802,28 @@ export class QQBridge {
      * 截图、聊天记录、表情包上的字，往往才是**对方想给你看的东西**。
      * 所以要求它先读字、把文字里的兴趣点提炼出来；没有字才退回去看画面。
      */
-    // 今天第一次回复时生成日程（一天最多一次，见 _ensureDayPlan）
-    await this._ensureDayPlan()
+    /*
+     * 今天第一次回复时生成日程（一天最多一次，见 _ensureDayPlan）。
+     *
+     * ⚠️ `wait: false` —— **不等它**（2026-10-29 修）。
+     *
+     * 它是一次**完整模型调用**，实测单独花了 **42 秒**
+     * （16:47:44 收到 → 16:48:26 生成出来 → 那条回复 16:48:30 才发出）。
+     * 以前这里 `await`，于是**今天第一条回复被整整卡住 42 秒** ——
+     * 用户看到的是「今天第一条怎么这么慢」，而且完全猜不到原因。
+     *
+     * 现在踢到后台：这一条先用「今天暂无日程」（`today()` 返回 undefined，
+     * 提示词里就没有今日状态那段），下一条回来时它已经就绪。
+     *
+     * 代价只是**今天第一条**少了那段随手编的日常，比卡 42 秒划算得多。
+     */
+    void this._ensureDayPlan({ wait: false })
+
+    /*
+     * 热点同样踢到后台（一天一次，一次网络请求）。
+     * 失败只是"今天没料"——本来也不该硬说。
+     */
+    void this._ensureHotTopics({ wait: false })
 
     const lastMsg = mem.recent(1)[0]
     const lastText = String(lastMsg?.text ?? '')
@@ -2785,6 +2944,18 @@ export class QQBridge {
           return renderDayPlan(plan, currentSlot().id)
         })(),
         /*
+         * ── 今天外面在聊什么（免费热点源）──
+         *
+         * ⚠️ **只注入跟你们刚说的挂得上钩的**；挂不上就返回空串，
+         *    提示词里一个字都不多。这是「接话的料 ≠ 开口的理由」的落地点 ——
+         *    群聊里最烦的就是转发新闻的机器人。
+         */
+        (() => {
+          try {
+            return this.hotTopics?.toPrompt?.(mem.recent(20).map((m) => String(m?.text ?? '')), 3) ?? ''
+          } catch { return '' }
+        })(),
+        /*
          * ── 换个说法 + 表情开关（抄自「坑 10：回复越来越像模板」）──
          *
          * 单条看不出来，批量看立刻露馅：一天下来开头全是
@@ -2821,22 +2992,30 @@ export class QQBridge {
           cny: this._balance?.cny ?? 0,
         }),
         (this._balanceWarned = this._balanceLow, ''),
-        // ⚠️ 关键：告诉模型"该不该说话已经由决策层定好了"。
-        //
-        //    人格里写着「如果决定不说话，只输出 [SILENT]」，那是给**决策层**
-        //    用的约定。但生成层也会看到这句，于是它又自己判一次
-        //    "我觉得不必说话" → 吐 [SILENT] → 整条被丢掉。
-        //
-        //    实测症状极具迷惑性：界面上明明显示「发言 p=0.95」，
-        //    outcome 却是 model-silent，计数里 replied 一直是 0 ——
-        //    两层都做了同一个决定，而第二层把第一层否掉了。
-        //
-        //    所以这里明确划清职责：**你来就负责说，别再纠结说不说**。
-        '## 这条是你已经决定要接的话\n' +
-        '「该不该说话」由上层判断过了，结论是——**要说**。\n' +
-        '所以：**不要输出 [SILENT]**，也不用再权衡要不要开口。\n' +
-        '你的任务只是把这句话说好。真的无话可说时，回一个表情\n' +
-        '（[表情:N] 或 [表情包]）也比沉默好。',
+        /*
+         * ⚠️ 这里曾经是「你来就负责说，别再纠结说不说」（2026-10-29 改）。
+         *
+         * 原来那段的理由是**真问题**：人格里写着「如果决定不说话，只输出
+         * [SILENT]」，生成层也照着做 → 两层都判一次 → 第二层把第一层否掉，
+         * 界面上「发言 p=0.95」而 outcome 是 model-silent，计数里 replied 一直是 0。
+         *
+         * 但当时的解法选错了：不是"让人格闭嘴"，而是**把记账语义理清**。
+         * 于是人格被剥夺了"要不要开口"的决定权 —— 用户的原话是
+         * 「太乖了」，实测后果是 **38% 的回复变成纯表情搪塞**
+         * （被这句「无话可说时回个表情也比沉默好」直接教出来的）。
+         *
+         * 现在：
+         *   · 上层判过"该不该接"这件事照旧告诉它（省得重复权衡）
+         *   · 但**最终由它定**，可以说，也可以 [SILENT]
+         *   · [SILENT] 记为 `persona-declined` —— 一种**正常结论**，不是矛盾
+         *   · 明确禁掉"用表情搪塞"：要么说话，要么沉默
+         */
+        '## 群里刚说到这句\n' +
+        '上层已经判过「该不该接」，结论是接 —— 但**最终由你定**。\n' +
+        '想接就接：接得住就接，接不住别硬凑。\n' +
+        '真没什么想说的，就直接输出 [SILENT]（不算错，也不用解释）。\n' +
+        '⚠️ **别用表情搪塞** —— 那不是在说话。要么说一句，要么 [SILENT]。\n' +
+        '不用每次都周全：吐槽、抬杠、装没听懂、只回两个字，都行。',
         `## 上下文提示
 距你上次说话：${Number.isFinite(mem.sinceMyLast()) ? Math.round(mem.sinceMyLast() / 1000) + ' 秒' : '很久/还没说过'}
 你已连续发言：${mem.consecutiveTurns} 轮
@@ -2953,6 +3132,25 @@ export class QQBridge {
           if (list.includes(wanted)) { ok = true; break }
           if (list.length > 0) {
             this.log.warn?.(`bridge：模型 ${c?.provider}/${c?.model} 不支持推理等级 "${wanted}"（支持：${list.join('/')}）`)
+          } else {
+            /*
+             * ⚠️ **渠道没声明等级 ≠ 它不支持**（2026-10-29 修）。
+             *
+             * 原来这里什么都不做 → `ok` 保持 false → **静默不传**。
+             * 而线上就是这种情况：`qq.effort='low'` 配了，magpie 也**确实认**
+             * `low`（实测 reasoning 662→106 字、7140ms→2958ms），
+             * 但 `/api/models` 返回 0 个模型、模型信息里没有 `efforts`
+             * → 走到这条静默分支 → **等级从来没生效过，而且一条日志都没有**。
+             *
+             * 现在照传，交给上游 + 下面的兜底（不支持就去掉等级重试一次）。
+             * 最坏是「等级不生效」，比「配了没用还查不出来」好得多。
+             */
+            this.log.info?.(
+              `bridge：模型 ${c?.provider}/${c?.model} 没声明推理等级，照传 "${wanted}" 试试`
+              + '（上游不认的话会自动去掉等级重试）',
+            )
+            ok = true
+            break
           }
         } catch { ok = true /* 查不到就照传，交给适配器判断 */; break }
       }
@@ -3600,6 +3798,14 @@ export class QQBridge {
        * 这正是「记忆没生效」的根因。
        */
       total: mem.totalPushed,
+      /*
+       * 会话创建时间 —— 让 `long.js` 分辨「计数回退」的两种成因
+       * （2026-10-29）：
+       *   · 摘要在本会话内发生 → 回退 = 丢了未落盘的增量 → 对齐，**不重摘**
+       *   · 摘要属于上个会话（隔夜过期重建）→ 归零，尽快摘
+       * 不传的话它只能保守地一概归零，那就会重复摘要。
+       */
+      sessionStartedAt: mem.createdAt,
       scene,
       self: { qq: this.selfId, nickname: this.selfName },
     }).catch(() => { })

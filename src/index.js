@@ -30,6 +30,7 @@ import { createWebServer } from './web/server.js'
 import { MemoryStore } from './memory/short.js'
 import { LongTermStore } from './memory/long.js'
 import { DayPlanStore } from './memory/dayPlan.js'
+import { HotTopicStore } from './qq/hot-topics.js'
 import { PeopleStore } from './memory/person.js'
 import { PersonaStore } from './persona/store.js'
 import { OneBotClient } from './qq/onebot.js'
@@ -603,6 +604,17 @@ export async function main(argv = process.argv.slice(2)) {
     state.people = people
 
     /*
+     * 免费热点源（2026-10-29）。
+     *
+     * 用公开接口而不是付费搜索：贴吧热议实测 103ms / 30 条，而且
+     * 那次刚好命中群里在聊的「影之刃零」。B站作备用（会限流）。
+     *
+     * ⚠️ 定位是「接话的料」，不是「开口的理由」——只有跟本群近期话题
+     *    挂得上钩的才进提示词，挂不上就什么都不注入。
+     */
+    const hotTopics = new HotTopicStore({ home: store.home, log })
+
+    /*
      * 人物档案落盘。
      *
      * `touch()` 只改内存并标脏 —— 每条消息都写文件太浪费
@@ -617,6 +629,18 @@ export async function main(argv = process.argv.slice(2)) {
       clearInterval(peopleTimer)
       people.save()
     })
+
+    /*
+     * 短期记忆兜底落盘（2026-10-29 加）。
+     *
+     * 它只有 2 秒防抖（`short.js touch()`），关闭时不 flush 的话，
+     * 最后那批 `totalPushed` 增量会永久丢失 —— 而那是长期记忆判断
+     * "该不该摘要"的基准。丢了之后 `unsummarized` 变负数 →
+     * 触发「计数回退」→ 基线归零 → 同一批内容被再摘要一遍。
+     *
+     * 实测：41 分钟里摘要跑了两次（23:14:44 一次、23:15:55 又一次）。
+     */
+    shutdown.push(() => memory.flush())
 
     /**
      * ⚠️ 启动时校验长期记忆配置（2026-10-23 加）。
@@ -738,17 +762,28 @@ export async function main(argv = process.argv.slice(2)) {
       })
       let out = ''
       /*
-       * ⚠️ 消费方式和 summarize 保持一致（2026-10-27 修）。
+       * ⚠️ 必须**跳过推理草稿**（2026-10-28 修，用户报「看看消息，这是发言问题还是啥」）。
        *
-       * 原来这里分 type 取不同字段（'text' → chunk.text、'text-delta' →
-       * chunk.textDelta），实测**拿到空串** —— 日志「日程生成：模型输出
-       * 无法解析 — 」后面什么都没有。同一个网关，summarize 用
-       * `chunk.text` 就好好的，说明 chunk 里的字段名和 type 不是一一对应。
+       * 原来写的是「统一读 `chunk.text`，不猜 type」—— 但 `fallback.js` 产出的
+       * `reasoning-delta` **也有 `.text`**：
        *
-       * 所以统一读 `chunk.text`，不猜 type。
+       *   { type: 'reasoning-delta', text: '我们需要回答用户，要求给…' }
+       *   { type: 'text-delta',      text: '{"morning":…}' }
+       *
+       * 于是草稿被拼进 `out`，正文 JSON 被埋在后面 → `parseDayPlan` 解析失败，
+       * 日志里贴出来的「原始输出」全是**推理内容**：
+       *
+       *   日程生成：模型输出无法解析 — 我们需要回答用户，要求给「蓝色大肥鱼」编一份…
+       *
+       * 后果不只是报错：`_ensureDayPlan` 会**反复重试**，每次都白花一次模型调用。
+       *
+       * `model.js`（`只收 text-delta`）和 `bridge.js`（分 type 收）都明确排除了
+       * reasoning-delta，只有这里漏了。规则就是那一条：**草稿不是答案**。
        */
       for await (const chunk of opened.stream) {
         if (typeof chunk === 'string') { out += chunk; continue }
+        const kind = chunk?.type
+        if (kind === 'reasoning-delta' || kind === 'reasoning') continue
         if (typeof chunk?.text === 'string') out += chunk.text
       }
       const plan = parseDayPlan(out)
@@ -784,8 +819,9 @@ export async function main(argv = process.argv.slice(2)) {
         decision,
         memory,
         longMemory,
-    dayPlan,
-    generateDayPlan,
+        dayPlan,
+        generateDayPlan,
+        hotTopics,
         persona,
         people,
         usage,

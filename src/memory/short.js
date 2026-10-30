@@ -72,6 +72,22 @@ export class ConversationMemory {
     /** 自上次发言以来累积的他人消息数（用于判断「该不该接话」） */
     this.pendingSinceMyLast = 0
     /**
+     * 这个会话**创建**的时间（ms）。
+     *
+     * ⚠️ 2026-10-29 加 —— 用来分辨「计数回退」的两种成因：
+     *
+     *  · `summarizedAt >= createdAt` → 摘要在**本会话内**发生过
+     *    → 回退只可能是**丢了未落盘的增量**（硬杀/崩溃）
+     *    → 对齐基线，**别重摘**
+     *  · `summarizedAt < createdAt` → 摘要发生在**上一个**会话
+     *    （隔夜过期后重建）→ 归零，让新内容尽快摘要
+     *
+     * ⚠️ 只看"回退了多少比例"是**分不清**的 —— 过夜后聊了几十句，
+     *    比例同样很高。实测那个真实案例是 60 → 37（剩 62%），
+     *    而它其实是过夜重置。
+     */
+    this.createdAt = Date.now()
+    /**
      * **累计**推入过的消息总数（单调递增，不随裁剪回退）。
      *
      * ## 为什么需要它（2026-10-23 修）
@@ -278,6 +294,38 @@ export class MemoryStore {
         }
         m.totalPushed = Number(v.totalPushed ?? m.messages.length)
         m.myLastAt = Number(v.myLastAt ?? 0)
+        /*
+         * 会话创建时间。
+         *
+         * 老文件没有这个字段 → 退回「最早一条消息的时间」。
+         * 都没有就留 0 —— `long.js` 把 0 当"不知道"，退回旧行为（一概归零重置）。
+         */
+        const firstAt = Number(m.messages[0]?.at ?? 0)
+        m.createdAt = Number(v.createdAt ?? 0) || firstAt || 0
+        /*
+         * ⚠️⚠️ **必须在这里也挂 onChange**（2026-10-29 修，最要命的一个 bug）。
+         *
+         * 原来只在 `get()` 的「新建会话」分支里挂：
+         * ```js
+         * m.onChange = () => this.touch()      // get() 新建时 ✅
+         * ```
+         * 而 `load()` 载入的会话**不挂** —— 于是：
+         *
+         *   重启 → 会话全部从磁盘载入 → 都没有 onChange
+         *   → `push()` 不触发 `touch()` → **2 秒防抖永远起不来**
+         *   → **短期记忆当场冻结，之后再也不会写盘**
+         *
+         * 实测：`memory-short.json` 停在 20:52:33，而中间有 35 条私聊消息 +
+         * 一堆群消息（3 小时，一个字都没存）。
+         *
+         * 连锁后果就是整条「记忆有 bug」：
+         *   文件里的 `totalPushed` 冻住 → 每次重启载入旧值 → 回退
+         *   → 长期那边以为还有一大堆没摘要 → **重复摘要**（41 分钟摘了两次）。
+         *
+         * 而同一次重启里**新建**的会话是正常保存的 —— 所以症状只出现在
+         * 「重启后还在用的老会话」上，最难发现的那一种。
+         */
+        m.onChange = () => this.touch()
         m._trim()
         if (m.messages.length > 0) this.sessions.set(scope, m)
       }
@@ -298,6 +346,8 @@ export class MemoryStore {
         sessions[scope] = {
           totalPushed: m.totalPushed,
           myLastAt: m.myLastAt,
+          // 会话创建时间（2026-10-29）：用来分辨"丢增量"和"过夜重置"
+          createdAt: m.createdAt,
           messages: m.messages,
         }
       }
@@ -313,8 +363,13 @@ export class MemoryStore {
   /**
    * 标脏 + 延迟落盘。
    *
-   * 每条消息都同步写盘太浪费（群聊一秒好几条）。这里 2 秒合并一次，
-   * 进程退出前由宿主调 `save()` 兜底。
+   * 每条消息都同步写盘太浪费（群聊一秒好几条）。这里 2 秒合并一次。
+   *
+   * ⚠️ 原来这里写着「进程退出前由宿主调 `save()` 兜底」——
+   *    **但实际没人调**（2026-10-29 查实：`index.js` 全文没有
+   *    `memory.save()` / `memory.flush()`）。于是只有这个 2 秒防抖，
+   *    被硬杀（`taskkill /F`）或崩溃时最后那批 `totalPushed` 直接丢。
+   *    现在补了 `flush()`，并挂进 `index.js` 的关闭钩子。
    */
   touch() {
     this._dirty = true
@@ -324,6 +379,28 @@ export class MemoryStore {
       if (this._dirty) this.save()
     }, 2000)
     this._saveTimer.unref?.()
+  }
+
+  /**
+   * 兜底落盘：把「标脏但还没到防抖点」的改动立刻写下去。
+   *
+   * ⚠️ 2026-10-29 加 —— 原来**根本没有这个方法**，关闭钩子里也没人调 `save()`。
+   * 于是短期记忆只靠上面那 2 秒防抖，进程被硬杀时最后那批
+   * `totalPushed` 增量**永久丢失**。
+   *
+   * 后果比"丢几条消息"严重得多 —— `totalPushed` 是长期记忆判断
+   * "该不该摘要"的基准：
+   * ```
+   * totalPushed 41 → 重启后 23 → unsummarized = 23 - 41 = 负数
+   *   → 触发「计数回退」→ 基线归零 → 同一批内容被**再摘要一遍**
+   * ```
+   * 实测 41 分钟里摘要跑了两次（23:14:44 一次、23:15:55 又一次）。
+   *
+   * 语义和 `PeopleStore.flush()` 一致：有未落盘的改动就写，没有就什么都不做。
+   */
+  flush() {
+    if (this._saveTimer) { clearTimeout(this._saveTimer); this._saveTimer = null }
+    if (this._dirty) this.save()
   }
 
   /**
