@@ -232,6 +232,31 @@ function normLimits(x) {
 }
 
 /**
+ * 从 `memory.long` 配置推出四个上限（构造时 + 热更新时共用）。
+ *
+ * ⚠️ 抽成函数是为了**配置热更新**（2026-10-30）：
+ * 原来这段逻辑只写在构造函数里，于是面板改了 `maxChars` / `injectChars`
+ * 只有**重启**才生效 —— 界面上回读的还是旧值，用户以为「改不了」。
+ *
+ * @param {object} cfg memory.long 配置
+ */
+function deriveLimits(cfg) {
+  const c = cfg ?? {}
+  const pos = (v, d) => (Number.isFinite(Number(v)) && Number(v) > 0 ? Number(v) : d)
+  /** 夹到合理范围 —— 防止手改 config 填个 1e9 把 prompt 撑爆。 */
+  const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, Math.round(v)))
+  return normLimits({
+    // 存：1500 ~ 50000（12000 约等于几百条人物印象）
+    total: clamp(pos(c.maxChars, DEFAULT_LIMITS.total), 1500, 50000),
+    topic: DEFAULT_LIMITS.topic,
+    self: DEFAULT_LIMITS.self,
+    gloss: DEFAULT_LIMITS.gloss,
+    // 带：500 ~ 20000（3000 约 2000 token）
+    inject: clamp(pos(c.injectChars, DEFAULT_LIMITS.inject), 500, 20000),
+  })
+}
+
+/**
  * 话题文本的裁剪：**优先保住「我说过：」那一段**。
  *
  * 提示词要求【事】里必须有一句「我说过：…」（机器人自己表达过的立场）。
@@ -497,18 +522,7 @@ export class LongTermStore {
      * 按比例放大会让它们跑飞。**总上限涨出来的空间全部给【人】** ——
      * 那才是「存得多」真正该受益的地方（能记住更多人、更细的印象）。
      */
-    const pos = (v, d) => (Number.isFinite(Number(v)) && Number(v) > 0 ? Number(v) : d)
-    /** 夹到合理范围 —— 防止手改 config 填个 1e9 把 prompt 撑爆。 */
-    const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, Math.round(v)))
-    this.limits = normLimits({
-      // 存：1500 ~ 50000（12000 约等于几百条人物印象）
-      total: clamp(pos(this.cfg.maxChars, DEFAULT_LIMITS.total), 1500, 50000),
-      topic: DEFAULT_LIMITS.topic,
-      self: DEFAULT_LIMITS.self,
-      gloss: DEFAULT_LIMITS.gloss,
-      // 带：500 ~ 20000（3000 约 2000 token）
-      inject: clamp(pos(this.cfg.injectChars, DEFAULT_LIMITS.inject), 500, 20000),
-    })
+    this.limits = deriveLimits(this.cfg)
     /*
      * 落盘目录。
      *
@@ -748,6 +762,30 @@ export class LongTermStore {
       this._busy.delete(scope)
     }
     return false
+  }
+
+  /**
+   * **热更新**存储/注入上限（2026-10-30）。
+   *
+   * ⚠️ 为什么需要：`limits` 原来只在构造时算一次，而 `/api/config` 的 POST
+   * 只会热更新 `bridge.cfg`（白名单 / 模型 / effort …）—— **没人管 longMemory**。
+   * 于是面板改完 `maxChars` / `injectChars`：
+   *   · 文件是改对了 ✅
+   *   · 但运行中的 store 还是旧值 ❌ → `/api/memory` 回读旧值 → **看着像"改不了"**
+   *
+   * 现在 web 层的 POST 在写完配置后调这里，立刻对齐**运行中**的上限，
+   * 已存在的会话实例也一起换掉。
+   *
+   * @param {object} cfg 新的 `memory.long` 配置
+   */
+  applyLimits(cfg) {
+    this.cfg = cfg ?? {}
+    this.limits = deriveLimits(this.cfg)
+    for (const m of this.memories.values()) m.limits = this.limits
+    this.log.info?.(
+      `长期记忆：上限已更新 — 存 ${this.limits.total} 字 / 每轮带 ${this.limits.inject} 字`,
+    )
+    return this.limits
   }
 
   stats() {

@@ -1037,6 +1037,24 @@ export function createWebServer(opts) {
         store.update(patch)
         log.info('Web：配置已更新')
 
+        /*
+         * 记忆上限热更新（2026-10-30）。
+         *
+         * ⚠️ 和下面 bridge 的问题一模一样，只是之前漏了：
+         *    `LongTermStore.limits` 只在**构造时**算一次，之后不重读。
+         *    于是面板改完 `memory.long.maxChars` / `injectChars`：
+         *      · `config.json` 改对了 ✅
+         *      · 运行中的 store 还是旧值 ❌ → `/api/memory` 回读旧值
+         *      → 输入框看起来"改不了"/"不会自动保存"。
+         *
+         * 不判 `patch.memory` 存在与否 —— 因为面板提交的是**点号路径**
+         * （`{'memory.long.maxChars': 15000}`），`patch.memory` 是 undefined。
+         * 直接按当前完整配置重算一次，便宜且幂等。
+         */
+        if (longMemory?.applyLimits) {
+          longMemory.applyLimits(store.get().memory?.long ?? {})
+        }
+
         // ⚠️ bridge 的 cfg 是**启动时快照**，改了配置它不会自己知道。
         //    白名单尤其明显：界面保存成功、但机器人仍然按旧名单丢消息，
         //    用户会以为"保存没生效"。这里把运行时可热更新的几项推给它。

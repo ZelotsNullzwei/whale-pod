@@ -666,6 +666,55 @@ function deepMerge(base, patch) {
   return out
 }
 
+/**
+ * 把**点号路径**展开成嵌套对象：`{'a.b.c': 1}` → `{a:{b:{c:1}}}`。
+ *
+ * ## ⚠️ 为什么需要（2026-10-30 修，一个潜伏很久的 bug）
+ *
+ * `deepMerge` 是**按字面 key** 合并的，不认点号。于是面板提交
+ * `{'memory.dir': 'D:/mem'}` 时，配置里会多出一个**顶层键**
+ * 字面叫 `"memory.dir"`，而真正的 `memory.dir` **一动不动**：
+ *
+ * ```
+ * 结果 {"memory":{"dir":""}, "memory.dir":"D:/mem"}
+ *      → 顶层键: memory, memory.dir
+ *      → memory.dir 还是 ""     ❌
+ * ```
+ *
+ * 实测受影响的功能：
+ * · 面板「记忆目录」—— **从 0.3.x 起就没生效过**（留空=跟数据目录，
+ *   看起来"能用"，所以一直没人发现）
+ * · 面板「记忆上限 存多少 / 每轮带多少」—— 0.3.5 新加的，同样只存了个假键
+ *
+ * ## 为什么在这里修，而不是改调用方
+ * 点号路径是**调用方已经在用的约定**（`client.js` 一路这么发），
+ * 而且 `{ 'qq.model': x }` 这种写法更省事。在入口统一展开，
+ * 既修了两处存量 bug，也不让以后新加的表单再踩。
+ *
+ * 混合写法（`{memory:{...}, 'memory.dir':x}`）也能正确处理 ——
+ * 每个 key 独立展开后再 `deepMerge`，冲突按后者覆盖。
+ *
+ * @param {*} patch
+ * @returns {*}
+ */
+function expandDots(patch) {
+  if (!patch || typeof patch !== 'object' || Array.isArray(patch)) return patch
+  let out = {}
+  for (const [k, v] of Object.entries(patch)) {
+    const val = expandDots(v)
+    if (!k.includes('.')) {
+      out = deepMerge(out, { [k]: val })
+      continue
+    }
+    // a.b.c → {a:{b:{c:val}}}
+    const parts = k.split('.')
+    let nest = val
+    for (let i = parts.length - 1; i >= 0; i--) nest = { [parts[i]]: nest }
+    out = deepMerge(out, nest)
+  }
+  return out
+}
+
 export class ConfigStore {
   /**
    * @param {object} [opts]
@@ -725,9 +774,16 @@ export class ConfigStore {
     return this.value
   }
 
-  /** 深合并写入并落盘；返回新值。 */
+  /**
+   * 深合并写入并落盘；返回新值。
+   *
+   * ⚠️ **先 `expandDots` 再合并**（2026-10-30 修）。
+   * 不展开的话 `{'memory.dir': x}` 会变成一个**字面量顶层键**，
+   * 真正的 `memory.dir` 一动不动 —— 面板的「记忆目录」和
+   * 「记忆上限」两处表单因此都保存不了（详见 `expandDots` 的注释）。
+   */
   update(patch) {
-    this.value = deepMerge(this.value, patch)
+    this.value = deepMerge(this.value, expandDots(patch))
     this.save()
     for (const fn of this._watchers) {
       try { fn(this.value) } catch { /* ignore */ }
@@ -751,4 +807,4 @@ export class ConfigStore {
   }
 }
 
-export { deepMerge }
+export { deepMerge, expandDots }

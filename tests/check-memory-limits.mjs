@@ -24,6 +24,8 @@
  * | 【事】 | 从头部砍，保留最新的 | 话题是消耗品 |
  */
 import assert from 'node:assert/strict'
+import fs from 'node:fs'
+import path from 'node:path'
 import {
   LongTermMemory, LongTermStore, DEFAULT_LIMITS,
   renderPeople, clipForPrompt, parseTopics,
@@ -161,6 +163,59 @@ ok('stats() 带上 limits（面板要从这读当前值）', () => {
   const st = s.stats()
   assert.equal(st.limits.total, 8000)
   assert.equal(st.limits.inject, 2500)
+})
+
+// ── ⑥b 热更新（不改配置的话面板看起来「改不了」）────────────
+/*
+ * ⚠️ 2026-10-30 实测：面板改完 `maxChars` 后 `config.json` 是对的，
+ * 但 `/api/memory` 回读的还是旧值 —— 因为 `limits` 只在构造时算一次，
+ * 而 `/api/config` 的 POST 只热更新 `bridge.cfg`，**没人管 longMemory**。
+ * 用户的原话：「上下文现在改不了」「不会自动保存」。
+ */
+ok('⚠️ applyLimits() 立刻改运行中的上限（不用重启）', () => {
+  const s = mk({ maxChars: 12000, injectChars: 3000 })
+  const m = s.get('group:1')
+  assert.equal(m.limits.total, 12000, '构造时是初始值')
+
+  s.applyLimits({ maxChars: 15000, injectChars: 5000 })
+  assert.equal(s.limits.total, 15000)
+  assert.equal(s.limits.inject, 5000)
+  assert.equal(m.limits.total, 15000, '⚠️ 已存在的会话实例也要一起换掉')
+  assert.equal(m.limits.inject, 5000)
+  assert.equal(s.stats().limits.total, 15000, '面板回读的 stats 也要跟着变')
+})
+
+ok('applyLimits() 也做范围夹紧和非法值兜底', () => {
+  const s = mk({ maxChars: 12000, injectChars: 3000 })
+  s.applyLimits({ maxChars: 1, injectChars: 999999 })
+  assert.equal(s.limits.total, 1500, '下限 1500')
+  assert.equal(s.limits.inject, 20000, '上限 20000')
+  s.applyLimits({ maxChars: 'abc', injectChars: NaN })
+  assert.equal(s.limits.total, DEFAULT_LIMITS.total, '非法值退回默认')
+  assert.equal(s.limits.inject, DEFAULT_LIMITS.inject)
+})
+
+ok('applyLimits() 后 toPrompt 立刻按新预算裁', () => {
+  const s = mk({ maxChars: 12000, injectChars: 12000 })
+  const m = s.get('group:2')
+  m.summary = '【事】\n' + '话'.repeat(5000)
+  // ⚠️ 用「改动前后对比」而不是硬算长度：`'【事】\n'` 是 4 个字符，
+  //    我一开始写成 5000+5 → 断言 5005、实际 5004，白报一次（记住即可）。
+  const storedBefore = m.summary.length
+  const wide = m.toPrompt().length
+  s.applyLimits({ maxChars: 12000, injectChars: 1000 })
+  const narrow = m.toPrompt().length
+  assert.ok(narrow < wide, `预算收紧后注入应更短：${narrow} vs ${wide}`)
+  assert.ok(narrow <= 1000 + 40, `实际 ${narrow}`)
+  assert.equal(m.summary.length, storedBefore, '存储不受影响')
+})
+
+ok('源码锁：/api/config 的 POST 必须热更新 longMemory', () => {
+  const src = fs.readFileSync(path.resolve(import.meta.dirname, '..', 'src', 'web', 'server.js'), 'utf8')
+  const at = src.indexOf("p === '/api/config' && req.method === 'POST'")
+  assert.ok(at > 0, '应能找到 POST 处理')
+  const block = src.slice(at, at + 2500)
+  assert.match(block, /longMemory\?\.applyLimits/, '必须调 applyLimits —— 否则面板改完看不到变化')
 })
 
 // ── ⑦ 端到端：存得多、带得少 ──────────────────────────────

@@ -2737,6 +2737,16 @@ window.__ModuleLoader__.load({
                     step: 500,
                     style: { width: '110px' },
                     defaultValue: cur,
+                    /*
+                     * ⚠️ 回车直接提交（2026-10-30 补）。
+                     *
+                     * 原来只有 `onBlur`：用户敲完数字按回车，焦点还在框里，
+                     * 看起来"输进去了"但其实**没保存** —— 用户的原话是
+                     * 「不会自动保存」。回车时主动 blur，走同一条保存逻辑。
+                     */
+                    onKeyDown: (e) => {
+                      if (e.key === 'Enter') e.target.blur()
+                    },
                     onBlur: async (e) => {
                       const v = Math.round(Number(e.target.value))
                       if (!Number.isFinite(v) || v <= 0) { e.target.value = cur; return }
