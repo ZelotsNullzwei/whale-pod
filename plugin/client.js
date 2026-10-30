@@ -119,6 +119,13 @@ window.__ModuleLoader__.load({
       'mem.dir': '记忆目录',
       'mem.dirNow': '当前文件：',
       'mem.dirSaved': '记忆目录已更新',
+  'mem.limits': '记忆上限',
+  'mem.limitsHint': '存多少 / 每轮带多少 —— 调小省 token，调大记得更多',
+  'mem.store': '存多少',
+  'mem.storeHint': '摘要最多存多少字（超过才淘汰最旧的，不会因「带不下」而删）',
+  'mem.inject': '每轮带多少',
+  'mem.injectHint': '每次回复往提示词里带多少字（调大 = 记得更多，但每条回复更贵）',
+  'mem.limitsSaved': '记忆上限已更新',
       'mem.dirReset': '已恢复默认目录',
       'mem.dirDefault': '恢复默认',
         'mem.hint': '按会话清空短期上下文；摘要属长期记忆',
@@ -380,6 +387,13 @@ window.__ModuleLoader__.load({
 
         'mem.title': 'Memory management',
         'mem.hint': 'Clear short-term context per session; summaries are long-term memory',
+  'mem.limits': 'Memory limits',
+  'mem.limitsHint': 'How much to store / how much to inject per turn',
+  'mem.store': 'Store',
+  'mem.storeHint': 'Max chars kept in the summary (oldest evicted only beyond this)',
+  'mem.inject': 'Per turn',
+  'mem.injectHint': 'Chars injected into the prompt per reply (higher = costlier)',
+  'mem.limitsSaved': 'Memory limits updated',
     'active.title': 'Proactive behavior',
     'active.hint': 'Control when it speaks up on its own',
     'active.on': 'On',
@@ -2688,6 +2702,60 @@ window.__ModuleLoader__.load({
                     }
                   },
                 }, t('mem.dirDefault')))),
+            // ── 存多少 / 每轮带多少 ──────────────────────────────
+            //
+            // 2026-10-30：原来只有一个**写死的 3000** 同时管两件事 ——
+            // 存多少 + 每轮塞进 prompt 多少。后果是超了**永久裁掉**
+            // （删最旧的人、截话题），用户感受就是「它忘事」。
+            // B 站有评论直接说「3000 太小了」。
+            //
+            // 现在拆成两个可配的数（参考 dsh-qqchat / MaiBot 的做法：
+            // 存储给足、注入给预算）：
+            //   · 存多少   = memory.long.maxChars（默认 12000）
+            //   · 每轮带多少 = memory.long.injectChars（默认 3000，不涨成本）
+            // 超出的部分只是「这轮没带上」，**不再从存储里删掉**。
+            h('div', { style: { marginBottom: '12px' } },
+              h('div', { className: 'gd_rowlabel' },
+                h('b', null, t('mem.limits')),
+                h('i', null, t('mem.limitsHint'))),
+              h('div', { className: 'gd_actions', style: { marginTop: '6px', gap: '10px' } },
+                ...[
+                  ['memory.long.maxChars', 'mem.store', mem.data?.long?.limits?.total ?? 12000, 'mem.storeHint'],
+                  ['memory.long.injectChars', 'mem.inject', mem.data?.long?.limits?.inject ?? 3000, 'mem.injectHint'],
+                ].map(([key, labelKey, cur, hintKey]) => h('label', {
+                  key,
+                  className: 'gd_actions',
+                  style: { gap: '6px', alignItems: 'center', flex: 1, minWidth: 0 },
+                  title: t(hintKey),
+                },
+                  h('span', { style: { whiteSpace: 'nowrap', fontSize: '12px' } }, t(labelKey)),
+                  h('input', {
+                    className: 'gd_input',
+                    type: 'number',
+                    min: 500,
+                    max: 50000,
+                    step: 500,
+                    style: { width: '110px' },
+                    defaultValue: cur,
+                    onBlur: async (e) => {
+                      const v = Math.round(Number(e.target.value))
+                      if (!Number.isFinite(v) || v <= 0) { e.target.value = cur; return }
+                      if (v === cur) return
+                      try {
+                        await api('/config', {
+                          method: 'POST',
+                          headers: { 'content-type': 'application/json' },
+                          body: JSON.stringify({ [key]: v }),
+                        })
+                        mem.reload()
+                        setToast({ ok: true, text: t('mem.limitsSaved') })
+                      } catch (error) {
+                        setToast({ ok: false, text: String(error?.message ?? error) })
+                      }
+                    },
+                  }),
+                ))),
+            ),
             scopes.length === 0
               ? h('p', { className: 'gd_note' }, t('mem.empty'))
               : h('div', { className: 'gd_actions', style: { flexDirection: 'column', alignItems: 'stretch', gap: '6px' } },

@@ -133,7 +133,11 @@ ok('新的【我】覆盖旧的【我】', () => {
 
 // ── ⑤ 长度：三段都超时的裁剪顺序 ────────────────────────────
 ok('三段都超长 → 仍然 ≤ 上限，且【我】是最后一个让位的', () => {
-  const out = renderPeople(P(40), '话'.repeat(2000), '我'.repeat(2000))
+  /*
+   * ⚠️ 显式传 `{ total: MAX }`（2026-10-30）：默认存储上限已提到 12000，
+   *    这条测的是**裁剪顺序**，所以把上限压回 3000 来触发它。
+   */
+  const out = renderPeople(P(40), '话'.repeat(2000), '我'.repeat(2000), '', { total: MAX })
   assert.ok(out.length <= MAX, `输出 ${out.length} > ${MAX}`)
   assert.ok(out.includes('【我】'), '【我】该留到最后（它有 400 字上限，正常走不到被砍）')
   assert.ok(parseSelf(out).length <= 400, '【我】被裁到 400 字内')

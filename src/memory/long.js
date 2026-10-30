@@ -23,8 +23,15 @@ import path from 'node:path'
 
 /** 一个会话的长期记忆。 */
 export class LongTermMemory {
-  constructor(scope) {
+  /**
+   * @param {string} scope
+   * @param {{total?:number, topic?:number, self?:number, gloss?:number, inject?:number}} [limits]
+   *        存储/注入上限。由 `LongTermStore` 从配置传入；**不传用默认值**。
+   */
+  constructor(scope, limits) {
     this.scope = scope
+    /** 存储侧 + 注入侧的上限（见 `DEFAULT_LIMITS`） */
+    this.limits = normLimits(limits)
     /** 累积摘要（自然语言段落） */
     this.summary = ''
     /**
@@ -44,10 +51,17 @@ export class LongTermMemory {
     this.updatedAt = 0
   }
 
-  /** 摘要 + 关键事实，拼成给 LLM 的上下文段落。 */
+  /**
+   * 摘要 + 关键事实，拼成给 LLM 的上下文段落。
+   *
+   * ⚠️ 这里按 **`limits.inject`（注入预算）** 裁剪，**不动 `this.summary`** ——
+   * 超出的部分只是这一轮没带上，存储里还在（2026-10-30 拆开）。
+   */
   toPrompt() {
     if (!this.summary) return ''
-    return `【关于这个会话你已经知道的】\n${this.summary}`
+    const text = clipForPrompt(this.summary, this.limits.inject)
+    if (!text) return ''
+    return `【关于这个会话你已经知道的】\n${text}`
   }
 
   /**
@@ -110,8 +124,8 @@ export class LongTermMemory {
        */
       const gloss = parseGloss(incoming) || parseGloss(this.summary)
       this.summary = keepPeople.size > 0
-        ? renderPeople(keepPeople, topics, selfNote, gloss)
-        : incoming.slice(-MAX_SUMMARY_CHARS)
+        ? renderPeople(keepPeople, topics, selfNote, gloss, this.limits)
+        : incoming.slice(-this.limits.total)
       this.updatedAt = Date.now()
       return
     }
@@ -125,13 +139,42 @@ export class LongTermMemory {
     const topics = parseTopics(incoming) || parseTopics(this.summary)
     const selfNote = parseSelf(incoming) || parseSelf(this.summary)
     const gloss = parseGloss(incoming) || parseGloss(this.summary)
-    this.summary = renderPeople(prev, topics, selfNote, gloss)
+    this.summary = renderPeople(prev, topics, selfNote, gloss, this.limits)
     this.updatedAt = Date.now()
   }
 }
 
-/** 摘要总长上限。够装 ~40 个人 + 话题，再多说明该淘汰了。 */
-const MAX_SUMMARY_CHARS = 3000
+/**
+ * 摘要的**存储上限**（默认 12000）。
+ *
+ * ## ⚠️ 2026-10-30 从 3000 提到 12000，并和「注入预算」拆开
+ *
+ * 原来 3000 是**一个数管两件事**：既是存多少的上限，也是每轮塞进 prompt 的量。
+ * 后果是**超了就永久裁掉**（`renderPeople` 会删最旧的人、截话题）——
+ * 用户感受到的就是「它忘事」。B 站有评论直接说「3000 太小了」。
+ *
+ * 参考同生态的 `dsh-qqchat`（群/成员记忆各 2000 字符**注入**预算，
+ * 但**数据仍存 SQLite，不因预算被删**）和 MaiBot（向量库不限、
+ * `top_k` + `max_chars` 控注入）—— 两家都是**存储给足、注入给预算**。
+ *
+ * 所以现在：
+ *   · 这个常量 = **存多少**（超了才淘汰，12000 够装几百条）
+ *   · `MAX_INJECT_CHARS` = **每轮带多少**（默认 3000，跟以前一样，不涨成本）
+ * 超出的部分只是「这轮没带上」，**不再从存储里删掉**。
+ */
+const MAX_SUMMARY_CHARS = 12000
+
+/**
+ * 每轮注入 prompt 的**预算**（默认 3000）。
+ *
+ * 超了按段裁剪（见 `clipForPrompt`）：
+ *   · 【人】【我】【梗】**全带** —— 长期资产，砍了就真没了
+ *   · 【事】**从头部砍，保留最新的** —— 话题是消耗品
+ *
+ * 想让记得更多就调大这个（代价是每轮多花 token），
+ * 想省钱就调小 —— 但**都不影响存了多少**。
+ */
+const MAX_INJECT_CHARS = 3000
 
 /**
  * 「事」段（话题）单独的上限。
@@ -160,6 +203,33 @@ const MAX_SELF_CHARS = 400
  * 而那些恰恰是最没用的（隔两周就过时）。
  */
 const MAX_GLOSS_CHARS = 300
+
+/**
+ * 默认的四个上限（存储侧）。
+ *
+ * 单独抽出来是为了让 `renderPeople` 能在**不传** limits 时用默认值 ——
+ * 这样既有调用方和三个测试（`long-trim` / `selfnote` / `glossary`）
+ * 的行为**逐字节不变**。
+ */
+export const DEFAULT_LIMITS = Object.freeze({
+  total: MAX_SUMMARY_CHARS,
+  topic: MAX_TOPIC_CHARS,
+  self: MAX_SELF_CHARS,
+  gloss: MAX_GLOSS_CHARS,
+  inject: MAX_INJECT_CHARS,
+})
+
+/** 把外部传进来的 limits 补成完整的四个（缺的用默认）。 */
+function normLimits(x) {
+  const n = (v, d) => (Number.isFinite(Number(v)) && Number(v) > 0 ? Number(v) : d)
+  return {
+    total: n(x?.total, DEFAULT_LIMITS.total),
+    topic: n(x?.topic, DEFAULT_LIMITS.topic),
+    self: n(x?.self, DEFAULT_LIMITS.self),
+    gloss: n(x?.gloss, DEFAULT_LIMITS.gloss),
+    inject: n(x?.inject, DEFAULT_LIMITS.inject),
+  }
+}
 
 /**
  * 话题文本的裁剪：**优先保住「我说过：」那一段**。
@@ -246,8 +316,16 @@ export function parsePeople(text) {
  * @param {string} topics
  * @returns {string}
  */
-export function renderPeople(people, topics, self, gloss) {
-  let topicText = clipTopics(topics, MAX_TOPIC_CHARS)
+export function renderPeople(people, topics, self, gloss, limits) {
+  /*
+   * ⚠️ 第五个参数 `limits`（2026-10-30 加）—— 让「存多少」可配。
+   *
+   * **不传时用 `DEFAULT_LIMITS`，输出与上一版逐字节相同** ——
+   * 三个测试锁着这条（`long-trim` / `selfnote` / `glossary`），
+   * 所以既有调用方一律不受影响。
+   */
+  const L = normLimits(limits)
+  let topicText = clipTopics(topics, L.topic)
   /*
    * 「我」段（2026-10-29 加）。
    *
@@ -255,7 +333,7 @@ export function renderPeople(people, topics, self, gloss) {
    * （`check-selfnote`）。所以任何既有调用方不受影响。
    */
   let selfText = String(self ?? '').trim()
-  if (selfText.length > MAX_SELF_CHARS) selfText = selfText.slice(0, MAX_SELF_CHARS)
+  if (selfText.length > L.self) selfText = selfText.slice(0, L.self)
   /*
    * 「梗」段（术语库，2026-10-29 加）—— 这个群的黑话。
    *
@@ -263,7 +341,7 @@ export function renderPeople(people, topics, self, gloss) {
    * 它排在最后，所以 `parseSelf` 要在「【梗】」处收边界。
    */
   let glossText = String(gloss ?? '').trim()
-  if (glossText.length > MAX_GLOSS_CHARS) glossText = glossText.slice(0, MAX_GLOSS_CHARS)
+  if (glossText.length > L.gloss) glossText = glossText.slice(0, L.gloss)
 
   const lines = []
   for (const v of people?.values?.() ?? []) {
@@ -283,14 +361,14 @@ export function renderPeople(people, topics, self, gloss) {
   let body = build()
 
   // ① 逐条移除最旧的人（Map 保序：最早 set 的排在最前）
-  while (body.length > MAX_SUMMARY_CHARS && lines.length > 0) {
+  while (body.length > L.total && lines.length > 0) {
     lines.shift()
     body = build()
   }
 
   // ② 人已经砍光 → 按超出量精确截短话题
-  if (body.length > MAX_SUMMARY_CHARS && topicText) {
-    const overflow = body.length - MAX_SUMMARY_CHARS
+  if (body.length > L.total && topicText) {
+    const overflow = body.length - L.total
     topicText = topicText.slice(0, Math.max(0, topicText.length - overflow))
     body = build()
   }
@@ -302,19 +380,91 @@ export function renderPeople(people, topics, self, gloss) {
    * 最难重建的东西（性格的连续性、这个群怎么说话）—— 留到最后一个动。
    * 两者都有硬上限（400 / 300 字），正常根本走不到这一步。
    */
-  if (body.length > MAX_SUMMARY_CHARS && selfText) {
-    const overflow = body.length - MAX_SUMMARY_CHARS
+  if (body.length > L.total && selfText) {
+    const overflow = body.length - L.total
     selfText = selfText.slice(0, Math.max(0, selfText.length - overflow))
     body = build()
   }
-  if (body.length > MAX_SUMMARY_CHARS && glossText) {
-    const overflow = body.length - MAX_SUMMARY_CHARS
+  if (body.length > L.total && glossText) {
+    const overflow = body.length - L.total
     glossText = glossText.slice(0, Math.max(0, glossText.length - overflow))
     body = build()
   }
 
   // ④ 硬上限兜底
-  return body.length > MAX_SUMMARY_CHARS ? body.slice(0, MAX_SUMMARY_CHARS) : body
+  return body.length > L.total ? body.slice(0, L.total) : body
+}
+
+/**
+ * 按「**注入预算**」裁剪摘要 —— **只影响这一轮喂给模型的内容，不改变存储**。
+ *
+ * ## 为什么需要它（2026-10-30）
+ *
+ * 原来 `MAX_SUMMARY_CHARS = 3000` 一个数管两件事：存多少 + 每轮带多少。
+ * 结果是**超了就永久裁掉**（`renderPeople` 会删最旧的人、截话题），
+ * 用户感受到的是「它忘事」。
+ *
+ * 参考同生态的 `dsh-qqchat`：群/成员记忆各有 2000 字符**注入**预算，
+ * 但**数据仍存 SQLite、不因预算被删**。MaiBot 同理（库不限，`top_k` 控注入）。
+ *
+ * ## 裁剪顺序（这是「忘事先忘什么」的规则）
+ *
+ * | 段 | 处理 | 理由 |
+ * |---|---|---|
+ * | 【人】【我】【梗】 | **全带** | 长期资产，砍了就真没了 |
+ * | 【事】 | **从头部砍，保留最新的** | 话题是消耗品，旧的本来也没用 |
+ *
+ * 预算连【人】都放不下时，才按最旧优先删人。
+ *
+ * @param {string} summary   存储里的完整摘要
+ * @param {number} maxChars  注入预算（<=0 或不传 = 不裁）
+ * @returns {string}
+ */
+export function clipForPrompt(summary, maxChars) {
+  const s = String(summary ?? '').trim()
+  if (!s) return ''
+  const budget = Number(maxChars)
+  if (!Number.isFinite(budget) || budget <= 0 || s.length <= budget) return s
+
+  const sec = (name) => {
+    const at = s.indexOf(name)
+    if (at < 0) return ''
+    const rest = s.slice(at + name.length)
+    const next = rest.search(/【(人|事|我|梗)】/)
+    return (next >= 0 ? rest.slice(0, next) : rest).trim()
+  }
+  let people = sec('【人】')
+  let topics = sec('【事】')
+  const self = sec('【我】')
+  const gloss = sec('【梗】')
+
+  const wrap = (n, body) => (body ? `【${n}】\n${body}` : '')
+  const build = () => [
+    wrap('人', people), wrap('事', topics), wrap('我', self), wrap('梗', gloss),
+  ].filter(Boolean).join('\n\n')
+
+  let out = build()
+
+  // ① 先砍【事】的头部（保留最新的），加省略号让人看得出被截过
+  while (out.length > budget && topics.length > 0) {
+    const over = out.length - budget
+    const keep = topics.length - over - 1
+    topics = keep > 0 ? `…${topics.slice(-keep)}` : ''
+    out = build()
+  }
+
+  // ② 还是超 → 按最旧优先删人
+  if (out.length > budget && people) {
+    const lines = people.split('\n')
+    while (out.length > budget && lines.length > 0) {
+      lines.shift()
+      people = lines.join('\n')
+      out = build()
+    }
+  }
+
+  // ③ 兜底硬截
+  return out.length > budget ? out.slice(0, budget) : out
 }
 
 /**
@@ -335,6 +485,30 @@ export class LongTermStore {
     this.home = opts.home
     this.summarize = opts.summarize
     this.log = opts.log ?? {}
+    /*
+     * 存储/注入上限（2026-10-30 可配）。
+     *
+     * 只暴露**两个**给用户，因为用户真正想调的就是这两个：
+     *   · `memory.long.maxChars`    —— **存**多少（超了才淘汰，默认 12000）
+     *   · `memory.long.injectChars` —— **每轮带**多少（默认 3000，不涨成本）
+     *
+     * 三个子段（事/我/梗）保持**绝对上限**（1400/400/300）：
+     * 它们各自有天然的合理长度（话题 2~3 句、自我叙述 1~2 句、黑话 10 行），
+     * 按比例放大会让它们跑飞。**总上限涨出来的空间全部给【人】** ——
+     * 那才是「存得多」真正该受益的地方（能记住更多人、更细的印象）。
+     */
+    const pos = (v, d) => (Number.isFinite(Number(v)) && Number(v) > 0 ? Number(v) : d)
+    /** 夹到合理范围 —— 防止手改 config 填个 1e9 把 prompt 撑爆。 */
+    const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, Math.round(v)))
+    this.limits = normLimits({
+      // 存：1500 ~ 50000（12000 约等于几百条人物印象）
+      total: clamp(pos(this.cfg.maxChars, DEFAULT_LIMITS.total), 1500, 50000),
+      topic: DEFAULT_LIMITS.topic,
+      self: DEFAULT_LIMITS.self,
+      gloss: DEFAULT_LIMITS.gloss,
+      // 带：500 ~ 20000（3000 约 2000 token）
+      inject: clamp(pos(this.cfg.injectChars, DEFAULT_LIMITS.inject), 500, 20000),
+    })
     /*
      * 落盘目录。
      *
@@ -359,7 +533,7 @@ export class LongTermStore {
     try {
       const j = JSON.parse(fs.readFileSync(this.file, 'utf8'))
       for (const [scope, v] of Object.entries(j.sessions ?? {})) {
-        const m = new LongTermMemory(scope)
+        const m = new LongTermMemory(scope, this.limits)
         m.summary = String(v.summary ?? '')
         m.summarizedCount = Number(v.summarizedCount ?? 0)
         /**
@@ -408,7 +582,7 @@ export class LongTermStore {
 
   get(scope) {
     let m = this.memories.get(scope)
-    if (!m) { m = new LongTermMemory(scope); this.memories.set(scope, m) }
+    if (!m) { m = new LongTermMemory(scope, this.limits); this.memories.set(scope, m) }
     return m
   }
 
@@ -582,7 +756,18 @@ export class LongTermStore {
     for (const m of this.memories.values()) {
       if (m.summary) { withSummary++; totalChars += m.summary.length }
     }
-    return { enabled: this.enabled, sessions: this.memories.size, withSummary, totalChars, summarizeAfter: this.summarizeAfter }
+    /*
+     * ⚠️ 带上 `limits`（2026-10-30）—— 面板要显示「存多少 / 每轮带多少」
+     * 两个输入框的**当前值**，只能从这儿读。
+     */
+    return {
+      enabled: this.enabled,
+      sessions: this.memories.size,
+      withSummary,
+      totalChars,
+      summarizeAfter: this.summarizeAfter,
+      limits: { ...this.limits },
+    }
   }
 
   /**

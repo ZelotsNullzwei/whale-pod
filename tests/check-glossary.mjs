@@ -124,7 +124,11 @@ ok('【梗】自己超长 → 裁到 300 字', () => {
 })
 
 ok('四段全超长 → 总长仍 ≤ 上限，且【梗】【我】留到最后', () => {
-  const out = renderPeople(P(40), '话'.repeat(2000), '我'.repeat(1500), '梗'.repeat(1000))
+  /*
+   * ⚠️ 显式传 `{ total: MAX }`（2026-10-30）：默认存储上限已提到 12000，
+   *    这条测的是**裁剪顺序**，所以把上限压回 3000 来触发它。
+   */
+  const out = renderPeople(P(40), '话'.repeat(2000), '我'.repeat(1500), '梗'.repeat(1000), { total: MAX })
   assert.ok(out.length <= MAX, `${out.length} > ${MAX}`)
   assert.ok(out.includes('【梗】'), '【梗】该留到最后动')
 })

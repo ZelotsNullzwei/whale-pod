@@ -84,7 +84,14 @@ ok('40 人 + 长话题 → 终止，且超出时先砍最旧的人', () => {
    *    这里把每条印象加长到 ~60 字，人像段约 2400 字，必然要砍。
    */
   const people = P(40, 30)
-  const out = timed(() => renderPeople(people, long(1500)), '40人')
+  /*
+   * ⚠️ 显式传 `{ total: MAX }`（2026-10-30）。
+   *
+   * 默认存储上限已经从 3000 提到 **12000**（跟"注入预算"拆开了），
+   * 所以 40 人 + 1500 话题（约 4000 字）**在新默认下根本不会触发裁剪**。
+   * 这条测的是**裁剪算法本身**，所以把上限压回 3000 来触发它。
+   */
+  const out = timed(() => renderPeople(people, long(1500), '', '', { total: MAX }), '40人')
   assert.ok(out.length <= MAX, `输出 ${out.length} > ${MAX}`)
   const kept = parsePeople(out)
   assert.ok(kept.size > 0, '不该把人砍光（话题应先让位）')
