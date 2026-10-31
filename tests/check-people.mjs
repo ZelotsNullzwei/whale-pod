@@ -34,12 +34,12 @@ console.log('按 QQ 号认人')
 // ── 1. 核心：认的是 QQ 号 ─────────────────────────────────────
 ok('同一个人换昵称 → 还是同一个人', () => {
   const s = new PeopleStore()
-  s.touch('2129024700', '风宝', 1000)
-  s.touch('2129024700', '不是不是风宝', 2000)
+  s.touch('123450002', '阿甲', 1000)
+  s.touch('123450002', '不是不是阿甲', 2000)
   assert.equal(s.people.size, 1, '不该因为改名变成两个人')
-  const p = s.get('2129024700')
-  assert.deepEqual(p.aliases, ['风宝', '不是不是风宝'], '两个昵称都留作别名')
-  assert.equal(p.displayName, '不是不是风宝', '展示最近的昵称')
+  const p = s.get('123450002')
+  assert.deepEqual(p.aliases, ['阿甲', '不是不是阿甲'], '两个昵称都留作别名')
+  assert.equal(p.displayName, '不是不是阿甲', '展示最近的昵称')
   assert.equal(p.seen, 2)
 })
 
@@ -107,14 +107,14 @@ ok('没有印象的人不占位置', () => {
 // ── 4. 摘要 merge 是替换 ────────────────────────────────────
 ok('merge 同一个人换名字后整行替换，不新增', () => {
   const m = new LongTermMemory('group:1')
-  m.merge('【人】\n12345 | 风宝 | 爱攒抽\n22345 | 甲 | 爱发图\n\n【事】\n在聊抽卡')
+  m.merge('【人】\n12345 | 阿甲 | 爱攒抽\n22345 | 甲 | 爱发图\n\n【事】\n在聊抽卡')
   const len1 = m.summary.length
-  m.merge('【人】\n12345 | 不是不是风宝 | 爱攒抽、爱发图\n\n【事】\n在聊游戏平衡')
+  m.merge('【人】\n12345 | 不是不是阿甲 | 爱攒抽、爱发图\n\n【事】\n在聊游戏平衡')
   // 应该还是 2 个人（111 被替换，222 保留）
   const people = parsePeople(m.summary)
   assert.equal(people.size, 2, '不该变成 3 个人')
-  assert.match(m.summary, /不是不是风宝/, '昵称更新了')
-  assert.doesNotMatch(m.summary, /111 \| 风宝 \| 爱攒抽\n/, '旧的那行被替换掉了')
+  assert.match(m.summary, /不是不是阿甲/, '昵称更新了')
+  assert.doesNotMatch(m.summary, /111 \| 阿甲 \| 爱攒抽\n/, '旧的那行被替换掉了')
   // 长度不该翻倍
   assert.ok(m.summary.length < len1 * 2, `长度 ${len1} → ${m.summary.length}，不该翻倍`)
 })
@@ -122,7 +122,7 @@ ok('merge 同一个人换名字后整行替换，不新增', () => {
 ok('merge 二十次长度不会爆炸', () => {
   const m = new LongTermMemory('group:1')
   for (let i = 0; i < 20; i++) {
-    m.merge(`【人】\n12345 | 风宝${i} | 第${i}次印象\n\n【事】\n第${i}轮话题`)
+    m.merge(`【人】\n12345 | 阿甲${i} | 第${i}次印象\n\n【事】\n第${i}轮话题`)
   }
   assert.ok(m.summary.length < 500, `20 次 merge 后 ${m.summary.length} 字，旧实现会到 1000+`)
   assert.equal(parsePeople(m.summary).size, 1, '还是同一个人')
@@ -152,8 +152,8 @@ ok('parsePeople 丢掉没有 QQ 号的行', () => {
 ok('落盘后能恢复，别名和印象都在', () => {
   const home = tmp()
   const a = new PeopleStore({ home })
-  a.touch('12345', '风宝', 1000)
-  a.touch('12345', '不是不是风宝', 2000)
+  a.touch('12345', '阿甲', 1000)
+  a.touch('12345', '不是不是阿甲', 2000)
   a.get('12345').setImpression('爱攒抽')
   a.get('12345').addFact('在杭州')
   a.save()
@@ -161,7 +161,7 @@ ok('落盘后能恢复，别名和印象都在', () => {
   const b = new PeopleStore({ home })
   const p = b.get('12345')
   assert.equal(p.impression, '爱攒抽')
-  assert.deepEqual(p.aliases, ['风宝', '不是不是风宝'])
+  assert.deepEqual(p.aliases, ['阿甲', '不是不是阿甲'])
   assert.deepEqual(p.facts, ['在杭州'])
   assert.equal(p.seen, 2)
 

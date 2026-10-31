@@ -131,7 +131,7 @@ export function buildChatMessages({ system, history = [], imageCache = new Map()
    *
    * ## 为什么需要
    *
-   * onebot 解析 at 段时只能拿到 QQ 号，所以消息文本里是 `@3039392113`。
+   * onebot 解析 at 段时只能拿到 QQ 号，所以消息文本里是 `@123450003`。
    * 模型看到一串裸数字根本不知道在 @ 谁 —— 实测回过
    * 「艾特谁呢，数字直接甩出来了」，而且认不出那个号就是自己。
    *
@@ -1036,7 +1036,7 @@ export class QQBridge {
        *
        * ## 为什么又调
        *
-       * 实测群 704291282：同一张青蛙表情包（fileid=EhSMnq3BrcHwXn2TbGaPI）
+       * 实测群 123450001：同一张青蛙表情包（fileid=EhSMnq3BrcHwXn2TbGaPI）
        * 出现 **4 次，它 4 次都回了**：
        * ```
        * 15:23:34 → 15:23:37 回「[表情包]」
@@ -1216,7 +1216,7 @@ export class QQBridge {
        * 实测症状（群里 16:03 那条）：
        *   「显卡那事啊，我不懂行情，就知道贵，打游戏没用就是纯坑。
        *
-       *    要问还得问番茄」
+       *    要问还得问阿乙」
        * 本该是**两条**消息（空行 = 显式分段意图），结果挤在一条里，
        * 中间一个空行，看起来像卡住了没发完。
        *
@@ -3531,7 +3531,7 @@ export class QQBridge {
       history,
       imageCache,
       lastRoute: this._lastRoute,
-      // 用于把 `@3039392113` 这种裸号换成昵称，并标出「这是你自己」
+      // 用于把 `@123450003` 这种裸号换成昵称，并标出「这是你自己」
       selfId: this.selfId ?? '',
       selfName: this.selfName ?? '',
     })

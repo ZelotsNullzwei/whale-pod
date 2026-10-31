@@ -15,13 +15,13 @@ function ok(name, fn) {
 }
 
 const T = 1_793_000_000_000
-const SELF = '3039392113'
+const SELF = '123450003'
 
 /** 造一条消息。 */
 const m = (o = {}) => ({
   id: o.id ?? Math.random().toString(36).slice(2),
-  sender: o.sender ?? '2129024700',
-  senderName: o.senderName ?? '番茄',
+  sender: o.sender ?? '123450002',
+  senderName: o.senderName ?? '阿乙',
   text: o.text ?? '[表情包]',
   at: o.at ?? T,
   isMe: o.isMe === true,

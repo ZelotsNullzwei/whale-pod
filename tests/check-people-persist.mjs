@@ -180,30 +180,30 @@ await ok('写真印象之后 toPrompt() 不再是空串，且含名字和印象'
   const home = tmpHome()
   const ps = new PeopleStore({ home })
   assert.equal(ps.toPrompt({ limit: 6 }), '', '没人像时应当返回空串')
-  ps.setImpression('2129024700', '爱考据较真，专揪年份设定', '番茄')
+  ps.setImpression('123450002', '爱考据较真，专揪年份设定', '阿乙')
   const text = ps.toPrompt({ limit: 6 })
   assert.ok(text.length > 0, '写了印象之后必须非空 —— 这正是之前缺的那一环')
-  assert.ok(text.includes('番茄'), `应含名字，实际：${text}`)
+  assert.ok(text.includes('阿乙'), `应含名字，实际：${text}`)
   assert.ok(text.includes('爱考据较真'), `应含印象，实际：${text}`)
-  assert.ok(text.includes('2129024700'), '应标 QQ 号（重名时靠它区分）')
+  assert.ok(text.includes('123450002'), '应标 QQ 号（重名时靠它区分）')
 })
 
 await ok('同一个 QQ 从不同 scope 提炼 → 覆盖成最新（跨会话只有一份）', () => {
   const home = tmpHome()
   const ps = new PeopleStore({ home })
   // 群聊里提炼到的
-  for (const p of parsePersonLines('【人】\n2129024700 | 番茄 | 在群里爱较真\n\n【事】\nx')) {
+  for (const p of parsePersonLines('【人】\n123450002 | 阿乙 | 在群里爱较真\n\n【事】\nx')) {
     ps.setImpression(p.id, p.impression, p.name)
   }
   // 私聊里提炼到的（同一人）
-  for (const p of parsePersonLines('【人】\n2129024700 | Null_zwei. | 私聊里话少\n\n【事】\ny')) {
+  for (const p of parsePersonLines('【人】\n123450002 | Null_zwei. | 私聊里话少\n\n【事】\ny')) {
     ps.setImpression(p.id, p.impression, p.name)
   }
   assert.equal(ps.stats().count, 1, '同一个 QQ 只能有一份档案')
-  assert.equal(ps.get('2129024700').impression, '私聊里话少', '后写的覆盖先写的')
-  assert.ok(ps.get('2129024700').aliases.includes('番茄'), '两个昵称都留成别名')
-  assert.ok(ps.get('2129024700').aliases.includes('Null_zwei.') === false
-    || ps.get('2129024700').aliases.includes('Null_zwei.'), '私聊昵称也应在别名里')
+  assert.equal(ps.get('123450002').impression, '私聊里话少', '后写的覆盖先写的')
+  assert.ok(ps.get('123450002').aliases.includes('阿乙'), '两个昵称都留成别名')
+  assert.ok(ps.get('123450002').aliases.includes('Null_zwei.') === false
+    || ps.get('123450002').aliases.includes('Null_zwei.'), '私聊昵称也应在别名里')
 })
 
 await ok('空印象不覆盖已有（模型偶尔只给名字）', () => {
@@ -220,8 +220,8 @@ await ok('端到端：真实摘要文本 → 解析 → 写入 → 提示词有�
   const ps = new PeopleStore({ home })
   const summary = [
     '【人】',
-    '2129024700 | 🍅番茄🍅 | 爱考据较真，专揪年份设定',
-    '1095169608 | 不是不是风宝 | 话很少，基本只甩表情包',
+    '123450002 | 🍅阿乙🍅 | 爱考据较真，专揪年份设定',
+    '1095169608 | 不是不是阿甲 | 话很少，基本只甩表情包',
     '',
     '【事】',
     '在聊渲染图。我说过：天光出味这版算过了。',
@@ -229,7 +229,7 @@ await ok('端到端：真实摘要文本 → 解析 → 写入 → 提示词有�
   for (const p of parsePersonLines(summary)) ps.setImpression(p.id, p.impression, p.name)
   assert.equal(ps.stats().described, 2, '两条都应算「有效档案」')
   const text = ps.toPrompt({ limit: 6 })
-  assert.ok(text.includes('番茄') && text.includes('风宝'), `实际：${text}`)
+  assert.ok(text.includes('阿乙') && text.includes('阿甲'), `实际：${text}`)
 })
 
 await ok('源码锁：index.js 的摘要回调必须把【人】同步进人物档案', () => {

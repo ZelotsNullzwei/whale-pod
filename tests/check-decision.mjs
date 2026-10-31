@@ -237,7 +237,7 @@ console.log('\n=== 15. 提及识别 ===')
   check('常见词不进片段表（「什么」不该误伤）', mentionsSelf('什么情况', SELF) === false)
 
   // 昵称带装饰时要能剥掉
-  check('带 emoji 的昵称也能认', mentionsSelf('番茄在吗', { qq: '9', nickname: '🍅番茄🍅' }) === true)
+  check('带 emoji 的昵称也能认', mentionsSelf('阿乙在吗', { qq: '9', nickname: '🍅阿乙🍅' }) === true)
   check('单字昵称不生成片段（避免乱撞）', nicknameTokens('猫').length === 0)
   check('空昵称安全', nicknameTokens('').length === 0 && nicknameTokens(null).length === 0)
 
@@ -437,8 +437,8 @@ console.log('\n=== 18. 纯媒体消息 → 表情回应 ===')
 //
 // ⚠️ 2026-10-24 线上实测：机器人在别人 @ 别人时抢答。
 //
-// 日志证据（群 704291282）：
-//   「@2854197266 /国际服千里眼」
+// 日志证据（群 123450001）：
+//   「@123450004 /国际服千里眼」
 //     → 决策 → 发言 (p=0.06, 来源=rule, 群聊中随机插话命中)
 //   LYFan 在 @ 另一个 bot 问卡池，我们的机器人却接了话，随后说
 //   「千里眼？本鱼要是有这本事，早自己去抽卡了」。
@@ -461,25 +461,25 @@ console.log('\n=== 19. @ 了别人不该插嘴 ===')
   }
 
   // ① @ 别人 → 概率被压到 0.02，高随机值下必沉默
-  for (const t of ['@2854197266 /国际服千里眼', '@2129024700 好久活', '@1095169608 在吗']) {
+  for (const t of ['@123450004 /国际服千里眼', '@123450002 好久活', '@1095169608 在吗']) {
     const d = await decideWith(mk(t), 0.5)
     check(`「${t.slice(0, 18)}」概率压到 0.02`, d.probability <= 0.02, `p=${d.probability}`)
   }
   {
-    const d = await decideWith(mk('@2854197266 /国际服千里眼'), 0.5)
+    const d = await decideWith(mk('@123450004 /国际服千里眼'), 0.5)
     check('@ 别人 → 沉默', d.reply === false, JSON.stringify(d))
     check('理由能区分「在叫别人」', /@ 的是别人/.test(d.reason), d.reason)
   }
 
   // ② 低随机值也几乎不回（0.02 的残余概率）
   {
-    const d = await decideWith(mk('@2854197266 你好'), 0.01)
+    const d = await decideWith(mk('@123450004 你好'), 0.01)
     check('@ 别人 + 极低随机值 → 仍可命中（保留 2% 余地）', d.reply === true, JSON.stringify(d))
   }
 
   // ③ @ 我 → **不能**被压制
   {
-    const d = await decideWith(mk('@3039392113 教我怎么攒抽', { mentionsMe: true }), 0.5)
+    const d = await decideWith(mk('@123450003 教我怎么攒抽', { mentionsMe: true }), 0.5)
     check('@ 我 → 概率 0.95 不被压制', d.probability === 0.95, String(d.probability))
     check('@ 我 → 回复', d.reply === true, JSON.stringify(d))
   }
@@ -501,7 +501,7 @@ console.log('\n=== 19. @ 了别人不该插嘴 ===')
     const d = await p.decide({
       messages: [
         { sender: '9', senderName: 'Bot', text: '要不要一起玩这个', isMe: true, at: now - 3000 },
-        { sender: '1', senderName: '甲', text: '@3604321136 你要玩吗', isMe: false, mentionsMe: false, at: now },
+        { sender: '1', senderName: '甲', text: '@123450005 你要玩吗', isMe: false, mentionsMe: false, at: now },
       ],
       self: SELF, scene: { kind: 'group' }, sinceMyLastMessage: 3000, consecutiveTurns: 0,
     })
@@ -512,10 +512,10 @@ console.log('\n=== 19. @ 了别人不该插嘴 ===')
   // ④b 真正的 followUp（提到我 + 第二人称）→ 不该被压制
   //
   // ⚠️ 注意 resolveAddressee 的既有设计：**光有第二人称「你」不算在叫我**。
-  //    实测（self={qq:'3039392113', nickname:'蓝色大肥鱼'}）：
+  //    实测（self={qq:'123450003', nickname:'蓝色大肥鱼'}）：
   //      「你要玩吗」        → who='unclear'  hit=false
   //      「你刚才说的那个」   → who='unclear'  hit=false
-  //      「@3039392113 你要玩吗」→ who='me'    hit=true
+  //      「@123450003 你要玩吗」→ who='me'    hit=true
   //    这是 2026-10-23 有意收紧的（避免「小红：你今天怎么了？」被当成在问它）。
   //    所以这条用例必须用「提到我」的形式，不能用裸第二人称。
   {

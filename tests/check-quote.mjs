@@ -121,7 +121,7 @@ console.log('\n=== 3. 端到端：引用我的消息 → 按"被叫"处理（不
   }
 
   const msg = (replyTo) => ({
-    scope: 'group:1', kind: 'group', groupId: '1', userId: '2', senderName: '番茄',
+    scope: 'group:1', kind: 'group', groupId: '1', userId: '2', senderName: '阿乙',
     text: '那还不是决策层叫你发的', images: [], at: Date.now(),
     messageId: 'm-' + Math.random(), replyTo, isAtMe: () => false,
   })
@@ -164,7 +164,7 @@ console.log('\n=== 3. 端到端：引用我的消息 → 按"被叫"处理（不
   {
     const { br, mem } = mk()
     const ev = {
-      scope: 'group:1', kind: 'group', groupId: '1', userId: '2', senderName: '番茄',
+      scope: 'group:1', kind: 'group', groupId: '1', userId: '2', senderName: '阿乙',
       text: '在吗', images: [], at: Date.now(), messageId: 'm-x', replyTo: '', isAtMe: () => true,
     }
     await br._handle(ev)

@@ -36,13 +36,13 @@ await ok('有旧人像 + 新摘要只有【事】→ 人像保留、话题更新
   const s = mkStore()
   const m = s.get('group:1')
   m.summary = renderPeople(
-    new Map([['2129024700', '2129024700 | 番茄 | 爱考据、揪年份']]),
+    new Map([['123450002', '123450002 | 阿乙 | 爱考据、揪年份']]),
     '之前在聊渲染',
   )
   m.merge('【事】\n换成聊祀的设定了')
   const people = parsePeople(m.summary)
   assert.equal(people.size, 1, '旧人像应被保留（以前会被整段冲掉）')
-  assert.ok(m.summary.includes('2129024700'), 'QQ 号应在')
+  assert.ok(m.summary.includes('123450002'), 'QQ 号应在')
   assert.ok(m.summary.includes('聊祀的设定'), '【事】应更新为新内容')
   assert.ok(!m.summary.includes('之前在聊渲染'), '旧【事】应被替换')
 })
@@ -76,7 +76,7 @@ await ok('新摘要带【人】→ 按 QQ 号覆盖，没提到的人保留', ()
 await ok('旧【人】段第一个人被保留在摘要文本里（parsePeople 认得出）', () => {
   const s = mkStore()
   const m = s.get('group:4')
-  m.summary = '【人】\n1095169608 | 风宝 | 只甩表情包\n\n【事】\n旧事'
+  m.summary = '【人】\n1095169608 | 阿甲 | 只甩表情包\n\n【事】\n旧事'
   m.merge('【事】\n新事')
   assert.equal(parsePeople(m.summary).size, 1)
   assert.ok(m.summary.startsWith('【人】'), '重新渲染后仍以【人】开头')

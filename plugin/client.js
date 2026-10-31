@@ -2637,7 +2637,7 @@ window.__ModuleLoader__.load({
       }
 
       // ⚠️ 2026-10-25 修：原来读 `mem.data.scopes`，但那是**字符串数组**
-      //    （["group:704291282", ...]）。对字符串取 `.scope` / `.messages`
+      //    （["group:123450001", ...]）。对字符串取 `.scope` / `.messages`
       //    全是 undefined，界面就显示成「undefined 条消息」——
       //    看着像记忆功能没生效，其实 2 个会话 17 条消息都在。
       //

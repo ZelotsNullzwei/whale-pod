@@ -162,7 +162,7 @@ await ok('配置关掉 → 一律不放行', () => {
 
 await ok('@我 + 发图 → 不当纯图片（交给决策层按被@处理）', () => {
   const b = mk()
-  const m = img({ text: '@3039392113 [图片]' })
+  const m = img({ text: '@123450003 [图片]' })
   assert.equal(b._shouldLookAtImage(m, mem([])), false)
 })
 
