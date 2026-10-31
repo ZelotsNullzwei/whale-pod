@@ -67,6 +67,33 @@ console.log('\n=== 4. 网关设置接口对 0 的处理 ===')
   check('传 99999 → 钳到 32768', clamp({ maxTokens: 99999 }) === 32768)
 }
 
+console.log('\n=== 5. bridge 层：0 要变成"大到等于不限"，不能靠上游默认 ===')
+{
+  /*
+   * ⚠️ 2026-10-30 改。这条锁的是 **bridge 层**，和上面 fallback/openai 的契约
+   * 故意不同：
+   *   · `toDshRequest`（openai 兼容层）：0 → `maxTokens` undefined（**不传**）
+   *   · `bridge`（QQ 回复）：0 → **显式发一个大值**（等价不限，但**不依赖
+   *     上游默认值**）
+   *
+   * 为什么改：magpie 对"不传"很慷慨（实测不传 / 16000 / 100000 都能正常出正文），
+   * 但**别的渠道可能默认 512** —— 推理一吃就空，用户看到的是「机器人不回话」。
+   * 用户的原话：「我们这个只是渠道问题，别人呢，直接调大吧」。
+   *
+   * ⚠️ "调大"必须**大**：配置注释里有实测，**中等值（4096）才是坑** ——
+   * 推理没有天然终点，它会一路顶到极限、正文一个字不剩。
+   */
+  const fs = await import('node:fs')
+  const src = fs.readFileSync(new URL('../src/qq/bridge.js', import.meta.url), 'utf8')
+  const m = src.match(/const UNLIMITED = (\d+)/)
+  check('bridge 有"等于不限"的大值常量（>= 8000，别用中等值）',
+    !!m && Number(m[1]) >= 8000, m?.[1] ?? '没找到')
+  check('0 / 空 → 发这个大值（而不是省略字段）',
+    /request\.maxTokens = Number\.isFinite\(mt\) && mt > 0 \? mt : UNLIMITED/.test(src))
+  check('旧的「0 → 不传」写法已不在',
+    !/if \(Number\.isFinite\(mt\) && mt > 0\) request\.maxTokens = mt/.test(src))
+}
+
 console.log('\n' + '='.repeat(46))
 console.log(`通过 ${pass} / 失败 ${fail}`)
 process.exit(fail === 0 ? 0 : 1)

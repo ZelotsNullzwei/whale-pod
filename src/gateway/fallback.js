@@ -182,7 +182,30 @@ export function createFallbackLlm(opts = {}) {
      * @param {AbortSignal} [o.signal]
      */
     async *stream(o = {}) {
-      const ch = byId.get(o.provider)
+      /*
+       * ⚠️ `provider` 为 undefined 时**不能直接报错**（2026-10-30 修）。
+       *
+       * 原来这里只有 `byId.get(o.provider)` + `没找到就吐 error`。
+       * 于是调用方只要**没传 provider**（比如决策层「跟随模型选择」时
+       * model 为空、provider 自然也是 undefined），就会拿到一个
+       * `未配置的渠道：undefined` 的 error chunk —— 上层拼出来是**空字符串**，
+       * 表现得像「模型什么都没回」。
+       *
+       * 实测：今天 `解析不出 verdict（原始=""）` **1037 次**，
+       * 全部降级到 rule，群聊「没 @ 我」一律沉默。
+       * 症状极具误导性：日志里只有"解析不出 verdict"，看不出是 provider 没传。
+       *
+       * 现在：没有 provider → 用**第一个已配置渠道**兜底（打 info 说明），
+       * 而不是让调用方莫名其妙拿到空内容。
+       * 真配错（provider 有值但不存在）仍然报错 —— 那才是真的配错了。
+       */
+      let ch = byId.get(o.provider)
+      if (!ch && !o.provider) {
+        ch = byId.values().next().value
+        if (ch) {
+          log('info', `网关：调用方没传 provider，兜底用第一个渠道 "${ch.id}"（模型 ${o.model ?? '默认'}）`)
+        }
+      }
       if (!ch) {
         yield errorChunk(`未配置的渠道：${o.provider}`)
         return
@@ -426,11 +449,27 @@ export function stripProviderPrefix(model, channelId) {
   const m = String(model ?? '')
   const id = String(channelId ?? '')
   if (!m || !id) return m
+  /*
+   * ⚠️ **循环剥离**（2026-10-30 修，一次真实事故）。
+   *
+   * 原来只剥**一层**。而用户从模型选择器里选出来的值是
+   * `magpie/magpie/workbuddy-ai/deepseek-v4.1-flash`（前缀重复两次），
+   * 剥完变成 `magpie/workbuddy-ai/deepseek-v4.1-flash` —— 上游 **404**。
+   *
+   * 后果链（实测 10 小时）：
+   *   404 → 响应没有 choices → 拼出空串 →
+   *   决策层「解析不出 verdict（原始=""）」→ 降级 rule →
+   *   群聊「没 @ 我」一律沉默 → 用户看到「它又沉默了」。
+   *
+   * 404 到上游只花 22~48ms，比正常调用（1300ms）快 30 倍，
+   * 但日志里只有"解析不出"，完全看不出是模型名错了。
+   */
+  let out = m
   const prefix = id + '/'
-  if (m.startsWith(prefix) && m.length > prefix.length) {
-    return m.slice(prefix.length)
+  while (out.startsWith(prefix) && out.length > prefix.length) {
+    out = out.slice(prefix.length)
   }
-  return m
+  return out
 }
 
 /** dsh 的 block 数组 → OpenAI 的 content（支持文本与图片）。 */

@@ -91,6 +91,12 @@ function makeBridge(opts = {}) {
     cfg: {
       enabled: true,
       allow: { private: [], groups: opts.groups ?? ['999'], allowAllWhenEmpty: false },
+      /*
+       * ⚠️ 关掉合并窗口（2026-10-30）。默认 1500 是**生产**要的
+       * （先等对方把话打完，见 bridge.js `_coalesceInbound`），
+       * 但这里专门测**串行/并发**那条路径，攒着不处理就测不出来了。
+       */
+      reply: { mergeWindowMs: 0 },
     },
     onebot: {
       connected: true, on() { return this },
@@ -404,7 +410,12 @@ console.log('\n=== 11. 私聊：连发多条也不能判过时 ===')
   const persona = new PersonaStore({ home: path.join(root, '.test-home-qq'), active: 'default' })
   persona.init()
   const bridge = new QQBridge({
-    cfg: { enabled: true, allow: { private: ['111'], groups: [], allowAllWhenEmpty: false } },
+    cfg: {
+      enabled: true,
+      allow: { private: ['111'], groups: [], allowAllWhenEmpty: false },
+      // 关掉合并窗口 —— 这里测的是生成途中连发的行为（见 _coalesceInbound）
+      reply: { mergeWindowMs: 0 },
+    },
     onebot: {
       connected: true, on() { return this },
       sendPrivate: async (u, t) => { sent.push(String(t)); return { status: 'ok', retcode: 0 } },

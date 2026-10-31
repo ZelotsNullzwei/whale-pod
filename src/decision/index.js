@@ -64,14 +64,31 @@ export function createDecisionLayer(cfg = {}, deps = {}) {
     const d = await registry.decide(input)
     const threshold = registry.threshold
     const pass = applyThreshold(d, threshold)
-    // 延迟：优先用 provider 给的；否则用配置区间随机
+    /*
+     * 延迟：优先用 provider 给的；否则**按这条消息有多难**挑档位
+     * （2026-10-30 加）。
+     *
+     * 用户的两句话：
+     *   · 「真人回消息不会每次都一样的时间」
+     *   · 「简单的就快速回，稍微难一点的就思考一点」
+     *
+     * 原来只有一个区间（800~3500 均匀随机）—— 实测 60 次「决策→发出」
+     * 全挤在 2~10 秒，**一次 <2 秒都没有**，这就是机械感的来源。
+     * 现在分三档，简单的能秒回、难的真的会"想一下"。
+     */
+    const tier = gradeDelayTier(input)
     let delayMs = d.delayMs
     if (pass && delayMs === undefined) {
-      const lo = cfg.delay?.min ?? 800
-      const hi = cfg.delay?.max ?? 3500
+      // 档位配置缺失时退回原区间 —— 老 config.json 里只有 {min,max}，
+      // 所以「normal」档和旧行为**逐字节等价**。
+      const t = (tier !== 'normal' && cfg.delay?.[tier]) || cfg.delay || {}
+      const lo = t.min ?? 800
+      const hi = t.max ?? 3500
       delayMs = Math.round(lo + (deps.random ?? Math.random)() * (hi - lo))
     }
-    return { ...d, reply: pass, delayMs: pass ? delayMs : undefined, threshold }
+    // ⚠️ 把档位带出去 —— 不然改完只能量"总时长"，
+    //    分不清是档位没生效还是生成变慢了。
+    return { ...d, reply: pass, delayMs: pass ? delayMs : undefined, threshold, delayTier: tier }
   }
 
   /** 决策结果的中文摘要（给日志和 Web UI 用）。 */
@@ -107,6 +124,79 @@ export function applyThreshold(d, threshold) {
   if (d.decided === true) return true                 // 已决，直接采信
   if (d.probability === undefined) return true         // 没给概率，按愿意处理
   return d.probability >= threshold
+}
+
+/**
+ * 这条消息「有多难」—— 决定回得多快。
+ *
+ * ## 用户的原话
+ *   · 「真人回消息不会每次都一样的时间」
+ *   · 「简单的就快速回，稍微难一点的就思考一点」
+ *
+ * ## 为什么需要它
+ * 原来只有一个区间（800~3500 均匀随机）。实测 60 次「决策→发出」：
+ * ```
+ * 最小 2.0s  中位 5.1s  最大 9.8s
+ * <2 秒: 0/60      ← 一次都没有
+ * >15 秒: 0
+ * ```
+ * 全挤在 2~10 秒 —— 这就是"每次都差不多"的机械感来源。
+ *
+ * ## 判据全是**免费的**
+ * 不额外调模型，只看这条消息的文字特征。
+ *
+ * ⚠️ 决策发生在**联网搜索之前**，所以这里拿不到"要不要搜"的信息，
+ *    只能从文字推（问句数量、疑问词、长度）。
+ *
+ * ⚠️ 这只是"回得多快"的一半 —— 另一半是 `bridge.js` 的**合并窗口**
+ *    （先等对方把话说完）。两者配合才是用户要的效果：
+ *    等他打完 → 简单的马上接、难的想一下。
+ *
+ * @param {object} input 决策层输入（`messages` 是最近的对话）
+ * @returns {'easy'|'normal'|'hard'}
+ */
+export function gradeDelayTier(input) {
+  const msgs = Array.isArray(input?.messages) ? input.messages : []
+  const last = msgs[msgs.length - 1]
+  const text = String(last?.text ?? '').trim()
+  // 去掉媒体标记再数 —— 「[表情包]」不算"内容多"
+  const bare = text
+    .replace(/\[(表情包(?::[^\]]*)?|表情:\d+|图片|SILENT)\]/g, '')
+    .trim()
+  const len = bare.length
+
+  /*
+   * ⚠️ **纯标点/空的先判掉**（「？」「？？？」「……」）。
+   *
+   * 第一版没这一步，于是「？？？」被下面的 `asks >= 2` 判成 hard ——
+   * 可它明显是"最简单的那种回复"，该秒回。
+   * 问号多 ≠ 问题难：一串问号只是"人呢？"。
+   */
+  const PUNCT_ONLY = /^[？?！!。.…~、，,\s]+$/
+  if (bare === '' || PUNCT_ONLY.test(bare)) return 'easy'
+
+  const asks = (bare.match(/[？?]/g) ?? []).length
+
+  /*
+   * ⚠️ **先判"难"，再判"简单"**（顺序是有意的）。
+   *
+   * 第一版写反了：`len <= 6 → easy` 放在前面，于是「为什么会这样」（6 字）
+   * 被判成 easy —— **短句永远走不到"难"那一支**。
+   * 短不等于简单：「为啥」「怎么办」就是要想一下的。
+   *
+   * ⚠️ 也别把裸「怎么」放进来：「怎么了」只是问"发生什么了"，
+   *    那该**快**回。所以只收「怎么办 / 怎么弄 / 怎么搞」这种求助形态，
+   *    再加「怎么回事」/「咋回事」这种"要解释"的。
+   */
+  const HARD =
+    /(为什么|为啥|怎么回事|咋回事|怎么会|怎么办|怎么弄|怎么搞|如何|是不是|真的吗|你觉得|解释|讲讲|说说|有什么(区别|不同)|哪个好|推荐|帮我|值得|应该选)/
+  if (asks >= 2 || HARD.test(bare) || len >= 60) return 'hard'
+
+  // ── 简单：极短、单纯的招呼 ───────────────────────────────
+  const SIMPLE = /^(哈+|嗯+|哦+|啊+|咦+|诶+|在吗|在不在|早|晚安|早上好|晚上好|你好)$/
+  if (len <= 6 || SIMPLE.test(bare)) return 'easy'
+
+  return 'normal'
 }
 
 /** 按配置决定尝试顺序。 */

@@ -389,7 +389,26 @@ export class ModelDecisionProvider extends DecisionProvider {
       // 只收正文。reasoning-delta 是草稿，里面三个词都可能出现，收了必误判。
       if (c?.type === 'text-delta' && c.text) chunks.push(c.text)
       else if (c?.type === 'text' && c.text) chunks.push(c.text)
+      /*
+       * ⚠️ 错误信号有**两种**形状（2026-10-30 修，一次真实事故）。
+       *
+       * `gateway/fallback.js` 的 `errorChunk()` 返回的是
+       *   { type: 'finish', reason: { kind: 'error', failure: { message } } }
+       * —— 也就是 dsh 流契约里的 **finish + error**，**不是** `type: 'error'`。
+       *
+       * 原来这里只判 `type === 'error'`，于是**上游任何错误都被静默吞掉**，
+       * `_ask` 返回空字符串，上层只看到「解析不出 verdict（原始=""）」。
+       *
+       * 实测代价：模型名写成双前缀 `magpie/magpie/…` → 上游 404（22~48ms）→
+       * 十个小时里 1037 次决策失败、全部降级 rule —— 而日志里
+       * **一个字都看不出是 404**，只写"解析不出"。
+       *
+       * 两种形状都认，错误信息才不会丢。
+       */
       else if (c?.type === 'error') throw new Error(c.message ?? c.error ?? 'llm error')
+      else if (c?.type === 'finish' && c?.reason?.kind === 'error') {
+        throw new Error(c.reason.failure?.message ?? c.reason?.message ?? 'llm error')
+      }
     }
 
     return chunks.join('')

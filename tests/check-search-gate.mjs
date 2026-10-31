@@ -12,7 +12,7 @@
  *     （宽规则会把「你玩过影之刃零吗」也拦掉 —— 它问的是外部作品，该搜）
  */
 import assert from 'node:assert/strict'
-import { needsFreshInfo } from '../src/gateway/search.js'
+import { needsFreshInfo, formatSearchContext } from '../src/gateway/search.js'
 
 let pass = 0
 let fail = 0
@@ -93,6 +93,54 @@ ok('源码里不许用「^(你|您|咱|我)」这种宽规则拦搜索', async (
     !/const\s+personal\s*=\s*\/\^\(你\|您\|咱\|我\)\//.test(src),
     '宽规则会误杀「你玩过X吗」，要用具体形态（complaint 正则）',
   )
+})
+
+// ── ② 搜索结果**怎么用**（2026-10-30 加）────────────────────
+/*
+ * 用户的原话：「少发一点，或者分开发短句」。
+ *
+ * 实测反例（那次的真实输出）：
+ *   [我]「这链接是《明日方舟》卫戍协议：盟约的组队邀请，房号 UXMP，
+ *        邀请人 Null_zwei，终极模拟模式，四人一队。」
+ *
+ * 四个要素全列 —— 那是**资料复述**，不是群聊说话。
+ * 原来只写「用你自己的口吻简短转述」，光说"简短"模型不知道短到哪，
+ * 所以要给**正反例**。
+ */
+const fakeResult = {
+  ok: true,
+  answer: '这是一个《明日方舟》卫戍协议：盟约的组队邀请，房号 UXMP，邀请人 Null_zwei，终极模拟模式，四人一队。',
+  sources: [{ title: '组队邀请', url: 'https://example.com/x' }],
+}
+
+ok('搜索结果注入：要点到「只挑一个点」，别列要素', () => {
+  const t = formatSearchContext(fakeResult)
+  assert.match(t, /只挑\*\*一个\*\*最该说的点/, '要有"只挑一个点"')
+  assert.match(t, /资料复述/, '要命名这个坏模式')
+})
+
+ok('搜索结果注入：给出正反例（光说"简短"没用）', () => {
+  const t = formatSearchContext(fakeResult)
+  assert.match(t, /✗ 反例/, '要有反例')
+  assert.match(t, /✓ 正例/, '要有正例')
+})
+
+ok('搜索结果注入：允许空行拆成多条短句', () => {
+  const t = formatSearchContext(fakeResult)
+  assert.match(t, /空一行拆成两三条短句/, '长内容要允许拆句')
+  assert.match(t, /发成多条消息/, '要说明上层真的会拆（否则模型以为是空话）')
+})
+
+ok('搜索结果注入：失败时返回空串（不注入噪音）', () => {
+  assert.equal(formatSearchContext({ ok: false, error: 'x' }), '')
+  assert.equal(formatSearchContext(null), '')
+})
+
+ok('⚠️ 源码锁：注入块必须保留「优先于训练记忆」', () => {
+  // 这条是 2026-10 早先就有的关键约束，别在改文风时顺手删掉
+  const t = formatSearchContext(fakeResult)
+  assert.match(t, /优先于你的训练记忆/, '要压过训练记忆（知识有截止日期）')
+  assert.match(t, /不要在群里贴长链接/, '别贴长链接')
 })
 
 console.log(`\n通过 ${pass} / 失败 ${fail}`)

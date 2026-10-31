@@ -125,7 +125,15 @@ console.log('\n=== 6. 端到端：消息 → 决策 → 生成 → 发送 ===')
     cfg: {
       enabled: true,
       allow: { private: [], groups: ['999'], allowAllWhenEmpty: false },
-      reply: { segment: false, maxChars: 500 },
+      /*
+       * ⚠️ `mergeWindowMs: 0` —— **关掉合并窗口**（2026-10-30）。
+       *
+       * 它默认 1500（生产要用：先等对方把话打完，见 bridge.js `_coalesceInbound`），
+       * 但那是"攒着等"的行为。这个用例测的是**立即处理**那条路径，
+       * 攒着不处理会全部超时/看不到回复。
+       * 合并本身的 16 条用例在 `check-coalesce.mjs`。
+       */
+      reply: { segment: false, maxChars: 500, mergeWindowMs: 0 },
       model: 'free/gemini/gemini-3.8-flash-medium',
     },
     onebot: fakeOnebot,

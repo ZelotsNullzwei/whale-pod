@@ -50,6 +50,57 @@ const DEFAULT_MAX_IMAGE_BYTES = 16 * 1024 * 1024
 export const SILENT = '[SILENT]'
 
 /**
+ * 「对方在指代一张图」的**强形式**（话里带"图"字）。
+ *
+ * ## 起因（2026-10-30 实测）
+ * ```
+ * 21:19:15 「[图片]」 → 已附图 → [我]「阿哈的祝福还带图配文？这待遇不低啊」   ✅ 看了
+ * 21:19:24 「[图片]」 → 已附图 → [我]「许愿阿哈不歪，结果阿哈自己出皮肤了」     ✅ 看了
+ * 21:21:54 「这个」   → **没附图** → [我]「这图我这边糊成一团，看不清」   ← 用户报的问题
+ * ```
+ * 「这个」是**纯文本**，而附图规则只认"当前消息自带的图"—— 那条规则是
+ * 2026-10-27 为了修「发过一张图之后，接下来每条纯文本都重附旧图」故意收紧的。
+ * 收紧是对的，但**指代旧图时它手上就什么都没有**，只能回"看不清"。
+ *
+ * ## 为什么要分强弱两档
+ * 裸「这个 / 那个」在群聊里太常见，而且经常指的不是图（指一段话、一个链接）。
+ * 所以：
+ *   · 强形式（这条正则）→ 允许往前找 **6 条**
+ *   · 弱形式（`REFER_IMAGE_WEAK`）→ **只认紧挨着的前一条**
+ * 宁可漏（它就老实说"看不清"），也别乱挂一张不相干的图上去。
+ */
+export const REFER_IMAGE_STRONG =
+  /(这图|那图|这张图|那张图|这幅图|那幅图|图里|图上|看图|图片里|刚发的图|刚才那[张幅]?图|刚刚那[张幅]?图|上面那[张幅]?图|我发的[那这][张个幅])/
+
+/**
+ * 「对方在指代一张图」的**弱形式** —— 只认消息**开头**的指代词。
+ *
+ * 末尾的「这个」常常是语气词（「我喜欢这个」），开头的才更像"指着某样东西说"。
+ * 而且弱形式**只回溯 1 条**，所以哪怕判错，挂上的也是刚刚那条，代价小。
+ */
+export const REFER_IMAGE_WEAK =
+  /^[\s,，。:：]*[（(]?\s*(?:@\S{1,24}\s+)?(这个|那个|这张|那张|这图|那图)/
+
+/**
+ * 附的是「旧图」时的说明 —— 拼进 `extras`，排在 `mediaHint` **前面**。
+ *
+ * ⚠️ 为什么必须是**独立的**一段，而不是塞进 `mediaHint`：
+ * `mediaHint` 的前提是 `hasMedia`，而 `hasMedia` 是从文本里的 `[图片]` 标记
+ * 判出来的（见 `const hasMedia = /\[表情包|\[表情:|\[图片\]/...`）。
+ * 但**指代旧图的那种消息恰恰是纯文本** —— `hasMedia` 为 false，
+ * `mediaHint` 是空串。图附上去了却一句话都没交代，
+ * 它就会把这张旧图当成"刚发给它的"来评论，答非所问。
+ */
+export const IMG_REFER_NOTE = `## ⚠️ 这次附的图是**旧的**
+
+对方这条消息里**没有图**，但它的话在指代一张图（「这个 / 那张 / 图里…」），
+所以我把**上面某条消息里发过的那张图**一起给你了。
+
+- 先确认它指的就是这张 —— 对得上就正常接话
+- **对不上就直说**「没看到你说的那张图」，别硬凑
+- 别把这张图当成"刚发给你的"去评论`
+
+/**
  * 把系统提示 + 历史，组装成 dsh-llm 认的 messages 数组。
  *
  * 抽成独立函数是为了**能被直接测试** —— 这里踩过两个导致"全渠道失败"的坑：
@@ -1424,6 +1475,24 @@ export class QQBridge {
     // 阻塞），并给每个 scope 一个单调递增的序号。
     const seq = this._recordInbound(msg)
 
+    /*
+     * ⚠️ 「对方连发几条短句 = 一个意思」的**合并窗口**（2026-10-30 加）。
+     *
+     * 用户的原话：
+     *   · 「我现在发消息习惯发几条短句表达一个意思」
+     *   · 「回复太快了我打字跟不上」
+     *
+     * 症状（日志实测，22:43）他连发：
+     *   还早吧 / 11点过再睡 / 嗯 / 嗯 / 鱼鱼晚安
+     * **每一条都走了一次完整决策 + 一次回复** —— 他还在打字，它已经回了。
+     *
+     * 放在这里（入队之前）而不是 `_handle` 里：同会话是串行的，
+     * 一旦进了队列第一条就开始生成了，那时候再合并已经晚了。
+     *
+     * 返回 true = 已攒着，直接 return —— 等窗口关闭后由 `_flushCoalesce` 统一处理。
+     */
+    if (this._coalesceInbound(msg, seq)) return
+
     // 记一次互动 —— 讨钱时要 @「最近跟它说话最多的人」。
     // 放在入口处（不受串行队列阻塞），这样排队中的消息也算数。
     if (!msg.isMe && msg.senderId && String(msg.senderId) !== String(this.selfId)) {
@@ -1453,6 +1522,261 @@ export class QQBridge {
    * @param {object} msg
    * @returns {number} 该 scope 内的单调递增序号（从 1 开始）
    */
+  /**
+   * 对方**此刻是不是正在打字**。
+   *
+   * 由 `_onNotice` 的 `notify/input_status` 喂数据（协议端每秒推 1~2 次），
+   * `_flushCoalesce` 用它决定"要不要再等等"。
+   *
+   * ⚠️ QQ **没有"停止输入"事件** —— 只有"正在输入"的持续推送。
+   *    所以"停手了"是靠 **TTL 推断**的：最后一次推送超过 `ttlMs`
+   *    没再来，就当他停下了。
+   *    这意味着**他打完字后最多还要等 ttlMs**（默认 4 秒）才回。
+   *    调小 → 反应快但可能又插嘴；调大 → 更稳但更慢。
+   *
+   * @param {string} userId 发送者 QQ 号
+   * @param {number} ttlMs 多久没再收到"正在输入"就算停了
+   * @returns {boolean}
+   */
+  _isTyping(userId, ttlMs = 4000) {
+    // 0 = 关掉这个判据（和 mergeWindowMs / typingHoldMs 的约定一致）
+    if (!(ttlMs > 0)) return false
+    const m = this._typing
+    if (!m || m.size === 0) return false
+    const key = String(userId)
+    const at = m.get(key)
+    const now = Date.now()
+    // 顺手清掉过期的（聊天的人多了不会把 Map 撑大）
+    if (m.size > 20) {
+      for (const [k, v] of m) if (now - v > ttlMs) m.delete(k)
+    }
+    if (!at) return false
+    if (now - at > ttlMs) {
+      m.delete(key)
+      return false
+    }
+    return true
+  }
+
+  /**
+   * 「对方连发几条短句 = 一个意思」的合并窗口（2026-10-30）。
+   *
+   * ## 用户的原话
+   *   · 「我现在发消息习惯发几条短句表达一个意思」
+   *   · 「回复太快了我打字跟不上」
+   *
+   * ## 症状（日志实测 22:43）
+   * 他连发：还早吧 / 11点过再睡 / 嗯 / 嗯 / 鱼鱼晚安
+   * **每一条都走了一次完整决策 + 一次回复** —— 他还在打字，它已经回了。
+   *
+   * ## 做法
+   * 同一个 (scope, 发送者) 的消息先攒在缓冲区，**静默 `mergeWindowMs`
+   * 之后**再合并成一条处理。对方继续发就重置计时。
+   *
+   * ⚠️ 三个上限不能少 —— 少了会**吞消息**或**无限等**：
+   *   · `mergeMaxCount`  攒够这么多条就不等了（防止对方刷一串把它拖住）
+   *   · `mergeMaxWaitMs` 从**第一条**算起的总上限（对方一直发也不能一直等）
+   *   · `mergeWindowMs = 0` 直接关掉这个功能（回旧行为）
+   *
+   * ⚠️ 只合并**同一个人**的连续消息 —— 群里别人的消息不能混进来。
+   *
+   * ⚠️ 被 @ 的消息用更短的窗口（`mergeAtWindowMs`）：人被叫会先看，
+   *    但也不该完全不等 —— 他可能 @ 完接着补一句。
+   *
+   * @param {object} msg 入站消息
+   * @param {number} seq 该消息的单调序号
+   * @returns {boolean} true = 已缓冲，调用方应直接 return
+   */
+  _coalesceInbound(msg, seq) {
+    /*
+     * ⚠️ **代码默认 0（不合并），生产靠配置给 1500**（2026-10-30）。
+     *
+     * 两层默认值不一样是**故意的**：
+     *   · `config/store.js` 的 DEFAULTS 里有 `qq.reply.mergeWindowMs: 1500`
+     *     —— 生产一定拿得到（`deepMerge(DEFAULTS, parsed)` 会补上）
+     *   · 这里默认 0 —— 直接 `new QQBridge({ cfg: {...} })` 的**测试**
+     *     不会莫名其妙被攒住（原来默认 1500 时，check-qq 里 5 处裸配置
+     *     全部超时，10 条断言挂掉）
+     *
+     * 所以"没显式配置"在**生产**里等于开、在**测试**里等于关，
+     * 各自都是想要的行为。
+     */
+    const win = Number(this.cfg.reply?.mergeWindowMs ?? 0)
+    if (!(win > 0)) return false
+    if (msg.isMe) return false
+    if (msg.__merged) return false
+
+    if (!this._pending) {
+      this._pending = new Map()
+      this._pendingTimers = new Map()
+    }
+    const who = String(msg.userId ?? msg.sender ?? '?')
+    const key = `${msg.scope}::${who}`
+
+    let buf = this._pending.get(key)
+    if (!buf) {
+      buf = { key, msgs: [], firstAt: Date.now(), lastSeq: seq, scope: msg.scope, who }
+      this._pending.set(key, buf)
+    }
+    buf.msgs.push(msg)
+    buf.lastSeq = seq
+
+    const maxCount = Number(this.cfg.reply?.mergeMaxCount ?? 6)
+    const maxWaitMs = Number(this.cfg.reply?.mergeMaxWaitMs ?? 4500)
+    const waited = Date.now() - buf.firstAt
+    const capped = waited >= maxWaitMs || buf.msgs.length >= maxCount
+    const atMe = Boolean(msg.atMe ?? msg.__atMe)
+
+    /*
+     * ⚠️ **自适应窗口**（2026-10-30 加）。
+     *
+     * `input_status` 是**主信号**（他打字就一直等，见 `_flushCoalesce`），
+     * 但它有个前提：**协议端得推**。实测 NapCat 推得很勤（一晚 1894 次），
+     * 可别的实现/别的客户端不一定推 —— 那时就只能靠窗口了。
+     *
+     * 而固定窗口猜不准节奏：实测他的间隔中位 **6 秒**，
+     * 1.5 秒窗口一次都抓不到（14 次间隔里 0 次 ≤1.5s）；
+     * 直接调到 6 秒又让"只发一条"也要干等 6 秒。
+     *
+     * 所以：
+     *   · 第一条        → `mergeWindowMs`（默认 1.5s，不耽误单条）
+     *   · **第二条一来** → 说明他在连发 → 换 `mergeBurstWindowMs`（默认 8s）
+     * 这样"单条快、连发等"两件事同时成立，不用猜。
+     */
+    const burstWin = Number(this.cfg.reply?.mergeBurstWindowMs ?? 8000)
+    const baseWin = buf.msgs.length >= 2 ? burstWin : win
+    // 被 @ 时窗口更短 —— 但只在**还没看出他在连发**时生效
+    const eff = atMe && buf.msgs.length < 2
+      ? Number(this.cfg.reply?.mergeAtWindowMs ?? 600)
+      : baseWin
+    const delayMs = capped ? 0 : eff
+
+    const t = this._pendingTimers.get(key)
+    if (t) clearTimeout(t)
+    this._pendingTimers.set(key, setTimeout(() => {
+      this._flushCoalesce(key)
+    }, delayMs))
+
+    // 只有攒到第二条才值得打日志 —— 单条走的是原路径
+    if (buf.msgs.length > 1) {
+      this.log.info?.(
+        `bridge：合并窗口 —— ${msg.scope} 的 ${who} 已连发 ${buf.msgs.length} 条`
+        + `${capped ? '（到上限，立即处理）' : `（静默 ${delayMs}ms 后一起处理）`}`,
+      )
+    }
+    return true
+  }
+
+  /**
+   * 把缓冲区里攒的消息合并成**一条**，走原来的入队路径处理。
+   * 由 `_coalesceInbound` 的定时器触发。
+   */
+  _flushCoalesce(key) {
+    const buf = this._pending?.get(key)
+    /*
+     * ⚠️ **先取缓冲、但别急着删**（2026-10-30 修）。
+     *
+     * 第一版把 `this._pending.delete(key)` 写在这儿 —— 也就是**在
+     * "他还在打字"判断之前**。于是要走"继续等"分支时缓冲已经空了，
+     * 重排的定时器醒来发现没东西 → **消息被悄悄丢掉**。
+     *
+     * 这正是"合并改主路径、丢消息风险最大"的那个风险，
+     * 被 `check-coalesce` 的「★ 他还在打字 → 不处理，继续等」抓到
+     * （断言"缓冲里还要有 1 条" → 0 !== 1）。
+     *
+     * 现在只在**真的要处理**时才删。
+     */
+    if (!buf || buf.msgs.length === 0) {
+      this._pending?.delete(key)
+      const t0 = this._pendingTimers?.get(key)
+      if (t0) clearTimeout(t0)
+      this._pendingTimers?.delete(key)
+      return
+    }
+    const t = this._pendingTimers?.get(key)
+    if (t) clearTimeout(t)
+    this._pendingTimers?.delete(key)
+
+    /*
+     * ⚠️ **他还在打字 → 继续等**（2026-10-30）。
+     *
+     * 这是「回复太快了我打字跟不上」的正解。固定窗口猜不准节奏
+     * （实测他的间隔中位 6 秒：1.5 秒窗口一次都抓不到，调到 6 秒
+     * 又让"只发一条"也等 6 秒），但协议端一直在推 `input_status`。
+     *
+     * 所以：窗口到点后**先看他还打不打字** —— 还在打就再排一次，
+     * 直到他停手（受 `typingMaxWaitMs` 保护，不会无限等）。
+     *
+     * ⚠️ QQ 没有"停止输入"事件，靠 TTL 推断（`typingHoldMs`，默认 4 秒）。
+     *    也就是说他打完字后最多再等 4 秒才回 —— 加上正常延迟档位，
+     *    观感上是"停手了才接话"。
+     */
+    const holdMs = Number(this.cfg.reply?.typingHoldMs ?? 4000)
+    if (holdMs > 0 && buf.who && this._isTyping(buf.who, holdMs)) {
+      const waited = Date.now() - buf.firstAt
+      const cap = Number(this.cfg.reply?.typingMaxWaitMs ?? 20000)
+      if (waited < cap) {
+        const t = this._pendingTimers.get(key)
+        if (t) clearTimeout(t)
+        this._pendingTimers.set(key, setTimeout(() => this._flushCoalesce(key), 700))
+        this.log.info?.(
+          `bridge：${buf.who} 还在打字 —— 继续等（已等 ${Math.round(waited / 1000)}s / 上限 ${Math.round(cap / 1000)}s）`,
+        )
+        return
+      }
+      this.log.info?.(`bridge：${buf.who} 打字超过 ${Math.round(cap / 1000)}s，不再等`)
+    }
+
+    // ⚠️ 到这里才**真的**把缓冲取走 —— 上面"继续等"的分支必须保留它，
+//    否则重排的定时器醒来会发现缓冲空了，消息就被丢掉了。
+    this._pending?.delete(key)
+    const msgs = buf.msgs
+    const merged = msgs.length === 1 ? msgs[0] : this._mergeBurst(msgs)
+    const seq = buf.lastSeq
+
+    if (msgs.length > 1) {
+      this.log.info?.(
+        `bridge：合并 ${msgs.length} 条 → 一条处理（${buf.scope}）「${String(merged.text ?? '')
+          .replace(/\n/g, ' / ').slice(0, 60)}」`,
+      )
+    }
+
+    const prev = this._queues.get(merged.scope) ?? Promise.resolve()
+    const next = prev.then(() => this._handle(merged, seq)).catch((e) => {
+      this.log.warn?.(`bridge：${merged.scope} 处理失败 — ${String(e?.message ?? e)}`)
+      this.stats.failed++
+    })
+    this._queues.set(merged.scope, next)
+    return next
+  }
+
+  /**
+   * 把连发的几条并成一条消息对象。
+   *
+   * 文本用**单个换行**连接（不是空行）—— 空行在 `splitMessage` 里是
+   * 「显式分段意图」，会被切成两条发出去，那就白合并了。
+   * 图片/表情取并集（去重），所以「说一句 + 发张图」也会被一起理解。
+   *
+   * 其余字段以**最后一条**为准（时间、messageId、@ 状态）。
+   */
+  _mergeBurst(msgs) {
+    const last = msgs[msgs.length - 1]
+    const texts = msgs.map((m) => String(m.text ?? '').trim()).filter(Boolean)
+    const images = []
+    const stickerRefs = []
+    for (const m of msgs) {
+      for (const r of m.images ?? []) if (!images.includes(r)) images.push(r)
+      for (const r of m.stickerRefs ?? []) if (!stickerRefs.includes(r)) stickerRefs.push(r)
+    }
+    return {
+      ...last,
+      text: texts.join('\n'),
+      images,
+      ...(stickerRefs.length ? { stickerRefs } : {}),
+      __merged: msgs.length,
+    }
+  }
+
   _recordInbound(msg) {
     const scope = String(msg.scope ?? 'unknown')
     if (!this._inbound) this._inbound = new Map()
@@ -1636,6 +1960,48 @@ export class QQBridge {
     // 没有这条日志的话，只能靠猜（实测踩过：反复等也不确定是没推还是没处理）。
     const nt = ev?.notice_type ?? '?'
     const st = ev?.sub_type ?? ''
+
+    /*
+     * ⚠️ **`notify/input_status` = 对方"正在输入"**（2026-10-30 接上）。
+     *
+     * ## 为什么这是最理想的信号
+     * 用户的原话：「回复太快了我打字跟不上」。
+     * 实测他打字**间隔中位 6 秒**，而机器人 4~5 秒就回了 ——
+     * 正好插在他打字的过程中。固定窗口猜不准这个节奏：
+     * 1.5 秒**抓不到任何一次**（14 次间隔里 0 次 ≤1.5s），
+     * 调到 6 秒又让"只发一条"也要等 6 秒。
+     *
+     * 但协议端**一直在推**这个状态：实测 23:38:18~23:38:27 连着推了
+     * 十几条（正好是他打字的那 10 秒），那一晚一共 **1894 次**。
+     * `_onNotice` 原来只处理 `poke`，这个信号**全被丢掉了** ——
+     * 所以 23:38:24 在他打字期间插了句「（点头）嗯，晚安」。
+     *
+     * 现在：记下"某人最后输入的时刻"，flush 前检查 ——
+     * **他还在打字就继续等，停手了才回**。
+     *
+     * ⚠️ QQ 只推"正在输入"，**没有"停止输入"事件** → 靠 TTL 推断
+     *    （见 `_isTyping`）。
+     *
+     * ⚠️ **这条必须放在下面那条通用日志之前**：它每秒推 1~2 次，
+     *    走 info 级会把日志刷爆（实测光这一个就是 3788 行）。
+     */
+    if (nt === 'notify' && st === 'input_status') {
+      const uid = String(ev?.user_id ?? ev?.operator_id ?? '')
+      if (uid) {
+        if (!this._typing) this._typing = new Map()
+        this._typing.set(uid, Date.now())
+        this.log.debug?.(`bridge：${uid} 正在输入`)
+      }
+      return
+    }
+
+    // 先把收到的**其他**通知记一条 —— 排查"为什么戳一戳没反应"时，
+    // 第一件要知道的事就是"协议端到底有没有把通知推过来"。
+    // 没有这条日志的话，只能靠猜（实测踩过：反复等也不确定是没推还是没处理）。
+    //
+    // ⚠️ 2026-10-30：加 input_status 分支时**误删了这两行**（替换那段时
+    //    new_string 只留了注释）。后果是 poke 等通知不再留痕 ——
+    //    正是这条日志要解决的"只能靠猜"。已补回，并有源码锁守着顺序。
     this.log.info?.(`bridge：收到通知 ${nt}${st ? '/' + st : ''}` +
       `（群 ${ev?.group_id ?? '-'}，操作者 ${ev?.user_id ?? '-'}，目标 ${ev?.target_id ?? '-'}）`)
 
@@ -2357,7 +2723,63 @@ export class QQBridge {
    * @param {Array} recent 最近的消息（升序）
    * @returns {Promise<Map<string, object>>} 原图片引用 → ImageBlock
    */
-  async _collectImages(recent) {
+  /**
+   * 对方这条消息**在指代一张旧图**时，挑出那张图；否则返回 null。
+   *
+   * ## 起因（2026-10-30 用户实测）
+   * ```
+   * 21:19:15 「[图片]」 → 已附图 → [我]「阿哈的祝福还带图配文？这待遇不低啊」  ✅ 看了
+   * 21:19:24 「[图片]」 → 已附图 → [我]「许愿阿哈不歪，结果阿哈自己出皮肤了」    ✅ 看了
+   * 21:21:54 「这个」   → **没附图** → [我]「这图我这边糊成一团，看不清」
+   * ```
+   * 「这个」是纯文本，而附图规则只认"当前消息自带的图"（2026-10-27 为了修
+   * 「发过一张图之后每条纯文本都重附旧图」故意收紧的）。收紧是对的，
+   * 但**指代旧图时它手上什么都没有**，只能回"看不清"。
+   *
+   * ## 为什么单独抽成一个方法（而不是写在 `_collectImages` 里）
+   * **调用顺序**：`_collectImages` 在 `_generate` 里很靠后才调，而
+   * 「这张是旧图」这件事必须**拼 system prompt 之前**就知道 —— 否则
+   * 模型会把旧图当"刚发给它的"来评论。所以 `_generate` 提前调这个方法。
+   *
+   * @param {Array} recent 历史消息（最后一条 = 当前这条）
+   * @returns {object|null}
+   */
+  _pickReferencedImage(recent) {
+    const cur = recent?.[recent.length - 1]
+    if (!cur || cur.isMe) return null
+    // 当前消息自带图 → 不需要回溯
+    if ((cur.images ?? []).length > 0) return null
+
+    const t = String(cur.text ?? '')
+    // 强形式回溯 6 条；弱形式（裸「这个」）只认紧挨着的前一条
+    const strong = REFER_IMAGE_STRONG.test(t)
+    const weak = REFER_IMAGE_WEAK.test(t)
+    if (!strong && !weak) return null
+
+    const back = strong ? 6 : 1
+    const win = recent.slice(Math.max(0, recent.length - 1 - back), recent.length - 1)
+    const cand = win.filter((m) => !m.isMe && (m.images ?? []).length > 0)
+    if (cand.length === 0) return null
+
+    /*
+     * 优先**同一个人**发的图 —— 指代通常指向自己刚发的那张。
+     * 群里「上面那张」也可能指别人的，所以没有同人的就退而取任意最近一张。
+     *
+     * ⚠️ 发送者字段两种形态都见过：`userId`（事件对象）和 `sender`
+     * （存进 memory 之后的形态）。只认一个会静默失去"同一人"这个判断。
+     */
+    const uid = (m) => String(m.userId ?? m.sender ?? '')
+    const mine = cand.filter((m) => uid(m) === uid(cur) && uid(m) !== '')
+    const pool = mine.length > 0 ? mine : cand
+    const pick = pool[pool.length - 1]
+    this.log?.info?.(
+      `bridge：对方在指代一张图（${strong ? '强' : '弱'}指代）—— 补上`
+      + `${mine.length > 0 ? '同一人' : '别人'}发的上一张（往前 ${recent.length - 1 - recent.indexOf(pick)} 条）`,
+    )
+    return pick
+  }
+
+  async _collectImages(recent, preRef) {
     const out = new Map()
     // 配置里显式关掉就不抓（省钱 / 模型不支持图片时）
     if (this.cfg.reply?.imagesEnabled === false) {
@@ -2390,12 +2812,25 @@ export class QQBridge {
      * 历史里的图对模型没用 —— 要看也只是「对方之前发过图」，
      * 那个信息已经在文本里了（`[表情包]` / `[图片]` 标记）。
      */
+    /*
+     * ⚠️ 2026-10-30 新增：**它在指代一张旧图时就补上**。
+     *
+     * 见 `REFER_IMAGE_STRONG` 的注释 —— 用户实测报的就是
+     * 「21:21:54「这个」→ 没附图 → 回"这图我这边糊成一团，看不清"」。
+     *
+     * ⚠️ `preRef` 为什么存在：**调用顺序**。
+     * `_collectImages` 是在 `_generate` 里很靠后（`history = mem.recent(30)` 之后）
+     * 才调的，而「这张是旧图、对方在指代」这件事必须**拼 system prompt 之前**
+     * 就知道（否则它会把旧图当刚发的评论）。所以 `_generate` 会**提前**
+     * 调一次 `_pickReferencedImage`，把结果作为 `preRef` 传进来。
+     * 不传（比如测试直接调 `_collectImages`）就自己算。
+     */
     const withImg = (() => {
       // history 的最后一条就是当前正在处理的这条消息
       const cur = recent[recent.length - 1]
       if (!cur || cur.isMe) return null
       if ((cur.images ?? []).length > 0) return cur
-      return null
+      return preRef !== undefined ? preRef : this._pickReferencedImage(recent)
     })()
     if (!withImg) return out
 
@@ -2828,6 +3263,16 @@ export class QQBridge {
     const lastMsg = mem.recent(1)[0]
     const lastText = String(lastMsg?.text ?? '')
     const hasMedia = /\[表情包|\[表情:|\[图片\]/.test(lastText)
+
+    /*
+     * ⚠️ 「对方在指代一张旧图」这件事必须**在这里**判断 —— 不能等到
+     * 下面的 `_collectImages`（那是很靠后的 `history = mem.recent(30)` 之后）。
+     *
+     * 因为 `extras` 里要放一句「这次附的图是旧的」（见 `IMG_REFER_NOTE`），
+     * 而 `extras` 在 `buildSystemPrompt` 时就用掉了。晚一步的话，
+     * 模型会把那张旧图当成"刚发给它的"来评论，答非所问。
+     */
+    const imgReferrer = this._pickReferencedImage(mem.recent(8))
     // 去掉媒体标记后还剩不剩文字（@ 段也算文字）
     const textPart = lastText
       .replace(/\[表情包(?::[^\]]*)?\]/g, '')
@@ -2849,7 +3294,7 @@ export class QQBridge {
      */
     const isStickerOnly = /\[表情包(?::[^\]]*)?\]/.test(lastText)
 
-    const mediaHint = hasMedia && this.cfg.reply?.mediaHint !== false
+    let mediaHint = hasMedia && this.cfg.reply?.mediaHint !== false
       ? (isStickerOnly
         // ── 纯表情包：看懂梗，自己说，不复述 ───────────────────
         ? `## 这条是表情包
@@ -2898,9 +3343,27 @@ export class QQBridge {
           : `## 这条消息只有一张图
 
 **先看清楚这张图画的是什么，再决定怎么回。**
+⚠️ 不管哪种情况，**回复都要短** —— 一两句话，别写成说明文。
 
 **① 图上有文字吗？**（截图、聊天记录、梗图上的字）
-有字就把那个意思点出来，那通常就是对方想给你看的。
+
+有字 → **看懂了，用一句话点出你最有反应的那一点。**
+
+⚠️ **只挑一个点，一两句话说完。真人看图不会做数据提取。**
+下面是**真实的反例**（都是它自己发过的，太长太满）：
+
+✗「财富 93 顶到天，战斗 68、生存 69、搜索 63、合作 67，五边形歪成一坨」
+✗「控制终端六个、金条六根、钻石鱼子酱六罐，表还收了五块，家底挺厚」
+✗「十六万的 AKS-74U，基础伤害 34，射速 533，配件看着挺全的」
+
+同一批图，**人话**应该长这样：
+
+✓「93% 都烧掉了，这号是真能造」← 只挑最扎眼那个数字，加一句反应
+✓「家底挺厚啊」← 一句反应就够了，数值不用报
+✓「那蛋黄都发绿了，煮过头了吧」← 挑一个点 + 带自己的判断
+
+**绝对不要**：把图上的数字/条目**清点一遍**、列属性表、复述整段文字。
+看到一堆数据时，**只挑最扎眼的一个**说，其余当没看见。
 
 **② 没字的话，这张图像不像你？** 对一下你自己的形象：
 深蓝长发、鲸鱼耳鳍、鲸鱼尾巴、白色女仆围裙、Q 版圆脸。
@@ -2927,6 +3390,11 @@ export class QQBridge {
       self,
       extras: [
         searchContext,
+        /*
+         * ⚠️ 指代旧图时，先交代"这张是旧的"（见 `IMG_REFER_NOTE`）。
+         * 独立成一段，不并进 mediaHint —— 后者对纯文本消息是空的。
+         */
+        imgReferrer ? IMG_REFER_NOTE : '',
         mediaHint,
         /*
          * ── 今日状态（抄自 X 上大肥鱼；作者说这是「活人感」最大来源）──
@@ -3001,20 +3469,29 @@ export class QQBridge {
          *
          * 但当时的解法选错了：不是"让人格闭嘴"，而是**把记账语义理清**。
          * 于是人格被剥夺了"要不要开口"的决定权 —— 用户的原话是
-         * 「太乖了」，实测后果是 **38% 的回复变成纯表情搪塞**
+         * 「太乖了」，实测后果是 **38% 的回复变成纯表情**
          * （被这句「无话可说时回个表情也比沉默好」直接教出来的）。
          *
          * 现在：
          *   · 上层判过"该不该接"这件事照旧告诉它（省得重复权衡）
          *   · 但**最终由它定**，可以说，也可以 [SILENT]
          *   · [SILENT] 记为 `persona-declined` —— 一种**正常结论**，不是矛盾
-         *   · 明确禁掉"用表情搪塞"：要么说话，要么沉默
+         *
+         * ⚠️ **2026-10-30 再修正**：上面那 38% 的**数字是对的，结论下错了**。
+         *
+         * 当时我把它读成"用表情搪塞（回避思考）"，于是在这里加了
+         * 「别用表情搪塞」。但用户的判断是：**表情包多发本来就正常**，
+         * 连着说了两次 ——「表情包多发其实可以」「这个还是想发就发吧」。
+         *
+         * 真正的问题从来不是"用了表情"，而是那句**「回个表情也比沉默好」**
+         * 把它变成了**默认逃生口**（无话可说 → 甩表情）。前者是正常的说话方式，
+         * 后者才是躲事。所以：**删掉频率约束，只留"别拿表情当避难所"的语义。**
          */
         '## 群里刚说到这句\n' +
         '上层已经判过「该不该接」，结论是接 —— 但**最终由你定**。\n' +
         '想接就接：接得住就接，接不住别硬凑。\n' +
         '真没什么想说的，就直接输出 [SILENT]（不算错，也不用解释）。\n' +
-        '⚠️ **别用表情搪塞** —— 那不是在说话。要么说一句，要么 [SILENT]。\n' +
+        '表情包想发就发 —— 只发一个表情也算回应，不用克制。\n' +
         '不用每次都周全：吐槽、抬杠、装没听懂、只回两个字，都行。',
         `## 上下文提示
 距你上次说话：${Number.isFinite(mem.sinceMyLast()) ? Math.round(mem.sinceMyLast() / 1000) + ' 秒' : '很久/还没说过'}
@@ -3045,7 +3522,9 @@ export class QQBridge {
      * 这就是「一张都没入库，按纯文本发送」那条日志的来源。
      */
     const history = mem.recent(30)
-    const imageCache = await this._collectImages(history)
+    // ⚠️ 把上面提前算好的「指代哪张图」传进去 —— 见 `_pickReferencedImage`。
+    //    不传的话它会自己再算一遍（结果一样，只是多打一行日志）。
+    const imageCache = await this._collectImages(history, imgReferrer)
 
     const messages = buildChatMessages({
       system,
@@ -3087,16 +3566,31 @@ export class QQBridge {
     const candidates = await this._candidatesAsync()
     if (candidates.length === 0) throw new Error('没有可用的 LLM 渠道')
 
-    // ⚠️ maxTokens：**0 / 空 = 不限制** —— 直接**不传这个字段**，
-    //    让上游用自己的上限（实测这样最快且正文正常）。
-    //
-    //    实测反直觉但很重要 —— 同一道题：
-    //      maxTokens=4096    68s  推理 8469 字  正文  0 字（被推理吃光）
-    //      不传（无限）      34s  推理 3997 字  正文 24 字
-    //    推理没有天然终点，给个中等上限它会一路顶到极限、正文全没。
+    /*
+     * ⚠️ maxTokens：**0 / 空 = 不限制**，语义保持不变，但**实现换了**
+     *    （2026-10-30）。
+     *
+     * 原来是**不传这个字段**，让上游用自己的上限。实测这样最快且正文正常：
+     *   maxTokens=4096    68s  推理 8469 字  正文  0 字（被推理吃光）
+     *   不传（无限）      34s  推理 3997 字  正文 24 字
+     * 推理没有天然终点 —— 给个**中等**上限它会一路顶到极限、正文全没。
+     *
+     * 但"不传"有个隐患：**完全依赖上游的默认值**。magpie 慷慨（实测
+     * 不传/16000/100000 都能正常出正文），可**别的渠道可能默认 512** ——
+     * 那种情况下推理一吃就空，用户看到的就是「机器人不回话」。
+     *
+     * 所以改成：0/空 → **显式发一个"大到等于不限"的值**。
+     * 2026-10-30 实测（带图，各 2 次）：
+     *   不传      正文 153/80 字   ✅
+     *   16000     正文 146/145 字  ✅
+     *   100000    正文 100/89 字   ✅
+     * 三者等价，但 16000 有明确下限、不靠上游施舍。
+     * **不要填中等值**（4096 那种）—— 那是这个参数唯一的坑。
+     */
     const mt = Number(this.cfg.maxTokens)
+    const UNLIMITED = 16000
     const request = { messages }
-    if (Number.isFinite(mt) && mt > 0) request.maxTokens = mt
+    request.maxTokens = Number.isFinite(mt) && mt > 0 ? mt : UNLIMITED
     // 推理等级：用户在侧栏「推理等级」下拉里选的。
     //
     /*

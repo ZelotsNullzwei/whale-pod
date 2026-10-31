@@ -437,7 +437,37 @@ export async function main(argv = process.argv.slice(2)) {
     }
 
     // ── 5. 决策层 ─────────────────────────────────────────────
-    const decision = createDecisionLayer(cfg.decision ?? {}, {
+    /*
+     * ⚠️ 「跟随模型选择」（2026-10-30 修，一次真实事故）。
+     *
+     * 面板上把 `decision.model.model` **留空**的语义是「跟模型选择器走」。
+     * 但 `ModelDecisionProvider._ask()` 是这么写的：
+     *
+     *   const model = this.cfg.model || undefined
+     *   const providerId = ... (model 为空 → undefined)
+     *   this.llm.stream({ provider: undefined, model: undefined, ... })
+     *
+     * → `fallback.js` 的 `byId.get(undefined)` 拿不到渠道 →
+     *   吐一个 `未配置的渠道：undefined` 的 error chunk →
+     *   决策层拼出来是**空字符串** → 「解析不出 verdict（原始=""）」→
+     *   降级到 rule → **群聊「没 @ 我」一律沉默**。
+     *
+     * 实测：今天 10 点到 20 点，`解析不出 verdict` **1037 次**，
+     * 15~20 点每小时 65~105 次 —— 用户看到的就是「它又沉默了」。
+     *
+     * 所以在这里把空模型**补成 qq 那边选的模型**，让 provider 能推出来。
+     */
+    const decisionCfg = { ...(cfg.decision ?? {}) }
+    if (!decisionCfg.model?.model) {
+      const follow = String(cfg.qq?.model ?? '').trim()
+      if (follow) {
+        decisionCfg.model = { ...(decisionCfg.model ?? {}), model: follow }
+        log.info(`决策层：未指定模型 → 跟随模型选择（${follow}）`)
+      } else {
+        log.warn('决策层：未指定模型，qq.model 也是空的 —— 会降级到 rule')
+      }
+    }
+    const decision = createDecisionLayer(decisionCfg, {
       credentials: creds,
       log,
       // 模型自主判断要用它。没传的话 provider 会在 probe() 里报「没有 LLM」
