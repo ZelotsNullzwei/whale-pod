@@ -15,6 +15,7 @@
  * （决策层那一半见 check-quote.mjs，别混。）
  */
 import assert from 'node:assert/strict'
+import fs from 'node:fs'
 import { buildChatMessages } from '../src/qq/bridge.js'
 import { makeMessage, normalizeQuote } from '../src/memory/short.js'
 import { resolveAddressee } from '../src/decision/rule.js'
@@ -149,6 +150,28 @@ ok('窗口内引用 → 仍按窗口里那条判（quote 不会盖掉它）', ()
   const cur = m({ text: '嗯', replyTo: 'in-win', quote: { sender: '阿乙', text: '错的' } })
   const r = resolveAddressee([mine, cur], self, [])
   assert.equal(r.who, 'me', `实际：${JSON.stringify(r)}`)
+})
+
+// ── 源码锁：面板也要看得到引用（2026-11-01） ────────────────
+//
+// ⚠️ 这条锁的来由：**输入端**早上就修好了（提示词里有引用内容），
+//    但**面板显示**没跟上 —— 一条正文为空的「纯引用」在界面上只剩空气泡，
+//    用户看着像"她收到一条空消息还不理人"。
+//    同一个功能在日志里是对的、在面板上像坏的。
+//    所以两边都锁住，免得以后谁改 `_record` 时把 quote 又丢掉。
+const bridgeSrc = fs.readFileSync(new URL('../src/qq/bridge.js', import.meta.url), 'utf8')
+const assetsSrc = fs.readFileSync(new URL('../src/web/assets.js', import.meta.url), 'utf8')
+
+ok('_record 会把 quote / replyTo 一起记下来（面板要显示）', () => {
+  const i = bridgeSrc.indexOf('_record(msg, decision, replyText, outcome)')
+  assert.ok(i > 0, '找不到 _record 方法')
+  const body = bridgeSrc.slice(i, i + 1800)
+  assert.match(body, /quote:/, '_record 里没有 quote 字段了 —— 面板会退回空气泡')
+  assert.match(body, /replyTo:/, '_record 里没有 replyTo —— 分不清「没引用」和「引用没取到」')
+})
+
+ok('面板会渲染 r.quote', () => {
+  assert.ok(assetsSrc.includes('r.quote'), 'assets.js 不再渲染 r.quote 了')
 })
 
 console.log(`\n通过 ${pass} / 失败 ${fail}`)

@@ -5234,6 +5234,27 @@ export class QQBridge {
       //    这里存**引用**（url / file_id），不存 base64 数据（会撑爆内存）。
       images: (msg.images ?? []).map(function(r) { return String(r).slice(0, 200) }),
       mentionsMe: this.selfId ? msg.isAtMe(this.selfId) : false,
+      /*
+       * ★ 被引用消息的内容（2026-11-01 补）。
+       *
+       * ⚠️ 原来这里**没有** quote —— 于是面板上一条「纯引用」（正文为空）
+       *    就渲染成一个**空气泡**，用户看着像"她收到一条空消息还不理人"。
+       *
+       * 而实际上提示词里**是有**这段内容的（见 `_resolveQuote` / `quoteLine`）：
+       * 输入那一侧早上就修好了，**显示这一侧没跟上** —— 于是同一个功能
+       * 在日志里是对的、在面板上像坏的。
+       *
+       * `replyTo` 也一起带上：光看 `quote === null` 分不清
+       * 「没有引用」和「引用了但内容没取到」，面板就没法如实说明。
+       */
+      quote: msg.quote
+        ? {
+          sender: String(msg.quote.sender ?? '').slice(0, 40),
+          text: String(msg.quote.text ?? '').slice(0, 160),
+          isMe: msg.quote.isMe === true,
+        }
+        : null,
+      replyTo: msg.replyTo != null ? String(msg.replyTo) : null,
       decision: {
         reply: decision?.reply,
         probability: decision?.probability,

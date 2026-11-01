@@ -2287,6 +2287,16 @@ export const CLIENT_JS = `
                 '<span class="chip ' + tone + '">' + label + '</span>' +
                 '<b>' + esc(r.senderName || '?') + '</b>' +
                 '<span class="txt-dim" style="font-size:12px">' + esc(r.text || '') + '</span>' +
+                // ★ 被引用消息的内容（2026-11-01）。不加这一行的话，一条
+                //   正文为空的「纯引用」就只剩空气泡 —— 用户看着像她收到空消息。
+                //   （后端一直有这段内容，只是以前没往面板上传。）
+                (r.quote
+                  ? '<span class="txt-dim" style="font-size:12px">（引用' +
+                    esc(r.quote.isMe ? '你' : (r.quote.sender || '某人')) + '：' +
+                    esc(r.quote.text || '') + '）</span>'
+                  : (r.replyTo
+                    ? '<span class="txt-dim" style="font-size:12px">（引用了一条消息，内容没取到）</span>'
+                    : '')) +
               '</div>' +
               (r.reply ? '<div class="note" style="margin:4px 0 0 4px">↳ ' + esc(r.reply) + '</div>' : '') +
               '<div class="note" style="margin-top:3px;font-size:12px">' +
