@@ -37,7 +37,7 @@ import { transcribeVideoCached } from './asr.js'
 import { buildBalanceHint } from './balanceHint.js'
 import { buildVarietyHint, buildExpressionHint } from '../persona/variety.js'
 import { currentSlot, renderDayPlan } from '../memory/dayPlan.js'
-import { fetchHotTopics, filterTopics } from './hot-topics.js'
+import { fetchHotTopics, filterTopics, fetchForum } from './hot-topics.js'
 
 /**
  * 单张图下载上限的兜底值。
@@ -221,13 +221,52 @@ export function buildChatMessages({ system, history = [], imageCache = new Map()
     return '（+' + fmtGap(gap) + '）'
   }
 
+  /*
+   * 把「这条在引用哪句话」渲染出来（2026-11-01）。
+   *
+   * ## 为什么必须进提示词
+   *
+   * 原来被引用消息的**内容**从来没进过 prompt —— `replyTo` 只有 id，
+   * 而这里一次都没读过它。于是：
+   *   · 引用的是窗口内的消息 → 那条本来就在上下文里，看着"能看见"
+   *   · 引用的是窗口外的消息 → 只剩一串数字，**完全不知道在说什么**
+   * 第二种就是用户反馈的「引用功能它看不见」。
+   *
+   * ## 放在哪
+   *
+   * 放在**说话人之后、正文之前**：引用是「他说的话」的一部分，
+   * 不是上一句。放到时间戳前面会让模型以为是另一个人插的嘴。
+   *
+   * ## 长度
+   *
+   * 截到 60 字。引用是**提示**不是正文，太长会挤掉真正要回答的内容。
+   */
+  const quoteLine = (m) => {
+    const q = m?.quote
+    if (!q) {
+      /*
+       * ⚠️ 有 replyTo 但取不到内容 —— 必须**如实说**，别当没发生。
+       *
+       * 照抄「图没加载出来」那条教训（见 _generate 里的说明）：
+       * 模型不知道自己在漏什么，就会把引用当普通发言答，答非所问。
+       * 告诉它"看不到了"，它至少会问一句「引用的是哪条」。
+       */
+      return m?.replyTo ? '（引用了一条消息，但内容没取到）' : ''
+    }
+    const body = String(q.text ?? '').replace(/\s+/g, ' ').trim()
+    const shown = body.length > 60 ? body.slice(0, 60) + '…' : body
+    // 引用自己的话要说「你」，和 describeMedia 里的称呼保持一致
+    const who = q.isMe ? '你自己' : (q.sender ? q.sender : '某人')
+    return shown ? `（引用${who}：${shown}）` : `（引用${who}）`
+  }
+
   return [
     // ① system 用数组块（见上）
     { role: 'system', content: [{ type: 'text', text: String(system ?? '') }] },
     ...history.map((m, idx) => {
       const mine = m.isMe
       const label = mine ? '' : `${m.senderName}: `
-      const blocks = [{ type: 'text', text: stamp(m, idx) + label + atToName(describeMedia(m)) }]
+      const blocks = [{ type: 'text', text: stamp(m, idx) + label + quoteLine(m) + atToName(describeMedia(m)) }]
       for (const ref of (m.images ?? [])) {
         const blk = imageCache.get(ref)
         if (blk) blocks.push(blk)
@@ -796,6 +835,14 @@ export class QQBridge {
      *    群聊里最烦的是转发新闻的机器人，这条是防线。
      */
     this.hotTopics = opts.hotTopics ?? null
+    /**
+     * **每天搜索次数的限额**（2026-11-01）。
+     *
+     * ⚠️ 原来那个 `maxUses` 是**死参数** —— 传进 `webSearch()` 但那里零处实现，
+     * 面板上写着「最多搜几次」却什么都不拦（实测某天搜 12 次，配置写 3）。
+     * 这个 `SearchQuota` 是真计数：写盘、跨天归零。
+     */
+    this.searchQuota = opts.searchQuota ?? null
     this.persona = opts.persona
     /**
      * 人物档案（可空）—— 按 **QQ 号**认人，昵称只当别名。     *
@@ -1394,6 +1441,39 @@ export class QQBridge {
        * `selfInterests` 非空时才是**显式覆盖**（强行指定兴趣，一般别用）。
        */
       const hotHint = this.hotTopics?.toPromptForProactive?.({ interest: selfInterests, limit: 5 }) ?? ''
+    /*
+     * ★ **订阅的吧**（2026-11-01）—— 单独一段，**不过滤**。
+     *
+     * ## 为什么不并进 `hotHint` 一起筛
+     * `hotHint` 是按「这个群/这个人关心什么」筛过的**全站热议**。
+     * 而订阅的吧是**用户自己指定**的垂直源 —— 他订「明日方舟吧」就是说
+     * "这个吧的内容我要"，**再按 interest 筛一遍等于把他的选择又judge了一次**。
+     *
+     * 实测那种筛法会把吧里的帖子筛掉大半（吧里的标题跟群摘要未必字面重合）。
+     *
+     * ## 但也不是无脑全给
+     * `forumItems` 里已经过一遍**黑名单**（地域/时政/灾难），而且每个吧只取前几条。
+     */
+    const forumTopics = this.hotTopics?.forumTopics?.(this.cfg.proactive?.tiebaForums ?? [], { limit: 5 }) ?? []
+    /*
+     * ⚠️ **2026-11-01 从"热帖列表"改成"词频"** —— 用户看过实际效果后的判断：
+     * **「热帖感觉没啥用」**。
+     *
+     * 对 —— 热帖排的是**累积回复数**：`[7894回复] 【记录帖】入坑五个月废新刀客塔`
+     * 可能是几周前的帖子，却永远排在"最近在聊什么"的头上。**热度 ≠ 当下**。
+     *
+     * 而裸标题又多是碎片（`捂嘴的还能说话吗`、`到底什么情况？`），
+     * 单看不知道在说什么。现在交给 `forumTopics` 压成几个词 ——
+     * **一个吧此刻反复出现的名字，就是它此刻在聊的东西**：
+     * ```
+     * · 明日方舟吧：塔露拉 / 设计师 / 冻河
+     * ```
+     * 实测这就是"这个吧现在在吵什么"（新角色塔露拉强度、策划被骂、另一个角色冻河）。
+     */
+    const forumHint = forumTopics.length
+      ? `## 你订阅的吧最近在聊什么\n`
+        + forumTopics.map((x) => `· ${x.forum}吧：${x.keywords.join(' / ')}`).join('\n')
+      : ''
       const sceneHint = sceneInterest
         ? `## 这个会话的人平时关心什么（挑的时候参考，别硬凑）\n${String(sceneInterest).slice(0, 240)}`
         : ''
@@ -1406,7 +1486,7 @@ export class QQBridge {
   （标题是「16强开打,谁是最靓表情包」→ 你说「最近那个表情包大赛你们看了没」）
 - **一条都不感兴趣 / 都不合适 → [SILENT]**。这不是失败，是正常。`
         : ''
-      const hintWithHot = [speakHint, hotHint, sceneHint, hotRule].filter(Boolean).join('\n\n')
+      const hintWithHot = [speakHint, hotHint, forumHint, sceneHint, hotRule].filter(Boolean).join('\n\n')
 
       // 私聊时 sender 就是对方；群里没有具体发言人，留空。
       const full = {
@@ -1608,36 +1688,90 @@ export class QQBridge {
   async _ensureHotTopics({ wait = true } = {}) {
     if (!this.hotTopics) return
     /*
+     * ⚠️ **订阅吧要独立检查**（2026-11-01）。
+     *
+     * 下面那段热议逻辑会**早退**（`fresh()` 没过期就直接 return），
+     * 如果把订阅吧塞在里面，热议新鲜时订阅吧就**永远不抓** ——
+     * 两者刷新节奏不同（热议 30 分钟，订阅吧 1 小时/吧），必须各查各的。
+     */
+    const forumJob = this._ensureForumTopics()
+    /*
      * ⚠️ **不是 `today()`，是 `fresh()`**（2026-10-31 改）。
      *
      * `today()` 只看「是不是今天」→ 一天只抓一次 → 实测 00:03 抓的榜，
      * 到 18:29 还在用（**18 小时前的热点**）。热点时效性最强，必须新鲜。
      * `fresh()` 默认 30 分钟，过期就重抓。
      */
-    if (this.hotTopics.fresh?.() ?? this.hotTopics.today()) return
-    if (!this._hotTopicsPending) {
-      this._hotTopicsPending = (async () => {
-        try {
-          const r = await fetchHotTopics()
-          if (!r.ok) {
-            this.log.warn?.(`热点：取失败（今天先不用）— ${r.error}`)
-            return
+    if (!(this.hotTopics.fresh?.() ?? this.hotTopics.today())) {
+      if (!this._hotTopicsPending) {
+        this._hotTopicsPending = (async () => {
+          try {
+            const r = await fetchHotTopics()
+            if (!r.ok) {
+              this.log.warn?.(`热点：取失败（今天先不用）— ${r.error}`)
+              return
+            }
+            const items = filterTopics(r.items).slice(0, 30)
+            if (items.length === 0) {
+              this.log.warn?.('热点：过滤后一条不剩（黑名单可能太严）')
+              return
+            }
+            this.hotTopics.setToday(r.source, items)
+            this.log.info?.(`热点：已取 ${items.length} 条（${r.source}，${r.ms}ms）`)
+          } catch (e) {
+            this.log.warn?.(`热点：出错（今天先不用）— ${String(e?.message ?? e)}`)
+          } finally {
+            this._hotTopicsPending = null
           }
-          const items = filterTopics(r.items).slice(0, 30)
-          if (items.length === 0) {
-            this.log.warn?.('热点：过滤后一条不剩（黑名单可能太严）')
-            return
-          }
-          this.hotTopics.setToday(r.source, items)
-          this.log.info?.(`热点：已取 ${items.length} 条（${r.source}，${r.ms}ms）`)
-        } catch (e) {
-          this.log.warn?.(`热点：出错（今天先不用）— ${String(e?.message ?? e)}`)
-        } finally {
-          this._hotTopicsPending = null
-        }
-      })()
+        })()
+      }
     }
-    if (wait) await this._hotTopicsPending
+    if (wait) await Promise.all([this._hotTopicsPending, forumJob].filter(Boolean))
+  }
+
+  /**
+   * 抓**订阅的贴吧**（2026-11-01）。
+   *
+   * ## 配置
+   * `config.json` → `proactive.tiebaForums: ["明日方舟", "原神"]`（手动加）。
+   *
+   * ## ⚠️ 一次只抓一个吧
+   *
+   * 三条理由，每条都是实测出来的：
+   * 1. **限频防封** —— 一条响应 386 KB，百度有反爬。抓狠了被封，
+   *    这个功能就整个废了。所以一个吧一小时最多一次（`forumFresh` 管）。
+   * 2. **别拖太久** —— 一个吧约 0.9s，3 个吧串行就 2.7s。
+   *    一轮只补一个，几分钟内自然补齐。
+   * 3. **失败不重试到底** —— 某个吧一直失败（改名/被封）也只试一次，
+   *    下一轮再来，不做自动重试循环。
+   *
+   * 失败静默：拿不到就跳过，**绝不影响**热议那条线。
+   */
+  async _ensureForumTopics() {
+    const forums = this.cfg.proactive?.tiebaForums
+    if (!Array.isArray(forums) || forums.length === 0) return
+    if (!this.hotTopics) return
+    if (this._forumPending) return this._forumPending
+    this._forumPending = (async () => {
+      try {
+        for (const name of forums) {
+          if (this.hotTopics.forumFresh(name)) continue   // 这个吧还新鲜
+          const r = await fetchForum(name)
+          if (r.ok) {
+            this.hotTopics.saveForum(r.name, r.items)
+            this.log.info?.(`贴吧订阅：${r.name}吧 ${r.items.length} 条（${r.ms}ms）`)
+          } else {
+            this.log.warn?.(`贴吧订阅：${name} 取失败 — ${r.error}`)
+          }
+          break   // ★ 一轮只抓一个
+        }
+      } catch (e) {
+        this.log.warn?.(`贴吧订阅：出错（忽略）— ${String(e?.message ?? e)}`)
+      } finally {
+        this._forumPending = null
+      }
+    })()
+    return this._forumPending
   }
   async onEvent(ev) {
     this.stats.received++
@@ -2419,6 +2553,74 @@ export class QQBridge {
     return 0
   }
 
+  /**
+   * 把「这条引用了谁（id）」补成「引用了什么（内容）」。
+   *
+   * ## 为什么要有这一步（2026-11-01）
+   *
+   * `parseMessage` 只能拿到被引用消息的 **id**（reply 段里就这一个字段）。
+   * id 够决策层判断「在跟谁说话」，但**不够回答**：
+   *
+   * ```
+   * 窗口内被引用 → 那条本来就在上下文里 → 看着"能看见"
+   * 窗口外被引用 → 只剩一串数字 → 完全不知道在说什么
+   * ```
+   *
+   * 用户反馈的「引用功能它看不见」命中的是第二种。
+   *
+   * ## 两条路
+   *
+   * ① 先在窗口里找 —— 零成本、零延迟，绝大多数引用都是刚聊过的
+   * ② 找不到再问协议端（`get_msg`）—— 要一次网络往返，所以**只在这条路走**
+   *
+   * 取到的东西挂在 `msg.quote` 上，随消息一起进短期记忆，
+   * 由 `buildChatMessages` 渲染成「（引用某某：……）」。
+   *
+   * @param {object} msg 规范化后的消息（要 `replyTo`）
+   * @param {object} mem 该会话的 ConversationMemory
+   * @returns {Promise<null|{sender:string, text:string, isMe:boolean, source:string}>}
+   */
+  async _resolveQuote(msg, mem) {
+    const id = msg?.replyTo != null ? String(msg.replyTo).trim() : ''
+    if (!id) return null
+
+    // ① 窗口里就有 —— 免费
+    const hit = mem.recent(30).find((m) => String(m.id ?? '') === id)
+    if (hit) {
+      return {
+        sender: hit.isMe ? '' : String(hit.senderName ?? ''),
+        text: String(hit.text ?? ''),
+        isMe: Boolean(hit.isMe),
+        source: 'memory',
+      }
+    }
+
+    // ② 滚出窗口了 —— 问协议端（带缓存：同一条被引用多次只取一次）
+    if (!this._quoteCache) this._quoteCache = new Map()
+    const cached = this._quoteCache.get(id)
+    if (cached) return cached
+
+    try {
+      const got = await this.onebot?.getMsg?.(id)
+      if (!got) return null
+      const q = {
+        sender: String(got.senderName ?? ''),
+        text: String(got.text ?? ''),
+        isMe: Boolean(this.selfId) && String(got.sender ?? '') === String(this.selfId),
+        source: 'get_msg',
+      }
+      this._quoteCache.set(id, q)
+      // 引用是短命信息，留太多没意义
+      if (this._quoteCache.size > 100) {
+        this._quoteCache.delete(this._quoteCache.keys().next().value)
+      }
+      return q
+    } catch (e) {
+      this.log.warn?.(`bridge：取引用消息失败（id=${id}）：${String(e?.message ?? e)}`)
+      return null
+    }
+  }
+
   async _handle(msg, seq) {
     /*
      * ⚠️ 记起点 —— 用来算「从收到消息到发出」的**总时长**（2026-10-31）。
@@ -2451,6 +2653,29 @@ export class QQBridge {
       // ⚠️ 补回（defer 重试）时会再次走这里 —— 同一条消息不能存两遍，
       //    否则记忆里出现重复，模型看到"用户连说了两次一样的话"。
       //    用 messageId 判重（它在一轮里唯一）。
+      /*
+       * ★ 把引用的**内容**取回来（2026-11-01）。
+       *
+       * 必须在 `mem.push` **之前** —— quote 要跟这条消息一起进记忆，
+       * 否则下一轮它就成了"一条没有引用的普通消息"，永远补不回来。
+       *
+       * 也必须在决策**之前** —— `resolveAddressee` 靠它判断「在跟谁说话」，
+       * 窗口外的引用原来是判 'unclear'（代码里写着「引用的消息已不在上下文里」），
+       * 现在有内容就能判准了。
+       */
+      const quote = await this._resolveQuote(msg, mem)
+      if (quote) {
+        msg.quote = quote
+        const preview = String(quote.text ?? '').replace(/\s+/g, ' ').slice(0, 40)
+        this.log.info?.(
+          `bridge：这条引用了${quote.isMe ? '我自己' : (quote.sender || '别人')}`
+          + `「${preview}」（来源=${quote.source}）`,
+        )
+      } else if (msg.replyTo) {
+        // 取不到也要留痕 —— 否则这类问题以后还是只能靠猜
+        this.log.info?.(`bridge：引用了 id=${msg.replyTo}，但内容没取到`)
+      }
+
       const alreadyInMemory = msg.messageId !== undefined
         && mem.recent(20).some((m) => String(m.id ?? '') === String(msg.messageId))
       if (!alreadyInMemory) {
@@ -2467,6 +2692,9 @@ export class QQBridge {
           // 之前这个信息只在 quotedMine 里用了一次就丢了，导致
           // 「小红：你今天怎么了？」（引用另一个群友）被判成在追问机器人。
           replyTo: msg.replyTo ?? null,
+          // 被引用消息的**内容**（不是 id）—— 生成层靠它看懂「引用的是哪句话」。
+          // 只有 id 的话，引用窗口外的消息就变成一串数字，模型答非所问。
+          quote,
         }))
       }
       /*
@@ -3514,12 +3742,29 @@ export class QQBridge {
     if (qqCfg.enabled !== false && this.searchKey && !biliContext) {
       const hit = needsFreshInfo(msg.text)
       if (hit.need) {
-        try {
+        /*
+         * ⚠️ **每天限额检查**（2026-11-01 加）。
+         *
+         * 用户问「每天限额搜索是不是没有生效」—— 查下来是**根本没这个功能**：
+         * 原来的 `maxUses` 只出现在 `webSearch()` 的 JSDoc 里，零处实现。
+         * 实测某天搜 12 次，配置写 3，什么都没拦。
+         * 而一次搜索约 ¥0.02，没有上限就是账单没上限。
+         *
+         * ⚠️ `take()` 必须在**真的要搜之前**调 —— 被拦下的那次不该计数。
+         */
+        const quota = this.searchQuota?.check(qqCfg.maxPerDay) ?? { ok: true, used: 0, max: 0 }
+        if (!quota.ok) {
+          this.log.warn?.(
+            `bridge：搜索：今天已达上限（${quota.used}/${quota.max}），跳过「${hit.query.slice(0, 30)}」`,
+          )
+        } else try {
+          this.searchQuota?.take()
           this.log.info?.(`bridge：需要联网（${hit.why}）→ 查「${hit.query.slice(0, 40)}」`)
           const r = await webSearch({
             question: hit.query,
             apiKey: this.searchKey,
-            maxUses: qqCfg.maxUses ?? 3,
+            // ⚠️ 删掉了 `maxUses` —— 那是死参数（传了没人读，见上面注释）。
+            //    「取几条来源」由 `webSearch` 内部的 `count` 管（默认 3）。
             timeoutMs: qqCfg.timeoutMs ?? 20000,
             log: (m) => this.log.info?.(`bridge：${m}`),
           })
@@ -4896,9 +5141,31 @@ export class QQBridge {
         this.log.info?.(`bridge：表情「${key}」→ 按标签命中 ${stickerKey(byTag).slice(-16)}`)
         return [{ type: 'image', data: { file: byTag } }]
       }
-      const idx = key
-        ? (hashStr(key) % faces.length)
-        : Math.floor(Math.random() * faces.length)
+      /*
+       * ⚠️⭐ **没命中标签就随机，不要用 hash**（2026-11-01 改）。
+       *
+       * ## 原来为什么用 hash
+       * 注释写着「同一个名字每次挑到同一张，看起来比较稳定」——
+       * 那是假设**名字是有效的**（"哭"就固定给那张哭脸）。
+       *
+       * ## 实际发生了什么（实测事故）
+       * 提示词里的例子写的是 `[表情包:猫猫]`，而**标签库里 54 张没有一张叫「猫猫」**
+       * （标签是"震惊/无语/嫌弃/得意…"这种情绪词）。于是：
+       * ```
+       * 模型照抄例子写「猫猫」 → 标签匹配 0 命中 → 落到 hash
+       * hashStr('猫猫') % 54 = 固定一个数 → ★ 永远同一张图
+       * ```
+       * 实测「猫猫」一天发了 3 次，**池子看起来就只有一张** —— 用户报的就是这个。
+       *
+       * ## 为什么随机是对的
+       * 走到这里说明**这个名字没有对应的图** —— 那"稳定"就没有任何价值，
+       * 只是把整套表情退化成一张。随机至少还在用整池子。
+       * （真人发收藏表情本来也不固定。）
+       */
+      const idx = Math.floor(Math.random() * faces.length)
+      if (key) {
+        this.log.info?.(`bridge：表情「${key}」标签没命中 → 从 ${faces.length} 张里随机一张`)
+      }
       return [{ type: 'image', data: { file: faces[idx] } }]
     }
 

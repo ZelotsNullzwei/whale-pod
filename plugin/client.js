@@ -258,10 +258,18 @@ window.__ModuleLoader__.load({
         'search.enabledHint': '关掉之后完全不联网，遇到不确定的会说不知道而不是硬编',
         'search.images': '顺便配一张封面图',
         'search.imagesHint': '聊到具体作品时会附一张图',
-        'search.maxUses': '最多搜几次',
-        'search.maxUsesHint': '每次搜索固定取 10 个网页；这个数字是上限',
+        'search.maxPerDay': '每天最多搜几次',
+        'search.maxPerDayHint': '超过就不搜了，等到第二天。填 0 = 不限',
         'search.lowBalance': '余额提醒阈值',
         'search.lowBalanceHint': '低于这个数（元）会让它念叨一句',
+        'section.forums': '贴吧订阅',
+        'section.forumsHint': '订几个你常混的吧，她说闲话时从这些吧找话题',
+        'forums.list': '订阅的吧',
+        'forums.listHint': '写吧名本身（带「吧」字也行）。一个吧一小时最多抓一次',
+        'forums.add': '＋ 添加一个吧',
+        'forums.remove': '删掉这个吧',
+        'forums.empty': '还没订。填几个吧名，比如「明日方舟」',
+        'forums.pending': '还没订 —— 点「＋ 添加一个吧」写个吧名试试',
         'model.strategy': '路由策略',
         'model.freeFirst': '免费优先 → 付费兜底',
         'model.freeOnly': '只用免费',
@@ -520,10 +528,18 @@ window.__ModuleLoader__.load({
         'search.enabledHint': 'When off, it will say it is not sure instead of making things up',
         'search.images': 'Attach a cover image',
         'search.imagesHint': 'Shows a poster when talking about a specific work',
-        'search.maxUses': 'Max searches per question',
-        'search.maxUsesHint': 'Each search returns 10 pages; this caps how many searches',
+        'search.maxPerDay': 'Max searches per day',
+        'search.maxPerDayHint': 'Beyond this it stops searching until tomorrow. 0 = unlimited',
         'search.lowBalance': 'Low-balance threshold',
         'search.lowBalanceHint': 'Below this amount (CNY) it will complain about tokens',
+        'section.forums': 'Tieba subscriptions',
+        'section.forumsHint': 'Subscribe to forums you hang out in; it draws smalltalk topics from them',
+        'forums.list': 'Subscribed forums',
+        'forums.listHint': 'Write the forum name without the 吧 suffix. Refreshed at most once per hour each',
+        'forums.add': '+ Add a forum',
+        'forums.remove': 'Remove this forum',
+        'forums.empty': 'Nothing subscribed yet. Try a name like 明日方舟',
+        'forums.pending': 'Nothing subscribed yet — click "+ Add a forum"',
         'model.strategy': 'Routing strategy',
         'model.freeFirst': 'Free first → paid fallback',
         'model.freeOnly': 'Free only',
@@ -2027,7 +2043,34 @@ window.__ModuleLoader__.load({
       const cfg = config.data?.config
       const qq = cfg?.qq ?? {}
       const dec = cfg?.decision ?? {}
-      const sr = cfg?.search ?? {}
+      /*
+       * ⚠️ **`search` 在两处都有 —— 必须合并读**（2026-11-01 修）。
+       *
+       * 实测：
+       * ```
+       * 顶层 search:  { lowBalanceCny: 2 }                        ← 只有这一项
+       * qq.search:    { enabled, images:false, maxUses:3, ... }   ← 机器人本体用的
+       * ```
+       * · **程序读** `this.cfg.search`（`this.cfg` = `qq`）→ 读的是 `qq.search` ✅
+       * · **面板原来只读顶层** `cfg.search` → 除了 `lowBalanceCny` 全是 `undefined`
+       *
+       * 后果是面板显示**默认值**而不是实际值。大部分"碰巧看着对"
+       * （`maxUses` 默认 3、`enabled` 默认 true，都等于现值），
+       * **唯一暴露的是 `images`**：实际 `false`，面板却显示**勾选** ——
+       * 用户看到「配图是开着的」，其实早关了。
+       *
+       * 顶层那个 `lowBalanceCny` 是**另一个用途**（余额提醒），不能丢，
+       * 所以两处**合并**，以 `qq.search` 为准。
+       */
+      const sr = { ...(cfg?.search ?? {}), ...(cfg?.qq?.search ?? {}) }
+      /*
+       * 订阅的贴吧（2026-11-01）。
+       *
+       * ⚠️ 它在**顶层** `proactive` 里（不在 `qq` 下）——
+       * 所以 `apply` 的键名是 `'proactive.tiebaForums'`，不是 `'qq.proactive...'`。
+       * 写错层就是老 bug 重演（写了不生效）。
+       */
+      const forums = Array.isArray(cfg?.proactive?.tiebaForums) ? cfg.proactive.tiebaForums : []
       const napcatInstalled = (backends.data?.installed ?? []).includes('napcat')
 
       /** 提交一个配置补丁；成功后刷新。 */
@@ -2333,12 +2376,13 @@ window.__ModuleLoader__.load({
               disabled: busy,
               onChange: (v) => apply({ 'search.images': v }),
             })),
-          h(Row, { label: t('search.maxUses'), hint: t('search.maxUsesHint') },
+          h(Row, { label: t('search.maxPerDay'), hint: t('search.maxPerDayHint') },
             h(TextField, {
-              value: sr.maxUses ?? 3,
+              value: sr.maxPerDay ?? 20,
               numeric: true,
               disabled: busy,
-              onCommit: (v) => apply({ 'search.maxUses': Number(v) || 3 }),
+              // ⚠️ 填 0 = 不限（**不是**"一次都不许"）—— 后端也是这么理解的
+              onCommit: (v) => apply({ 'search.maxPerDay': Number(v) || 0 }),
             })),
           h(Row, { label: t('search.lowBalance'), hint: t('search.lowBalanceHint') },
             h(TextField, {
@@ -2346,6 +2390,33 @@ window.__ModuleLoader__.load({
               numeric: true,
               disabled: busy,
               onCommit: (v) => apply({ 'search.lowBalanceCny': Number(v) || 2 }),
+            }))),
+
+        // ── 贴吧订阅 ──────────────────────────────────────────────────
+        //
+        // ⚠️ 为什么是**一个逗号分隔的输入框**，而不是「列表 + 加号按钮」：
+        //
+        // 这个配置的最终形态就是 `proactive.tiebaForums: ["明日方舟", "显卡"]`。
+        // 用列表要多三步（点加号 → 填 → 回车），还会多出「点了加号但没填」的空条目
+        // 状态；一个输入框改一次写一次盘，**步骤最少、没有中间态、没有半成品**。
+        //
+        // 分隔符认 顿号 / 逗号 / 分号 / 空格 —— 中文输入法下 `、` 很常见，不认会很难用。
+        // 末尾的「吧」字自动去掉（用户会顺手写成「明日方舟吧」）。
+        //
+        // ⚠️ 写的是 **`proactive.tiebaForums`**（顶层），不是 `qq.proactive...` ——
+        //    `proactive` 在顶层，写错层就是前面那个"改了不生效"的老 bug 重演。
+        h(Section, { title: t('section.forums'), hint: t('section.forumsHint') },
+          h(Row, { label: t('forums.list'), hint: t('forums.listHint') },
+            h(TextField, {
+              value: forums.join('、'),
+              placeholder: t('forums.pending'),
+              disabled: busy,
+              onCommit: (v) => apply({
+                'proactive.tiebaForums': String(v ?? '')
+                  .split(/[、,，;；\s]+/)
+                  .map((x) => x.trim().replace(/吧$/, ''))
+                  .filter(Boolean),
+              }),
             }))),
 
         // ── 决策与人格 ──────────────────────────────────────────────────

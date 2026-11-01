@@ -434,8 +434,28 @@ console.log('\n=== 8. 表情包挑选 ===')
   check('表情包 → image 段', pick?.[0]?.type === 'image', JSON.stringify(pick))
   check('用的是收藏表情的 URL', faces.includes(pick?.[0]?.data?.file), JSON.stringify(pick))
 
-  const again = await br._pickMface('猫猫')
-  check('同一名字挑到同一张（确定性）', JSON.stringify(pick) === JSON.stringify(again))
+  /*
+   * ⚠️ **2026-11-01 改**：这条原来断言「同一名字挑到同一张（确定性）」。
+   *
+   * 那个确定性是靠 `hashStr(key) % faces.length` 实现的 —— 本意是"名字有效时
+   * 固定给同一张，看着稳定"。但实测事故暴露了它的另一面：
+   * ```
+   * 提示词例子写 [表情包:猫猫] → 模型照抄
+   * 标签库里 54 张没有一张叫「猫猫」（标签是"震惊/无语/嫌弃"这种情绪词）
+   * → 落到 hashStr('猫猫') % 54 = 固定一个数 → ★ 永远同一张
+   * ```
+   * 结果「猫猫」一天发 3 次，**整套表情退化成一张**（用户报的就是这个）。
+   *
+   * 所以现在：**标签命中 → 确定**（正确的那张）；**没命中 → 随机**（至少还在用整池子）。
+   */
+  const picks = []
+  for (let i = 0; i < 30; i++) picks.push(JSON.stringify(await br._pickMface('猫猫')))
+  const kinds = new Set(picks)
+  check(
+    '标签没命中时**不该**固定同一张（否则整套表情退化成一张）',
+    kinds.size > 1,
+    `30 次只挑到 ${kinds.size} 种`,
+  )
 
   const noName = await br._pickMface('')
   check('没名字也能发（随机一张）', noName?.[0]?.type === 'image', JSON.stringify(noName))

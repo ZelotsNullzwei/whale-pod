@@ -43,6 +43,8 @@
  *
  * 文档：https://api-docs.deepseek.com/zh-cn/guides/search
  */
+import fs from 'node:fs'
+import path from 'node:path'
 import { fetchWithProxyFallback } from '../net.js'
 
 const SEARCH_ENDPOINT = process.env.DEEPSEEK_SEARCH_ENDPOINT
@@ -81,7 +83,23 @@ export function needsFreshInfo(text) {
   if (!t) return { need: false, why: '', query: '' }
 
   // ① 明确要求联网 / 搜索
-  const explicit = /(搜一下|搜索|搜搜|查一下|查查|帮我查|百度|谷歌|google|上网|联网|网上说|去网上|b?ing)/i
+  /*
+   * ⚠️ **不要裸的「搜索」「联网」**（2026-11-01 修）。
+   *
+   * 实测事故：用户在群里**讨论这个功能本身**
+   * ```
+   *   搜索bug 不知道为啥            → 命中「搜索」→ 拿去搜了一次
+   *   你今天调了58次api搜索          → 同上
+   * ```
+   * 「搜索」在这里是**名词**（在说"搜索功能"），不是在请求搜索。
+   *
+   * 所以只认**有宾语结构的请求式**：动词后面得跟得上东西。
+   * ```
+   *   帮我搜一下明日方舟 / 查一下RTX5090价格 / 百度一下这个bug   → 搜 ✅
+   *   搜索bug 不知道为啥 / 联网老是失败                        → 不搜 ✅
+   * ```
+   */
+  const explicit = /(搜一下|搜搜|搜索一下|帮我搜|帮我查|查一下|查查|查查资料|百度一下|百度|谷歌|google|上网查|联网查|网上查|去网上)/i
   if (explicit.test(t)) {
     return { need: true, why: '用户明确要求搜索', query: cleanQuery(t) }
   }
@@ -141,8 +159,33 @@ export function needsFreshInfo(text) {
    *    一句质问换来一张莫名其妙的图，观感非常怪。
    *    「你不是/你才/你刚」这类**指向对方刚才行为的反问**，
    *    不是在查资料，是在怼人。
+   *
+   * ⚠️ 2026-11-01 扩展：用户原话「**吃饭了吗那些日常问题都不该搜索**」。
+   *
+   *   判据不是"含某个词"，而是**这类问题的答案根本不在网上**：
+   *     · 问对方的**起居 / 状态 / 心情** → 网上查不到
+   *     · 问**本地当下**（吃了没、睡了吗）→ 网上查不到
+   *
+   *   ⚠️ 结构是「**动词 + 常见后缀**」，不能只写 `^吃`：
+   *   ```
+   *   吃饭了吗 / 吃了吗 / 吃什么了 / 睡了吗 / 干嘛呢     → 挡 ✅
+   *   吃鸡更新了吗                                    → `吃鸡` 不匹配 → 照搜 ✅
+   *   ```
+   *   （`吃` 后面必须跟「饭/过/了/没/什么」这类**寒暄后缀**，
+   *    所以问游戏「吃鸡」不会被误挡 —— 这是我第一版写错的地方。）
    */
-  const chitchat = /^你?(吃了|吃饭了|睡了|睡爽|醒了|起了|走了|来了|好了|行吧|好吧|在吗|忙吗|累吗|困吗|醒了吗|下班了吗|到家了吗)/
+  const chitchat = new RegExp('^(?:你)?(?:中午|晚上|早上|今天|现在|明天)?(?:'
+    + '吃(?:饭|过|了|没|什么|啥|饱|吗)|'
+    + '喝(?:水|了|没|什么|啥|吗)|'
+    + '睡(?:了|没|觉|醒|爽|着|好|吗)|'
+    + '醒(?:了|没)|起(?:床|了|来)|'
+    + '(?:下班|上班|上学|放学|回家|到家|休息|刷牙|洗澡)(?:了|没|吗|不)?|'
+    + '(?:忙|累|困|饿|渴|冷|热|开心|难过|无聊)(?:吗|不|了|呢)?|'
+    + '心情(?:好|不好|怎么|咋)?|'
+    + '(?:干嘛|干啥|做啥|在吗|在不在|在么)(?:呢|吗|不)?|'
+    + '(?:想我|喜欢我|爱我|讨厌我)(?:吗|不|了|呢)?|'
+    + '有事(?:吗|没|么)?'
+    + ')')
   /*
    * 状态 / 反问类 —— 不是求知。
    *
@@ -153,6 +196,16 @@ export function needsFreshInfo(text) {
    * 搜了只是一次 5~15 秒的等待 + 一次搜索费（当时余额 ¥0.86）。
    */
   const stateAsk = /(不好吗|不是(吗|嘛)|不香|不就|对不对|是不是啊|爽了|闲着|有事做|在干嘛|干嘛呢|还有吗|没了|没什么想|自我意识)/
+  /*
+   * ⚠️ **反问句「不是…吗」**（2026-11-01 加）。
+   *
+   * 实测漏网：「GPT变的比你大不是正常吗」—— 含「正常吗」但**有主语**，
+   * `bareAsk`（只认整句=形容词+吗）盖不着，于是被判成"在问某个东西好不好"搜了一次。
+   *
+   * 中文里「不是…吗」**基本就是反问**（语用上等于陈述），不是在求知。
+   * 「这不是BUG吗」「你不是刚说过吗」都不是在查资料。
+   */
+  const rhetorical = /不是.{0,8}吗|难道.{0,8}(吗|不成)|不就.{0,8}吗/
   const retort = /^(你不是|你才|你刚|不是才|不是刚|你没|你不是刚|你不是才)/
   /*
    * 「质问 / 抱怨」—— 在怼人，不是在查资料。
@@ -162,15 +215,52 @@ export function needsFreshInfo(text) {
    *    但问的是**外部作品**，是该搜的。漏搜（编事实）比多搜一次严重得多。
    */
   const complaint = /(你看不到|谁发的|你不|你都没|你非|你倒|你就)/
-  if (shortAsk && !chitchat.test(t) && !retort.test(t) && !stateAsk.test(t) && !complaint.test(t)) {
+
+  /*
+   * ⚠️ **元问题** —— 在确认对方刚说的话，不是在查资料（2026-11-01 加）。
+   *
+   * 实测账单：今天 9 次搜索里 4 次是这类，**一次约 ¥0.02，白花 44%**。
+   * 日志原文：
+   * ```
+   *   真的吗        [在问某个东西好不好]
+   *   是你吗        [在问某个东西好不好]
+   * ```
+   * 这类句子**没有可查的东西** —— 搜「真的吗」能搜到什么？
+   */
+  const metaAsk = /^(真的|是吗|对吧|是吧|当真|确定|你确定|不会吧|假的吧|真的假的|骗人|开玩笑|是你|不是你)/
+  /*
+   * ⚠️ **无主语的单形容词问句**（2026-11-01 加）。
+   *
+   * 判据是「**有没有主语**」：
+   * ```
+   * 祀强吗            → 问外部作品         → 该搜 ✅
+   * 这游戏好玩吗        → 有主语（这游戏）    → 该搜 ✅
+   * 好看吗 / 好玩吗     → 无主语             → 在问"眼前这个"（图/东西）→ 不搜 ❌
+   * 看不到吗 / 能看见吗  → 无主语             → 在问对方看不看得见    → 不搜 ❌
+   * ```
+   * 只认**整句就是「形容词 + 吗」**（`^…$`），所以「这图好看吗」这种
+   * **带主语的仍然会走 `shortAsk` 去搜** —— 不误杀。
+   */
+  const bareAsk = /^(好看|好玩|好吃|好喝|好听|好香|好棒|好厉害|舒服|厉害|牛|强|弱|行|可以|能|会|是|有|在|懂|知道|正常|真的|假的|看得见|看得到|能看到|能看见|看得清|能看清|看不见|看不到|看不见|听得见|听得到|能听到|听得清|闻得到)(吗|么|不|吧)[？?]?$/
+
+  /**
+   * 「**这根本不是在查资料**」的总判据 —— 两条路都要用它挡（2026-11-01）。
+   *
+   * ⚠️ 原来只有 `shortAsk` 那条路挡这些，`fresh && question` 那条**盖不着** ——
+   * 所以「今天做饭了吗」这类只要撞上时效词就会漏出去搜。
+   */
+  const notLookup = () => chitchat.test(t) || retort.test(t) || stateAsk.test(t)
+    || complaint.test(t) || metaAsk.test(t) || bareAsk.test(t) || rhetorical.test(t)
+
+  if (shortAsk && !notLookup()) {
     return { need: true, why: '在问某个东西好不好', query: cleanQuery(t) }
   }
-  if (fresh.test(t) && question) {
+  if (fresh.test(t) && question && !notLookup()) {
     return { need: true, why: '问的是时效性内容', query: cleanQuery(t) }
   }
 
   // ③ 出现"某模型/产品 + 存在性/真伪"的组合（我们踩过的坑）
-  if (/(真的|假的|存在|有没有|发布了|开放)/.test(t) && /[A-Za-z][A-Za-z0-9.\-]{2,}/.test(t)) {
+  if (/(真的|假的|存在|有没有|发布了|开放)/.test(t) && /[A-Za-z][A-Za-z0-9.\-]{2,}/.test(t) && !notLookup()) {
     return { need: true, why: '在问某个具体名字的真伪/存在', query: cleanQuery(t) }
   }
 
@@ -185,7 +275,17 @@ export function needsFreshInfo(text) {
   //   · 拉丁字母词（≥3 字符）      → 产品名 / 外文人名
   //   · 中文「XX的YY」「YY·XX」结构 → 常见人名/作品名形态
   const properNoun = detectProperNoun(t)
-  if (properNoun) {
+  /*
+   * ⚠️ **反问 / 日常寒暄时，提到的名字也不算"求知"**（2026-11-01 加）。
+   *
+   * 实测漏网：「GPT变的比你大**不是正常吗**」—— `notLookup()` 已判出是反问
+   * （不走 `shortAsk` 了），但**又走到这里**：里面有个外文词 `GPT`，
+   * `detectProperNoun` 认它是"具体名字" → 照样搜了一次。
+   *
+   * 反问句里提到的名字**不是在问它是什么** —— 「你不是刚说过吗」里的「你」
+   * 「这不是BUG吗」里的「BUG」，都不该拿去联网。
+   */
+  if (properNoun && !notLookup()) {
     return { need: true, why: `提到具体名字「${properNoun}」`, query: cleanQuery(t) }
   }
 
@@ -260,6 +360,18 @@ function detectProperNoun(t) {
      */
     'token', 'tokens', 'bug', 'emmm', 'emm', 'prompt', 'llm',
     /*
+     * ⚠️ **元讨论词**（2026-11-01 加）。
+     *
+     * 实测：用户在群里**跟我讨论我自己的实现**时，这些词被判成"具体名字"：
+     * ```
+     *   你后台的agent 也是你       → 提到具体名字「agent」→ 搜一次
+     *   你两都是4.1flash 你搜的     → 提到具体名字「flash」→ 搜一次
+     * ```
+     * 在**这个群**里，agent / flash / model 是"我俩在聊的东西"，
+     * 不是在问"它是什么" —— 跟 token 是口粮梗同一个道理。
+     */
+    'agent', 'agents', 'flash', 'model', 'models', 'skill', 'plugin', 'workflow',
+    /*
      * ⚠️ **URL 里的词不是"具体名字"**（2026-10-31）。
      *
      * 实测事故：一条 B 站分享 `【哔哩哔哩】https://b23.tv/xxx` 被判成
@@ -318,7 +430,24 @@ function detectProperNoun(t) {
   //
   //    ⚠️ 这里必须返回**字符串**（函数契约），不是 {need, why, query} 对象 ——
   //       之前写成返回对象，模板里拼出来是 "[object Object]"，日志完全看不懂。
-  const freshEntity = /(新[\u4e00-\u9fa5]{2,6}|[\u4e00-\u9fa5]{2,6}新[作番季版]|第[一二三四五六七八九十\d]+[季代期弹]|即将|预告|联动|复刻)/
+  /*
+   * ⚠️ 2026-11-01 收紧：原来第一分支是**裸的 `新[\u4e00-\u9fa5]{2,6}`** ——
+   *    任意「新 + 2~6 字」都算"新作品"。
+   *
+   * 实测账单：今天 9 次搜索里，这一条贡献了
+   * ```
+   *   那我给你加新功能去了   → 抽出「新功能去了」去搜（一次约 ¥0.02）
+   * ```
+   * 「新功能」「新衣服」「新手机」全都中招 —— 而设计意图只是抓
+   * 「新番 / 新作 / 新干员」这类**作品更新**。
+   *
+   * 所以改成**枚举作品类后缀**。实测漏搜风险很小：
+   * 真正有明确诉求的句子（「黑神话出新DLC了吗」）会走 `shortAsk`
+   * 那条路（含「吗」），不依赖这里。
+   *
+   * ⚠️ 顺带去掉裸的 `即将`（"我即将下班"也会中），`预告` 收成 `预告片`。
+   */
+  const freshEntity = /(新(?:番|作|干员|角色|版本|皮肤|卡池|赛季|武将|地图|剧情|活动|专辑|电影|剧集|模式|玩法|英雄|武器|装备|职业|门派|资料片|曲|歌)|[\u4e00-\u9fa5]{2,6}新[作番季版]|第[一二三四五六七八九十\d]+[季代期弹]|预告片|联动|复刻)/
   const freshHit = freshEntity.exec(t)
   if (freshHit && t.length <= 24) return freshHit[1]
 
@@ -389,7 +518,28 @@ function cleanQuery(t) {
 export async function webSearch(o) {
   const started = Date.now()
   const question = String(o.question ?? '').trim()
-  const count = Math.min(Math.max(Number(o.count) || 5, 1), 50)
+  /*
+   * ⚠️ **默认取 3 条，不是 5**（2026-11-01 改）。
+   *
+   * ## 依据：翻了一次真实账单
+   * 用户截图：今天 `消费 ¥0.18 / 58 次调用 / 56,602 tokens`。
+   * 逐项拆开对下来：
+   * ```
+   * tool-search 本身   40,242 tokens   72%   ← 大头，按检索量算
+   * 总结（chat）       16,360 tokens   28%
+   *                  ─────────
+   *                   56,602          ✅ 和账单分毫不差
+   * ```
+   * **一次搜索 ≈ 6,300 token ≈ ¥0.02**（原来以为的「¥0.005/次」只是接口费，
+   * 返回内容的 token 另算，而且是**按 `count` 线性增长**的）。
+   *
+   * ## 为什么减少条数划得来
+   * 聊天场景里，**3 条来源足够把一件事说清楚**；5 条只是在重复同一个说法，
+   * 而且 `need_content: false` 已经在用摘要了 —— 多要两条收益很小，成本是实打实的。
+   *
+   * ⚠️ 调用方仍可通过 `o.count` 指定更多（上限 50），这里只改**默认值**。
+   */
+  const count = Math.min(Math.max(Number(o.count) || 3, 1), 50)
   const timeoutMs = o.timeoutMs ?? 25000
   const fail = (error) => ({
     ok: false, answer: '', sources: [], error,
@@ -652,4 +802,101 @@ export function formatSearchContext(r) {
     '  别一口气全塞进一条长消息。',
     '- 别照抄原文、别用 Markdown 标题、不要在群里贴长链接。',
   ].filter(Boolean).join('\n')
+}
+
+/**
+ * **每天搜索次数的限额**（2026-11-01 新加）。
+ *
+ * ## 为什么要有这个
+ *
+ * 用户问：「**这样看了，每天限额搜索是不是没有生效**」——
+ * 查下来答案是：**根本不存在这个功能**。
+ *
+ * 原来配置里有个 `maxUses`，面板上写着「最多搜几次」，
+ * 但它在 `webSearch()` 里**只出现在 JSDoc，零处实现** ——
+ * 传进去就没人读了。实测某天搜了 **12 次**，配置写的是 3，什么也没拦。
+ *
+ * 而**一次搜索实际约 ¥0.02**（`tool-search` 返回内容的 token 按条数算，
+ * 不是那个 ¥0.005 的接口费）。没有上限 = 账单没有上限。
+ *
+ * ## 为什么按"天"而不是"每次对话"
+ * 一天聊几百条，按会话计数等于没有上限。按天算才对应**真实的花钱节奏**。
+ *
+ * ## 计数写盘（不是内存）
+ * ⚠️ 内存计数会被重启清零 —— 而这个插件**开发期一天重启几十次**，
+ * 那样等于没限额。所以落 `<data>/search-usage.json`，跨天自动作废。
+ */
+export class SearchQuota {
+  /**
+   * @param {object} opts
+   * @param {string} opts.home  数据目录
+   * @param {object} [opts.log]
+   */
+  constructor(opts = {}) {
+    this.file = opts.home ? path.join(opts.home, 'search-usage.json') : null
+    this.log = opts.log ?? {}
+    /** @type {{day:string, count:number}} */
+    this.data = { day: '', count: 0 }
+    this._load()
+  }
+
+  /** 本地时区的 `YYYY-MM-DD`。（跨天要按**本地**算，不能按 UTC。） */
+  static todayKey(d = new Date()) {
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+  }
+
+  _load() {
+    if (!this.file) return
+    try {
+      if (!fs.existsSync(this.file)) return
+      const j = JSON.parse(fs.readFileSync(this.file, 'utf8'))
+      if (j && typeof j.day === 'string' && Number.isFinite(Number(j.count))) {
+        this.data = { day: j.day, count: Number(j.count) }
+      }
+    } catch (e) {
+      this.log.warn?.(`搜索限额：读取失败（忽略，从 0 开始）— ${String(e?.message ?? e)}`)
+    }
+  }
+
+  _save() {
+    if (!this.file) return
+    try {
+      fs.mkdirSync(path.dirname(this.file), { recursive: true })
+      fs.writeFileSync(this.file, JSON.stringify(this.data), 'utf8')
+    } catch (e) {
+      this.log.warn?.(`搜索限额：写入失败 — ${String(e?.message ?? e)}`)
+    }
+  }
+
+  /** 今天已经搜了几次（跨天自动归零，归零后会写一次盘）。 */
+  usedToday() {
+    const today = SearchQuota.todayKey()
+    if (this.data.day !== today) {
+      this.data = { day: today, count: 0 }
+      this._save()
+    }
+    return this.data.count
+  }
+
+  /**
+   * 还能不能搜。
+   *
+   * @param {number} maxPerDay 每天上限（`<= 0` 表示不限）
+   * @returns {{ok:boolean, used:number, max:number}}
+   */
+  check(maxPerDay) {
+    const used = this.usedToday()
+    const max = Number(maxPerDay)
+    // ⚠️ 没配 / 配 0 / 配负数 → 视为**不限**（别把用户的"关掉"理解成"一次都不许"）
+    if (!Number.isFinite(max) || max <= 0) return { ok: true, used, max: 0 }
+    return { ok: used < max, used, max }
+  }
+
+  /** 记一次（**只在真的要搜之前调**，被拦下的不算）。 */
+  take() {
+    this.usedToday()   // 先确保跨天重置
+    this.data.count += 1
+    this._save()
+    return this.data.count
+  }
 }

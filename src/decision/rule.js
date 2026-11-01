@@ -657,7 +657,7 @@ const REFERENTIAL_OPENING = /^(那|那么|所以|然后|还有|可是|但是|不
  * （这正是原来 0.97 的 bug），判成 'other' 会让它该接的时候装死。
  * 交给上层按"弱信号"处理，两边都不极端。
  *
- * @param {Array<{isMe?:boolean, sender?:string, senderName?:string, text?:string, replyTo?:string, id?:string}>} msgs
+ * @param {Array<{isMe?:boolean, sender?:string, senderName?:string, text?:string, replyTo?:string, id?:string, quote?:{sender?:string, text?:string, isMe?:boolean}}>} msgs
  *   历史消息（升序，最后一条是当前这条）
  * @param {object} [self] {qq, nickname, aliases}
  * @param {object[]} [peers] 已知群友 {id,name}[]（用于识别「别人的名字」）
@@ -676,7 +676,21 @@ export function resolveAddressee(msgs, self, peers) {
       if (quoted.isMe) return { who: 'me', why: '引用了我自己的消息' }
       return { who: 'other', why: `引用了${quoted.senderName ?? '别人'}的消息` }
     }
-    // 引用的那条不在记忆窗口里：没法确认是谁。
+    /*
+     * 引用的那条不在记忆窗口里 —— 但 bridge 可能已经把**内容**取回来了
+     * （见 bridge `_resolveQuote`：窗口外会走 `get_msg`）。
+     *
+     * 那就用取回来的内容判，别退回 'unclear'：
+     * 这里原来一律返回 'unclear'，理由写着「引用的消息已不在上下文里」——
+     * 于是「引用我昨天说的那句话」这种最明确的追问，反而被判成"不确定"，
+     * 机器人要么装死要么犹豫。现在有内容就能判准。
+     */
+    const q = last.quote
+    if (q) {
+      if (q.isMe) return { who: 'me', why: '引用了我自己的消息（窗口外，已取回内容）' }
+      if (q.sender) return { who: 'other', why: `引用了${q.sender}的消息（窗口外，已取回内容）` }
+      return { who: 'unclear', why: '引用的消息已不在上下文里，内容也没取到' }
+    }
     // 不能默认是「我」—— 那会让机器人抢答别人的引用回复。
     return { who: 'unclear', why: '引用的消息已不在上下文里' }
   }

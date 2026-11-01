@@ -19,6 +19,8 @@ import { CLIENT_CSS, CLIENT_JS } from './assets.js'
 import { ICONS } from './icons.js'
 import * as fallbackMod from '../gateway/fallback.js'
 import { resolveCandidates, openFirstAvailable, applyFreeOrder, PROVIDER_MODEL_HINTS } from '../gateway/router.js'
+// 搜索限额（每天最多几次）—— 和 QQ 那侧共用同一份计数文件
+import { SearchQuota } from '../gateway/search.js'
 // 决策层热更新要用（改 decision.provider 后不必重启）
 import { createDecisionLayer } from '../decision/index.js'
 
@@ -1985,6 +1987,14 @@ async function startQqBridge({ store, state, log, decision, memory, longMemory, 
     const { QQBridge } = await import('../qq/bridge.js')
 
     const onebot = new OneBotClient(cfg.qq.onebot ?? {}, { log })
+    /*
+     * 搜索限额（2026-11-01）。
+     *
+     * ⚠️ 从文件读计数，所以这里**再 new 一个也安全** —— 和 `index.js` 那侧
+     *    共用同一份 `<数据目录>/search-usage.json`。（实际只有一个 bridge 在跑，
+     *    不会真的并发写。）
+     */
+    const searchQuota = new SearchQuota({ home: store.home, log })
     const b = new QQBridge({
       cfg: {
         ...cfg.qq,
@@ -2000,6 +2010,7 @@ async function startQqBridge({ store, state, log, decision, memory, longMemory, 
       longMemory,
       persona,
       usage,
+      searchQuota,
       searchKey: (() => {
         try { return creds?.get?.('DEEPSEEK_API_KEY') ?? null } catch { return null }
       })(),
@@ -2131,28 +2142,82 @@ async function whalePodCompat(o) {  const { sub, method, url, req, res, json, re
         }
         node[parts[parts.length - 1]] = v
       }
+      /*
+       * ⚠️⭐ **`search.*` 必须归位到 `qq.search.*`**（2026-11-01 修）。
+       *
+       * ## 原来错在哪
+       * 面板提交 `{'search.images': false}` → 上面那段展开成
+       * `{ search: { images: false } }` → **写到顶层 `search`**。
+       * 但**程序七处全读 `this.cfg.search`（`this.cfg` = `qq`）**：
+       * ```
+       * bridge.js:3648  this.cfg.search?.images !== false    ← 配图判据
+       * bridge.js:5101  this.cfg.search?.enabled !== false
+       * bridge.js:983 / 3611 / 3668 / 4448  this.cfg.search?.lowBalanceCny
+       * ```
+       * 顶层那份**没人读**。
+       *
+       * ## 后果（很难发现）
+       * 热更新那段会**临时把顶层合并进 liveBridge.cfg.search**，
+       * 所以**改完当时是生效的** —— 界面上开关拨了、行为也变了。
+       * 但**盘上写的是顶层**，**重启后从 `qq.search` 读 → 改动全丢**。
+       *
+       * 实测：用户改过「余额提醒阈值」，顶层留下 `{lowBalanceCny: 2}`；
+       * 而 `qq.search` 一直是默认值。因为默认值恰好也是 2，
+       * **"改了、丢了、看不出"** 三者同时成立，好久没人发现。
+       *
+       * ## 为什么不干脆让程序读顶层
+       * `DEFAULTS` 里 `search` 就在 `qq` 下（缩进 4），七处读法也都是 `this.cfg.search`。
+       * **顶层那份才是异类**，把它归位比改七处稳妥。
+       */
+      if (nested.search) {
+        nested.qq = nested.qq ?? {}
+        nested.qq.search = { ...(nested.qq.search ?? {}), ...nested.search }
+        delete nested.search
+      }
       store.update(nested)
       // 同 /status：只认 state.bridge，且要求 qq.enabled 为真。
       // 已关闭时把配置推给一个死掉的旧实例毫无意义。
       const liveBridge = store.get().qq?.enabled === true ? state.bridge : undefined
-      if (liveBridge && (nested.qq || nested.search)) {
+      if (liveBridge && nested.qq) {
         const q = store.get().qq ?? {}
-        if (nested.qq) {
-          if (q.allow) liveBridge.cfg.allow = { ...liveBridge.cfg.allow, ...q.allow }
-          if (q.model !== undefined) liveBridge.cfg.model = q.model
-          if (q.maxTokens !== undefined) liveBridge.cfg.maxTokens = q.maxTokens
-          if (q.effort !== undefined) liveBridge.cfg.effort = q.effort
-          if (q.reply) liveBridge.cfg.reply = { ...liveBridge.cfg.reply, ...q.reply }
-        }
-        // ⚠️ search.* 也必须推。
-        //
-        //    原来这个分支只判 `nested.qq`，于是侧栏里改「启用联网搜索」
-        //    写进了配置文件但**不推给运行中的 bridge** —— 界面上开关拨了，
-        //    实际还在搜（或反过来）。必须重启才生效，而用户根本不知道
-        //    要重启。
-        if (nested.search) {
-          liveBridge.cfg.search = { ...(liveBridge.cfg.search ?? {}), ...store.get().search }
-        }
+        if (q.allow) liveBridge.cfg.allow = { ...liveBridge.cfg.allow, ...q.allow }
+        if (q.model !== undefined) liveBridge.cfg.model = q.model
+        if (q.maxTokens !== undefined) liveBridge.cfg.maxTokens = q.maxTokens
+        if (q.effort !== undefined) liveBridge.cfg.effort = q.effort
+        if (q.reply) liveBridge.cfg.reply = { ...liveBridge.cfg.reply, ...q.reply }
+        /*
+         * ⚠️ search.* 也必须推。
+         *
+         *    原来这个分支只判 `nested.qq`，于是侧栏里改「启用联网搜索」
+         *    写进了配置文件但**不推给运行中的 bridge** —— 界面上开关拨了，
+         *    实际还在搜（或反过来）。必须重启才生效，而用户根本不知道
+         *    要重启。
+         *
+         * ⚠️ 2026-11-01 改：**源从 `store.get().search` 换成 `q.search`**。
+         *    因为上面那段现在会把 `search.*` 归位到 `qq.search`（写在盘上的也是那儿），
+         *    顶层那份不再更新。这里还读顶层的话，
+         *    **热更新推的就是过期值** —— 开关拨了但行为不变，正是这条注释当年要修的病。
+         */
+        if (q.search) liveBridge.cfg.search = { ...(liveBridge.cfg.search ?? {}), ...q.search }
+      }
+
+      /*
+       * ── `proactive` 的热更新（2026-11-01 补）──────────────────────
+       *
+       * ⚠️ **和上面 `search` 那个是同一类病**：
+       * `proactive` 在**顶层**（不在 `qq` 里），而上面那个块只判 `nested.qq`，
+       * 于是面板改「主动发言」的任何设置 —— **写进盘了，但不推给运行中的 bridge**。
+       * 用户看到「已保存」，行为一点没变，只能重启。
+       *
+       * 面板新加的「贴吧订阅」就在 `proactive` 里，所以这条**必须补**，
+       * 否则又造一个"改了要重启"的坑。
+       *
+       * 依据：`src/index.js` 构造 bridge 时**显式**带了 `proactive: cfg.proactive`
+       * （注释写着「必须显式带上，否则 bridge.cfg.proactive 是 undefined」），
+       * 所以这里整体替换即可 —— 那一层没有别处单独引用的子对象。
+       */
+      if (liveBridge && nested.proactive) {
+        liveBridge.cfg.proactive = store.get().proactive
       }
 
       // ── 决策层热更新 ──────────────────────────────────────────────

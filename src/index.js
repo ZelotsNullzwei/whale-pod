@@ -31,6 +31,7 @@ import { MemoryStore } from './memory/short.js'
 import { LongTermStore } from './memory/long.js'
 import { DayPlanStore } from './memory/dayPlan.js'
 import { HotTopicStore } from './qq/hot-topics.js'
+import { SearchQuota } from './gateway/search.js'
 import { PeopleStore } from './memory/person.js'
 import { StickerTagStore } from './qq/sticker-tags.js'
 import { PersonaStore } from './persona/store.js'
@@ -673,6 +674,18 @@ export async function main(argv = process.argv.slice(2)) {
     const hotTopics = new HotTopicStore({ home: store.home, log })
 
     /*
+     * **每天搜索次数的限额**（2026-11-01 加）。
+     *
+     * ⚠️ 用户问「每天限额搜索是不是没有生效」—— 答案是**根本没这个功能**：
+     * 原来的 `maxUses` 只出现在 JSDoc 里，零处实现（传进去没人读）。
+     * 而一次搜索实际约 ¥0.02，没有上限 = 账单没有上限。
+     *
+     * 计数落 `<home>/search-usage.json`，**跨天自动归零**。
+     * ⚠️ 必须写盘：开发期一天重启几十次，内存计数等于没限额。
+     */
+    const searchQuota = new SearchQuota({ home: store.home, log })
+
+    /*
      * 人物档案落盘。
      *
      * `touch()` 只改内存并标脏 —— 每条消息都写文件太浪费
@@ -880,6 +893,7 @@ export async function main(argv = process.argv.slice(2)) {
         dayPlan,
         generateDayPlan,
         hotTopics,
+        searchQuota,
         persona,
         people,
     // 收藏表情的标签（让 `[表情包:哭]` 能真的挑到"哭"）

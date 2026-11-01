@@ -249,7 +249,18 @@ async function handleChat(req, res, ctx) {
         const r = await webSearch({
           question: hit.query,
           apiKey: searchKey,
-          maxUses: 3,
+          /*
+           * ⚠️ 这里**故意不加**「每天上限」。
+           *
+           * `SearchQuota` 管的是 **QQ 机器人自动触发的搜索** ——
+           * 那是无人在场的自动行为，一天可能几十次，必须有闸门。
+           *
+           * 而这条路径是**用户在 DSH 里主动搜**的（人就在屏幕前看着），
+           * 他自己知道搜了几次、要不要搜。给他设限额只会碍事。
+           *
+           * （原来自这里传的 `maxUses: 3` 是**死参数** —— `webSearch()` 里
+           *   只出现在 JSDoc，零处实现。2026-11-01 删掉。）
+           */
           timeoutMs: 20000,
           log: (m) => log.info?.(`gateway: ${m}`),
         })

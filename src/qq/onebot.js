@@ -476,6 +476,45 @@ export class OneBotClient {
     }
   }
 
+  /**
+   * 取一条**历史消息**（OneBot v11 `get_msg`）。
+   *
+   * ## 为什么需要（2026-11-01）
+   *
+   * 用户引用回复时，事件里只带被引用那条的 **id**（见 `parseMessage` 的
+   * reply 段）。id 本身够决策层判断「在跟谁说话」，但**不够回答** ——
+   * 一旦被引用的消息已经滚出 30 条上下文窗口，机器人手里就只有一串数字，
+   * 完全不知道被引用的是什么。用户看到的就是「它看不见引用」。
+   *
+   * 所以窗口里找不到时，回来问协议端要原文。
+   *
+   * ⚠️ 超时要短。这条路径是在**回复之前**同步跑的，慢一秒就晚一秒说话。
+   *    实测 magpie 那边本来就偶尔要 5~7 秒，这里再叠几秒就难受了。
+   *
+   * @param {string|number} messageId
+   * @param {number} [timeoutMs]
+   * @returns {Promise<null|{id:string, sender:string, senderName:string, text:string, at:number}>}
+   */
+  async getMsg(messageId, timeoutMs = 4000) {
+    const id = String(messageId ?? '').trim()
+    if (!id) return null
+    const res = await this.callHttp('get_msg', {
+      // OneBot 的 message_id 通常是整数；非数字就原样传，别硬转成 NaN
+      message_id: /^\d+$/.test(id) ? Number(id) : id,
+    }, timeoutMs)
+    const d = res?.data ?? res
+    if (!d || d.message_id == null) return null
+    const parsed = parseMessage(d.message)
+    const senderId = String(d.sender?.user_id ?? '')
+    return {
+      id: String(d.message_id),
+      sender: senderId,
+      senderName: String(d.sender?.card || d.sender?.nickname || senderId || ''),
+      text: parsed.text,
+      at: Number(d.time ? d.time * 1000 : 0),
+    }
+  }
+
   /** 发群消息。优先 HTTP，失败回落 WS。 */
   async sendGroup(groupId, message, opts = {}) {
     const params = { group_id: Number(groupId), message, auto_escape: false, ...opts }

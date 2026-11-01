@@ -22,9 +22,32 @@ import path from 'node:path'
  *    读 `undefined.replayState` 直接抛错，整条请求失败。
  *    实测症状：私聊时好时坏 —— 历史里**有**自己说过的话就崩。
  */
+/**
+ * 把「被引用消息的内容」规整成固定形状。
+ *
+ * ⚠️ 和 `replyTo` 的分工要分清（2026-11-01）：
+ *   · `replyTo` 只有 **id** —— 给决策层判断「在跟谁说话」
+ *   · `quote`   是 **内容** —— 给生成层看懂「引用的是哪句话」
+ *
+ * 只有 id 时，引用一条**滚出窗口**的消息就变成了孤零零一串数字，
+ * 模型完全不知道被引用的是什么，只能当普通一句来答。
+ * 用户看到的症状就是「它看不见引用」。
+ *
+ * @param {null|{sender?:string, text?:string, isMe?:boolean}} q
+ * @returns {null|{sender:string, text:string, isMe:boolean}}
+ */
+export function normalizeQuote(q) {
+  if (!q || typeof q !== 'object') return null
+  const sender = String(q.sender ?? '').trim()
+  const text = String(q.text ?? '').trim()
+  // 既没有内容也没有说话人 → 等于没有引用，别占字段
+  if (!text && !sender) return null
+  return { sender, text, isMe: q.isMe === true }
+}
+
 export function makeMessage({
   id, sender, senderName, text, at, mentionsMe = false, isMe = false, images = [],
-  provider = null, model = null, replyTo = null,
+  provider = null, model = null, replyTo = null, quote = null,
 }) {
   return {
     id: String(id ?? `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`),
@@ -46,6 +69,15 @@ export function makeMessage({
      * `resolveAddressee`）。为 null 表示普通发言、没有引用。
      */
     replyTo: replyTo != null ? String(replyTo) : null,
+    /**
+     * 被引用那条消息的**内容**（不是 id，见 `normalizeQuote`）。
+     *
+     * 为 null 表示「没有引用」或「引用了但内容取不到」—— 两种都按
+     * 普通发言处理。真正取不到内容时，bridge 会在渲染层补一句
+     * 「引用了一条看不到的消息」，让模型知道自己漏了什么，
+     * 而不是把引用当没发生过、答得驴唇不对马嘴。
+     */
+    quote: normalizeQuote(quote),
   }
 }
 
