@@ -230,6 +230,19 @@ function isRhetorical(t) {
 }
 
 function detectProperNoun(t) {
+  /*
+   * ★ **整段是链接 / 含链接时，不当"专有名词"**（2026-10-31）。
+   *
+   * 光靠"前后紧邻 URL 字符"还不够：`b23.tv/1sA58D7` 结尾的 `sA58D7`
+   * 后面什么都没有，仍会被当成名字（实测 why=「提到具体名字「sA58D7」」）。
+   *
+   * 而"拿一条链接去联网搜"本来就是错的 —— 短链搜不到，只会返回一堆无关内容，
+   * 让模型以为"这个链接打不开"。
+   * ⚠️ 只有 B 站那类**能拿到真信息**的才特殊处理（由 `_biliContext` 负责）；
+   *    这里只保证**不因为链接而误触发搜索**。
+   */
+  if (/https?:\/\//i.test(String(t ?? ''))) return null
+
   // ① 书名号 / 各种引号包起来的 —— 几乎必然是作品名
   const quoted = /[《「『"'"]([^》」』"'"\n]{2,20})[》」』"'"」]/.exec(t)
   if (quoted) return quoted[1]
@@ -246,10 +259,30 @@ function detectProperNoun(t) {
      * → 白搜两次。在这个群里 token 是口粮梗，跟"查资料"毫无关系。
      */
     'token', 'tokens', 'bug', 'emmm', 'emm', 'prompt', 'llm',
+    /*
+     * ⚠️ **URL 里的词不是"具体名字"**（2026-10-31）。
+     *
+     * 实测事故：一条 B 站分享 `【哔哩哔哩】https://b23.tv/xxx` 被判成
+     * 「提到具体名字「https」」→ 拿短链去联网搜 → 搜不到 → 返回一堆无关内容
+     * → **模型以为"这个链接打不开"**（它真说了「短链跳不过去」）。
+     *
+     * 协议名 / 域名 / 常见短链站点 / 文件后缀，全排除。
+     */
+    'https', 'http', 'ftp', 'bilibili', 'b23', 'tv', 'com', 'cn',
+    'html', 'htm', 'json', 'yaml', 'toml', 'png', 'jpg', 'gif', 'webp',
   ])
   for (const m of t.matchAll(/[A-Za-z][A-Za-z0-9.\-]{2,}/g)) {
     const w = m[0]
     if (STOP.has(w.toLowerCase())) continue
+    /*
+     * ⚠️ 落在 **URL 内部**的词一律跳过（2026-10-31）。
+     * 光靠 STOP 词表不够 —— 短链的随机段（`1sA58D7`）也会被当成"名字"。
+     * 判断：这个词**前后紧邻**是不是 URL 字符（`/` `.` `:` `?` `=` `&` `#`）。
+     */
+    const i = m.index ?? 0
+    const before = t[i - 1] ?? ''
+    const after = t[i + w.length] ?? ''
+    if (/[\/:?=&#.]/.test(before) || /[\/:?=&#.]/.test(after)) continue
     // 全小写且很短的两个字母词多半是语气/缩写，跳过
     if (w.length <= 3 && w === w.toLowerCase()) continue
     return w

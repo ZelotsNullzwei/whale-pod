@@ -223,6 +223,59 @@ export class HotTopicStore {
     return this.data.day === todayKey() ? this.data : null
   }
 
+  /**
+   * 有多少时间内的**新鲜**热点（2026-10-31 加）。
+   *
+   * ## 为什么不能只用 `today()`
+   * `today()` 只看「是不是今天」—— 于是**一天只抓一次**：
+   * 实测 `hot-topics.json` 最后更新 **00:03**，到 **18:29** 还在用同一批，
+   * 等于拿 **18 小时前**的热点当"今天外面在聊什么"。热点时效性最强，
+   * 上午的榜到晚上早就凉了。
+   *
+   * @param {number} [maxAgeMs] 允许的最大年龄，默认 30 分钟
+   * @returns {object|null}
+   */
+  fresh(maxAgeMs = 30 * 60_000) {
+    const d = this.today()
+    if (!d) return null
+    if (!Number.isFinite(d.at)) return d
+    return Date.now() - d.at <= maxAgeMs ? d : null
+  }
+
+  /**
+   * 给**主动发言**用的热点 —— 按"**这个群/这个人关心什么**"筛选（2026-10-31）。
+   *
+   * ## 为什么不能直接给榜单前几条
+   * 用户原话：「**不是啥都分享**」。
+   *
+   * 把贴吧前四名无脑甩给它 → 它会在一个技术群里聊「表情包大赛」，
+   * 在私聊里聊别人的瓜 —— **变成没眼色的转发机器人**。
+   *
+   * ## 依据从哪来
+   * - **群**：这个群的摘要【事】（= 他们平时在聊什么）
+   * - **私聊 / @某人**：那个人的档案（`people.json` 的 impression + facts）
+   *   比如他是「在玩一款手游、周末要值班」，就挑游戏/校园相关的，别挑明星八卦。
+   *
+   * ## 筛不出来就不给
+   * `interest` 非空但一条都挂不上 → **返回空串**（→ 主动发言没有话头 → 沉默）。
+   * 这才是「不是啥都分享」。只有 `interest` 为空（拿不到依据）才退回按热度给。
+   *
+   * @param {{interest?:string, limit?:number}} [opts]
+   * @returns {string}
+   */
+  toPromptForProactive(opts = {}) {
+    const { interest = '', limit = 4 } = opts
+    const d = this.fresh() ?? this.today()
+    if (!d || !Array.isArray(d.items) || d.items.length === 0) return ''
+    const want = Math.max(1, Number(limit) || 4)
+    const hint = String(interest ?? '').trim()
+    // 有依据 → 按它筛；筛不出来就是空（不是啥都分享）
+    const items = hint ? pickRelevant(d.items, [hint], want) : d.items.slice(0, want)
+    if (items.length === 0) return ''
+    const lines = items.map((h) => `- ${h.title}`)
+    return `## 今天外面在聊什么（可以挑一条当话头）\n${lines.join('\n')}`
+  }
+
   /** 写入今天的热点。 */
   setToday(source, items) {
     this.data = { day: todayKey(), source: String(source ?? ''), at: Date.now(), items: items ?? [] }

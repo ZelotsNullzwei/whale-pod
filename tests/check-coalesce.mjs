@@ -349,5 +349,44 @@ ok('配置层要给生产 mergeBurstWindowMs（否则自适应失效）', async 
   )
 })
 
+/*
+ * ⚠️ **总上限必须大于连发窗口**（2026-10-31 修的真 bug）。
+ *
+ * 原来 `mergeMaxWaitMs = 4500` < `mergeBurstWindowMs = 8000`，
+ * 于是自适应**是死代码**：
+ * ```
+ * 第 1 条        → 窗口 1500ms
+ * 第 2 条（+5s） → waited=5000 ≥ 4500 → capped → delay=0 → 立即处理
+ * ```
+ * 8 秒的"连发窗口"**永远走不到**。实测日志全是
+ * 「已连发 2 条（**到上限**，立即处理）」—— 一次都没等到 8 秒。
+ *
+ * 而用户打字间隔**中位 6 秒**，4.5 秒封顶等于大部分连发还是被切成两次。
+ */
+ok('★ mergeMaxWaitMs 必须 > mergeBurstWindowMs（否则自适应是死代码）', async () => {
+  const { DEFAULTS } = await import('../src/config/store.js')
+  const r = DEFAULTS.qq?.reply ?? {}
+  assert.ok(
+    r.mergeMaxWaitMs > r.mergeBurstWindowMs,
+    `总上限(${r.mergeMaxWaitMs}) 必须大于连发窗口(${r.mergeBurstWindowMs})，` +
+      '否则 waited >= maxWait 先触发，连发窗口永远用不上',
+  )
+})
+
+await okAsync('★ 实测：隔 5 秒来的第二条不会被"上限"立刻吃掉', async () => {
+  const handled = []
+  const br = mkBridge(
+    { mergeWindowMs: 1500, mergeBurstWindowMs: 8000, mergeMaxWaitMs: 20000, typingHoldMs: 0 },
+    handled,
+  )
+  br._coalesceInbound(msg('一'), 1)
+  // 把 firstAt 往回拨 5 秒 —— 模拟"他隔 5 秒才发第二条"
+  br._pending.get('private:222::222').firstAt = Date.now() - 5000
+  br._coalesceInbound(msg('二'), 2)
+  await new Promise((r) => setTimeout(r, 80))
+  assert.equal(handled.length, 0, '★ 5 秒时不该被"上限"吃掉，要按 8 秒窗口继续等')
+  assert.equal(br._pending.size, 1, '还在缓冲里')
+})
+
 console.log(`\n通过 ${pass} / 失败 ${fail}`)
 process.exit(fail > 0 ? 1 : 0)

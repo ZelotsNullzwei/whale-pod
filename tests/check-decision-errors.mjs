@@ -118,5 +118,57 @@ ok('源码锁：_ask 必须处理 finish + reason.kind=error', async () => {
   assert.match(src, /reason\?\.kind === 'error'/, '必须判 finish 的 error 形状')
 })
 
+// ── wait 不能和 stop 一样是 0（2026-10-31）────────────────────
+/*
+ * ## 问题
+ * 原来 `probability: reply ? 1 : 0` —— 于是「先不接，还在听」（wait）
+ * 和「这段跟我无关」（stop）在**行为上完全没区别**（都是不回）。
+ *
+ * 但两者语义不同：
+ *   · `wait` = 话题还在，我可能接 → 后续消息**仍会重新判断**，不该退避
+ *   · `stop` = 这事我不参与     → 调用方会**降低后续概率**
+ *
+ * ## 连带问题（群聊不回）
+ * 日志实测最近 20 条群消息：**p=0.00 的 17 条**，`来源全是 model`。
+ * 加上提示词里那条「己方无法提供有价值的回应 → stop」，
+ * 决策层几乎一律闭嘴 —— 用户报「很明显和她讲话她不回」。
+ */
+
+ok('★ 源码锁：wait 必须给中间概率，不能和 stop 一样是 0', async () => {
+  const fs = await import('node:fs')
+  const src = fs.readFileSync(new URL('../src/decision/model.js', import.meta.url), 'utf8')
+  assert.match(src, /WAIT_PROBABILITY/, '要有单独的 wait 概率常量')
+  assert.match(
+    src,
+    /effective === 'wait' \? WAIT_PROBABILITY : 0/,
+    'wait 要走中间值，stop 才是 0',
+  )
+  assert.ok(
+    !/probability: reply \? 1 : 0/.test(src),
+    '不能再是二值 —— 那让 wait 和 stop 无法区分',
+  )
+})
+
+ok('★ 源码锁：群聊提示词不能再说「无法提供有价值的回应 → stop」', async () => {
+  const fs = await import('node:fs')
+  const src = fs.readFileSync(new URL('../src/decision/model.js', import.meta.url), 'utf8')
+  const at = src.indexOf('## 三个类别')
+  const seg = src.slice(at, at + 2600)
+  assert.ok(
+    !/己方无法提供有价值的回应/.test(seg),
+    '★ 这条会让它觉得"没啥可说"就闭嘴 —— 群聊里大部分话都是随口一句',
+  )
+  assert.match(seg, /不要因为「己方说不出有价值的话」就 stop/, '要明确禁止这条')
+})
+
+ok('★ 源码锁：拿不准时要偏向 wait/reply，不是 stop', async () => {
+  const fs = await import('node:fs')
+  const src = fs.readFileSync(new URL('../src/decision/model.js', import.meta.url), 'utf8')
+  const at = src.indexOf('## 硬性要求')
+  const seg = src.slice(at, at + 600)
+  assert.match(seg, /拿不准时选 wait 或 reply/, '要有这条倾向性')
+  assert.match(seg, /stop 会让己方后续退避/, '要说明为什么（stop 有退避代价）')
+})
+
 console.log(`\n通过 ${pass} / 失败 ${fail}`)
 process.exit(fail > 0 ? 1 : 0)

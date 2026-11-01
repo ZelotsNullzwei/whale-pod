@@ -285,7 +285,16 @@ console.log('\n=== 6b. 媒体标记的改写（别让模型去解说图）===')
   check('表情包 → 说明式文字 + 行为指引', describeMedia({ text: '[表情包:猫猫]' }).includes('（对方发了一个表情包，关于「猫猫」') && describeMedia({ text: '[表情包:猫猫]' }).includes('不要打字'),
     describeMedia({ text: '[表情包:猫猫]' }))
   check('无名表情包也说明 + 行为指引', describeMedia({ text: '[表情包]' }).includes('（对方发了一个表情包') && describeMedia({ text: '[表情包]' }).includes('不要打字'))
-  check('内置表情 → 带 id 的说明', describeMedia({ text: '[表情:4]' }).includes('（对方发了个QQ表情，id=4）'))
+  /*
+   * ⚠️ 2026-10-31：`describeMedia({text:'[表情:4]'})` 现在输出
+   * 「（对方发了个QQ表情：得意（id=4））」—— 多了**名字**。
+   * 原因：原来只给 id=4，模型不知道那是"得意"，只能盲选
+   * （实测它回了个"流泪"给发表情包的人，用户问「哭啥」）。
+   */
+  check('内置表情 → 带名字 + id 的说明', (() => {
+    const s = describeMedia({ text: '[表情:4]' })
+    return s.includes('得意') && s.includes('id=4')
+  })())
   check('图片 → 说明式', describeMedia({ text: '[图片]' }).includes('（对方发了一张图）'))
   check('普通文本不动', describeMedia({ text: '今天天气不错' }) === '今天天气不错')
   check('混排也能改', describeMedia({ text: '看这个[表情包:笑]哈哈' }).includes('（对方发了一个表情包，关于「笑」'))

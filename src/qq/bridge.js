@@ -31,6 +31,8 @@ import { extractFindImageMarkers, stripFindImageMarkers, resolveFindImage, findI
 import { extractBanMarkers, stripBanMarkers, validateBan, describeBanMinutes, extractNicknameMarkers, stripNicknameMarkers, validateNickname } from './groupAdmin.js'
 import { applyQuestionOverride } from './questionGate.js'
 import { shouldAnswerSticker } from './stickerGate.js'
+import { StickerTagStore, stickerKey, splitTags } from './sticker-tags.js'
+import { hasBiliLink, resolveBvid, fetchVideoInfo, fetchTopComments, fetchDanmaku, formatVideoContext } from './bilibili.js'
 import { buildBalanceHint } from './balanceHint.js'
 import { buildVarietyHint, buildExpressionHint } from '../persona/variety.js'
 import { currentSlot, renderDayPlan } from '../memory/dayPlan.js'
@@ -176,13 +178,46 @@ export function buildChatMessages({ system, history = [], imageCache = new Map()
     return Math.floor(hr / 24) + ' 天'
   }
   // 最新一条给「X 前」（相对现在）；更早的给「+X」（距下一条）
+  /*
+   * ⚠️ 渲染前把 `at` **单调化**（2026-10-31 修）。
+   *
+   * ## 问题
+   * `[我]` 的 `at` 是**推送完成时间**，`[他]` 是**收到时间** —— 两个基准混用。
+   * 而生成要几秒，于是时间会**倒流**（实测）：
+   * ```
+   * 13:27:33 [他] 吃这么好
+   * 13:27:50 [我] 吃得好点怎么了…     ← 回复
+   * 13:27:47 [他] 我就只吃了…         ← 用户消息，比回复更早，却排在后面
+   * ```
+   * 后果：`stamp()` 里 `nextAt > at` 不成立 → `gap = 0` → **那条消息没有时间标签**
+   * （实测 3/16 条自己的消息没标签），模型对节奏的感知是错的。
+   *
+   * ## 为什么不排序
+   * **数组顺序本身是对的** —— 它就是处理顺序 = 对话顺序。
+   * 按 `at` 排序反而会把对话打乱。所以只让**用于算间隔的时间序列**单调，
+   * 原数据一个字不动。
+   *
+   * ## 代价
+   * 极少数倒流的地方真实间隔会被压成 1ms —— 但总比"没有标签"好。
+   */
+  const monoAt = (() => {
+    let prev = 0
+    return history.map((m) => {
+      const v = Math.max(Number(m.at ?? 0), prev + 1)
+      prev = v
+      return v
+    })
+  })()
   const stamp = (m, idx) => {
-    const at = Number(m.at ?? 0)
+    const at = monoAt[idx]
     if (!at) return ''
     if (idx === history.length - 1) return '（' + fmtGap(nowMs - at) + '前）'
-    const nextAt = Number(history[idx + 1]?.at ?? 0)
+    const nextAt = monoAt[idx + 1] ?? 0
     const gap = nextAt > at ? nextAt - at : 0
-    return gap > 0 ? '（+' + fmtGap(gap) + '）' : ''
+    if (gap <= 0) return ''
+    // 单调化之后会出现 1ms 的间隔 —— 写成「+0 秒」像 bug，用「紧接着」更准
+    if (gap < 1000) return '（紧接着）'
+    return '（+' + fmtGap(gap) + '）'
   }
 
   return [
@@ -228,16 +263,54 @@ export function buildChatMessages({ system, history = [], imageCache = new Map()
  * 注意：**只在送给模型的副本里改**，记忆里存的还是原标记
  *（否则界面和日志会看不懂）。
  */
+/**
+ * QQ 系统小黄脸 id → 名字（标准表，0~99）。
+ *
+ * ⚠️ 为什么需要它（2026-10-31）：
+ * 原来只把 `[表情:5]` 渲染成 `id=5`，**模型根本不知道 5 是"流泪"**，
+ * 只能盲选。实测：对方发表情包，它回了一个流泪脸，用户问「哭啥」。
+ *
+ * 有了名字，它才知道自己发的是哭脸、对方的情绪是什么。
+ * 表是 QQ 官方那套固定顺序（0=惊讶、5=流泪、14=微笑…），不会变。
+ */
+const QQ_FACE_NAMES = (
+  '惊讶 撇嘴 色 发呆 得意 流泪 害羞 闭嘴 睡 大哭 尴尬 发怒 调皮 呲牙 微笑 难过 酷 冷汗 抓狂 吐 '
+  + '偷笑 可爱 白眼 傲慢 饥饿 困 惊恐 流汗 憨笑 大兵 奋斗 咒骂 疑问 嘘 晕 折磨 衰 骷髅 敲打 再见 '
+  + '擦汗 抠鼻 鼓掌 糗大了 坏笑 左哼哼 右哼哼 哈欠 鄙视 委屈 快哭了 阴险 亲亲 吓 可怜 菜刀 西瓜 啤酒 篮球 乒乓 '
+  + '咖啡 饭 猪头 玫瑰 凋谢 示爱 爱心 心碎 蛋糕 闪电 炸弹 刀 足球 瓢虫 便便 月亮 太阳 礼物 拥抱 强 弱 握手 胜利 抱拳 '
+  + '勾引 拳头 差劲 爱你 NO OK 爱情 飞吻 跳跳 发抖 怄火 转圈 磕头 回头 跳绳 挥手'
+).split(/\s+/)
+
+/** QQ 表情 id → 可读名字（认不出来就退回 id）。 */
+function faceName(id) {
+  const n = QQ_FACE_NAMES[Number(id)]
+  return n ? `${n}（id=${id}）` : `id=${id}`
+}
+
 export function describeMedia(m) {
   let t = String(m?.text ?? '')
+  /*
+   * ★ **自己发的要说「你」，不能一律「对方」**（2026-10-31 修）。
+   *
+   * 原来三个替换全写死「对方」—— 于是历史里**机器人自己发的表情也标成
+   * "对方发的"**。实测事故：
+   * ```
+   * 18:59:04 他「[表情包]」
+   * 18:59:06 我「[表情:5]」          ← 流泪
+   * 18:59:27 他「哭啥」
+   * 18:59:29 我「那表情是你发的吧」  ← 指着自己发的说"你发的"
+   * ```
+   * 根因就是这里没区分 `isMe`。
+   */
+  const who = m?.isMe ? '你' : '对方'
   /*
    * 表情包：换成一句话说明 + **明确的行为指引**。
    *
    * ⚠️ 光说「（对方发了一个表情包）」不够 —— 模型会去猜「这表情什么意思」
    *    「图里是谁」，然后一本正经地分析起来。实测它回过「这谁啊，又不是本鱼」。
    *
-   *    所以这里直接把「该怎么应对」写进去：别解读、别描述画面，
-   *    回个表情或者接一句情绪话就够了。真人就是这么反应的。
+   * 所以这里直接把「该怎么应对」写进去：别解读、别描述画面，
+   * 回个表情或者接一句情绪话就够了。真人就是这么反应的。
    */
   t = t.replace(/\[表情包(?::([^\]]*))?\]/g, (_all, name) => {
     const n = String(name ?? '').trim()
@@ -251,13 +324,19 @@ export function describeMedia(m) {
     const tail = '有字的梗图就懂意思、用自己的话接一句；'
       + '纯情绪图（没字）只回一个表情，不要打字也不要描述画面'
     return n
-      ? `（对方发了一个表情包，关于「${n}」。${tail}）`
-      : `（对方发了一个表情包。${tail}）`
+      ? `（${who}发了一个表情包，关于「${n}」。${tail}）`
+      : `（${who}发了一个表情包。${tail}）`
   })
-  // 系统小黄脸：保留 id（情绪信号），但说明它是表情
-  t = t.replace(/\[表情:(\d+)\]/g, (_all, id) => `（对方发了个QQ表情，id=${id}）`)
+  /*
+   * 系统小黄脸：**给出名字**，不再只给 id（2026-10-31）。
+   *
+   * 原来写的是 `id=${id}` —— 模型根本不知道 5 是"流泪"，只能**盲选**，
+   * 于是可能出现"对方发情绪图、它回一个哭脸"这种驴唇不对马嘴。
+   * 现在直接给名字；而且是它自己发的时，明确说「你的」。
+   */
+  t = t.replace(/\[表情:(\d+)\]/g, (_all, id) => `（${who}发了个QQ表情：${faceName(id)}）`)
   // 图片：说明是图，本体由 ImageBlock 承载
-  t = t.replace(/\[图片\]/g, '（对方发了一张图）')
+  t = t.replace(/\[图片\]/g, `（${who}发了一张图）`)
   return t
 }
 
@@ -413,9 +492,20 @@ export function cleanModelText(raw) {
   //      （对方发了一个表情包，关于「猫猫」）→ 删
   //      （对方发了一张图）                → 删
   //
-  //    ⚠️ 用「对方发了」作为锚点而不是「括号内任意内容」——
-  //       后者会误伤正常括号（「（笑）」「（认真脸）」）。
-  s = s.replace(/[（(]\s*对方发了[^）)]*[）)]/g, '')
+  /*
+   * ⚠️ **锚点要同时覆盖「对方」和「你」**（2026-10-31 修）。
+   *
+   * 上面第 291 行改了格式：自己发的表情现在写「（你发了个QQ表情：流泪（id=5））」，
+   * 不再一律「对方」。而这里原来只认「对方发了」—— **改完就漏掉了自己那半边**，
+   * 模型一旦照抄注解就会直接发到群里。
+   *
+   * 所以锚点改成 `(对方|你)发(了个QQ表情|了一个表情包|了一张图)`，
+   * 比「括号内任意内容」精准（后者会误伤「（笑）」「（认真脸）」）。
+   */
+  s = s.replace(
+    /[（(]\s*(?:对方|你)发(?:了个QQ表情|了一个表情包|了一张图)[^）)]*[）)]/g,
+    '',
+  )
 
   /*
    * ⑨ 剥掉**时间戳标记**。
@@ -453,6 +543,24 @@ export function cleanModelText(raw) {
    *    「（2 天没睡了）」不匹配（后面还有字），只有「（2 天）」才剥。
    */
   s = s.replace(/^[ \t]*[（(]\s*[+＋]?\s*\d+\s*(秒|分钟|小时|天)\s*(前|之前|以前)?\s*[）)][ \t]*/gm, '')
+  /*
+   * ⚠️ 第四种形态（2026-10-31 补，日志实测）：
+   * ```
+   * （+几秒）这条本鱼手上什么都没有，没解析出东西来
+   * ```
+   *
+   * 上面那条正则要求 `\d+`，而模型把数字写成了**中文/模糊说法**（「几秒」）。
+   * 另外我第二轮为了修时间倒流，给历史加过 `（紧接着）` 这种**非数字**标注 ——
+   * 它也会被照抄。
+   *
+   * 所以这里再补一条：括号里只要是**时间感的模糊词**就整段剥掉。
+   */
+  s = s.replace(
+    /^[ \t]*[（(]\s*[+＋]?\s*(几|一|半|好几|若干)\s*(秒|分钟|小时|天|会儿)\s*(前|之前|以前)?\s*[）)][ \t]*/gm,
+    '',
+  )
+  // 「（紧接着）」—— 我加给历史的时间标注，不是台词
+  s = s.replace(/^[ \t]*[（(]\s*紧接着\s*[）)][ \t]*/gm, '')
   /*
    * 还有一种同源的注解：主动发言那条 prompt 里写着
    * `（距上次有人说话已经 18 分钟）`。它也可能被照抄。
@@ -521,17 +629,36 @@ export function cleanModelText(raw) {
   s = s.replace(/[ \t]{2,}/g, ' ').replace(/ +([，。！？、；：])/g, '$1')
 
   /*
-   * ⑫ 整条就是一个括号旁白 → 丢掉（返回空串，调用方当"什么都没说"）。
-   *
-   * 例：「（开会还惦记着回我，挺闲啊）」—— 纯内心话，没有一句是对人说的。
-   * 这种连"剥掉旁白还剩什么"都没有，只能整条不发。
+   * ⑫ 整条就是一个**括号旁白** → 判断该丢还是该留。
    *
    * ⚠️ 只认「整条就是一个括号」，不做更宽的推断 ——
    *    「（小声）我不是大肥鱼」必须保住（括号只是前缀）。
+   *
+   * ## 2026-10-31 修：原来是一刀切丢弃，把正常台词也吃了
+   * 旧行为（本轮单测才发现）：
+   * ```
+   * （笑）          → ""      ← 「（笑）」是说话方式，凭什么丢？
+   * （2 天没睡了）   → ""
+   * ```
+   * 但也不能全留 —— 「（开会还惦记着回我，挺闲啊）」确实是内心旁白，
+   * 留着会变成奇怪的自言自语。
+   *
+   * ## 所以分三类
+   * ```
+   * ① 命中 DECIDE_ASIDE（不回/该不该/转话题…）  → 丢（思考当台词念了）
+   * ② 短动作词（笑/叹气/小声/心虚/护食…）        → 留（这是表演提示，角色风格）
+   * ③ 其余（内心评价 / 带数字标点的旁白）        → 丢
+   * ```
+   * ② 的判据：**1~6 个汉字/字母、不含数字、不含标点** ——
+   * 「（笑）」「（叹气）」「（小声）」「（边吃边说）」都符合；
+   * 「（2 天没睡了）」有数字、「（开会还惦记着回我，挺闲啊）」有逗号 → 自动落到 ③。
    */
-
   const trimmed = s.trim()
-  if (/^[（(][^）)\n]{1,120}[）)]$/.test(trimmed)) return ''
+  if (/^[（(][^）)\n]{1,120}[）)]$/.test(trimmed)) {
+    if (DECIDE_ASIDE.test(trimmed)) return ''
+    if (/^[（(][\u4e00-\u9fa5A-Za-z]{1,6}[）)]$/.test(trimmed)) return trimmed
+    return ''
+  }
 
   return trimmed
 }
@@ -676,6 +803,14 @@ export class QQBridge {
      * 档案回答「这个人是谁」。
      */
     this.people = opts.people ?? null
+    /**
+     * 收藏表情的**标签库**（2026-10-31）。
+     *
+     * `fetch_custom_face` 只给 URL（没有名字/描述）→ 她发表情是闭眼随机甩。
+     * 有了标签才知道自己有什么、才能按「[表情包:哭]」挑到真的"哭"。
+     * 打标签是**批处理**：现在打一批，之后攒够 `minPending` 张再打下一批。
+     */
+    this.stickerTags = opts.stickerTags ?? null
     this.log = opts.log ?? {}
     /** 用量统计（可空）—— 用于总览页的 token/费用 */
     this.usage = opts.usage ?? null
@@ -918,6 +1053,12 @@ export class QQBridge {
 
     this._proactiveScopes = () => this._proactive.scopes()
     this._proactive.start()
+    /*
+     * ★ 启动时顺手给**已有收藏**打一批标签（2026-10-31）。
+     * 用户原话：「现在已有的表情打标签分类，以后的等积累到一定程度再次打标签」。
+     * 后台跑，失败了不影响任何东西（NapCat 没起来时会自己跳过）。
+     */
+    setTimeout(() => { void this._tagStickerBatch?.() }, 20_000)
     return this._proactive
   }
 
@@ -1124,6 +1265,15 @@ export class QQBridge {
    */
   async _speakUp(msg, mem) {
     try {
+      /*
+       * ★ 主动发言前先确保热点是**新鲜**的（2026-10-31）。
+       *
+       * 主动发言不走 `_handle`，所以那条路上的 `_ensureHotTopics` 够不着它 ——
+       * 实测 `hot-topics.json` 停在 00:03，18:29 还在用。
+       *
+       * 这里 `wait: true`：主动发言本来不急，多等 100ms 换个新榜值得。
+       */
+      await this._ensureHotTopics({ wait: true })
       const scene = await this.sceneOf(msg)
       const self = { id: this.selfId, name: this.selfName }
       /*
@@ -1157,17 +1307,105 @@ export class QQBridge {
         : `（距上次有人说话已经 ${Math.round(idle / 60_000)} 分钟）`
 
       const speakHint = idle < FRESH_MS
-        ? `（没有人在说话。你自己找个话头开口 —— 接着刚才的话题、或者随便聊点什么都行。不要说"没人说话"这种话，直接说你想说的。）`
-        : `（没有人说话已经有一阵了。${gapText}
+        ? `（没人说话，但也没多久。想接就接，不想接就输出 [SILENT]。）`
+        : `（这个会话已经安静${gapText}了。
 
-**不要接之前的话题** —— 那已经翻篇了，现在再提显得很奇怪（像翻旧账）。
+## 要不要开口，你自己定
+**别因为「该说话了」就硬凑一句 —— 那比不说话更像机器。**
+没有真正想说的，就输出 [SILENT]。今天一句不说也完全没问题。
 
-要开口就开一个**新的**话头，从这些里挑一个：
-· 你自己今天的一件小事（吃了什么、在干嘛、看到什么）—— 按「今天我」的状态说
-· 一个没有上下文的通用感慨（天气、困、想睡觉）
-· 或者干脆别开口 —— 输出 [SILENT]
+## 真有想说的，按这个顺序挑（越靠前越像人）
+① **共同回忆**：你记得他的事、你们最近聊过的
+   （「你那个 X 后来咋样了」「宿舍断电那事解决了没」）
+   ⚠️ 别用「上次」「之前」这种词 —— 像自然想起来一样说。
+② **他此刻在干什么**：下课没？到家没？吃上饭没？
+   这个最像人 —— 真人一开口，是先看对方在不在忙。
+③ **当下的时段 / 心情**：短、口语
+   （「下午好无聊」「困」「今天怎么这么安静」）
+④ 自己的小情绪 —— 也行
 
-⚠️ 不要提「刚才那个」「之前说的」「那个事」这类指代 —— 没人记得你说的是哪件。`
+## ⚠️ 「今天我」只是**背景**，不是台词
+别人问你在干嘛，按它答；但**不要主动念日程**。
+❌ 「洗漱完煮了八个速冻小馄饨，汤里放了紫菜、虾皮和几滴香油」
+✅ 「刚吃了个橘子，手黏死了」
+
+## ⚠️ 你自己说过的承诺 / 计划，不能当成已经发生的事去提
+你说过「给你留一碗饭」不等于他答应了 —— 人家可能正在上课。
+该问的是「下课没」，不是「我给你留了饭」。
+
+## ⚠️ 不要没头没尾
+别硬编一个开头来接话（「福是真福，就是…」这种 —— 说到最后你自己都不知道在说什么）。
+说不清就别说了。`
+
+      /*
+       * ★ 把**热点**塞进来当"话头素材"（2026-10-31）。
+       *
+       * 原来主动发言只有 dayPlan 可讲 —— 而 dayPlan 是"日记"，
+       * 念出来就是「洗漱完煮了八个馄饨，汤里放了紫菜虾皮」这种流水账
+       * （实测事故：「福是真福，就是橘子吃完手黏」）。
+       *
+       * 热点是"外面在聊什么"，天生适合当闲聊的由头。
+       *
+       * ⚠️ 用 `toPromptForProactive`（**不要求**挂钩"最近消息"）——
+       *    主动发言的场景就是没人在聊，要求挂钩就永远返回空。
+       */
+      /*
+       * ★ 「**不是啥都分享**」—— 按"这个群/这个人关心什么"筛热点（2026-10-31）。
+       *
+       * 依据：
+       *  · **群**：这个群的长期摘要【事】= 他们平时在聊什么
+       *  · **私聊 / @某人**：那个人的档案（`people.json` 的 impression + facts）
+       *    例：他是「在玩一款手游、周末要值班」→ 就挑游戏/校园相关的，不挑明星八卦。
+       *
+       * 筛不出来 → `hotHint` 为空 → 没有话头 → 它大概率沉默。
+       * **这才是对的** —— 在一个技术群里聊表情包大赛，比不说话更掉价。
+       */
+      /*
+       * ★ 关注点 = **机器人自己的兴趣（主）** + 场合（群/这个人关心什么，辅）
+       *
+       * 用户原话：「按照机器人人格来呢，机器人要像人肯定有自己的关注点和兴趣」。
+       *
+       * 真人分享的动机是「**我自己觉得这个有意思**」，不是"该投其所好了"。
+       * 所以：
+       *   · `cfg.proactive.interests`（从人格提炼：吃/米饭/Token/摸鱼/新番…）放**主位**
+       *   · 群摘要 / 那个人的档案只做**场合校准**（在技术群就别只聊吃的）
+       */
+      const selfInterests = String(this.cfg.proactive?.interests ?? '').trim()
+      const sceneInterest = (() => {
+        try {
+          const uid = msg?.userId
+          if (uid) {
+            const p = this.people?.get?.(uid)
+            if (p) return [p.impression, ...(p.facts ?? [])].filter(Boolean).join(' ')
+          }
+          return String(mem?.summary ?? '')
+        } catch { return '' }
+      })()
+
+      /*
+       * ★ **不预筛**（2026-10-31）——
+       * 用户：「现在应该要能**直接总结**一点吧，**这还是人为定的**」。
+       *
+       * 原来我用关键词表先过滤一遍热点，那等于把"它关心什么"替它写死了。
+       * 现在：清单原样交给模型，让它按**自己的人格**挑；
+       * 我只把"这个群/这个人平时关心什么"作为**参考**给出来。
+       *
+       * `selfInterests` 非空时才是**显式覆盖**（强行指定兴趣，一般别用）。
+       */
+      const hotHint = this.hotTopics?.toPromptForProactive?.({ interest: selfInterests, limit: 5 }) ?? ''
+      const sceneHint = sceneInterest
+        ? `## 这个会话的人平时关心什么（挑的时候参考，别硬凑）\n${String(sceneInterest).slice(0, 240)}`
+        : ''
+      const hotRule = hotHint
+        ? `## 怎么挑
+- 挑**你自己真觉得有意思**的那条 —— 不是为了"该分享"而分享。
+  这两个差别很大，后者一眼假。
+- 同时看上面「这个会话的人关心什么」：**对方接不住的就别挑**。
+- 用自己的话说，**别照念标题**。
+  （标题是「16强开打,谁是最靓表情包」→ 你说「最近那个表情包大赛你们看了没」）
+- **一条都不感兴趣 / 都不合适 → [SILENT]**。这不是失败，是正常。`
+        : ''
+      const hintWithHot = [speakHint, hotHint, sceneHint, hotRule].filter(Boolean).join('\n\n')
 
       // 私聊时 sender 就是对方；群里没有具体发言人，留空。
       const full = {
@@ -1185,8 +1423,8 @@ export class QQBridge {
          * 场景说明改由 `speakHint` 单独传给 `_generate`，不进 text。
          */
         text: '',
-        // 场景说明：按「距上次说话多久」分两档，见本方法开头的说明
-        speakHint,
+        // 场景说明：按「距上次说话多久」分两档 + 热点素材
+        speakHint: hintWithHot,
         isMe: false,
         at: Date.now(),
       }
@@ -1368,7 +1606,14 @@ export class QQBridge {
    */
   async _ensureHotTopics({ wait = true } = {}) {
     if (!this.hotTopics) return
-    if (this.hotTopics.today()) return
+    /*
+     * ⚠️ **不是 `today()`，是 `fresh()`**（2026-10-31 改）。
+     *
+     * `today()` 只看「是不是今天」→ 一天只抓一次 → 实测 00:03 抓的榜，
+     * 到 18:29 还在用（**18 小时前的热点**）。热点时效性最强，必须新鲜。
+     * `fresh()` 默认 30 分钟，过期就重抓。
+     */
+    if (this.hotTopics.fresh?.() ?? this.hotTopics.today()) return
     if (!this._hotTopicsPending) {
       this._hotTopicsPending = (async () => {
         try {
@@ -2125,7 +2370,63 @@ export class QQBridge {
    * @param {object} msg 规范化后的消息
    * @param {number} [seq] 本条在 scope 内的入站序号（由 onEvent 分配）
    */
+  /**
+   * 按「目标总时长」补足等待（2026-10-31）。
+   *
+   * ## 为什么不在生成前睡
+   * 原来 `await sleep(d.delayMs)` 是在**生成之前**等。实测（38 次配对）：
+   * ```
+   * 总时长 = 延迟(0.4~7.0s) + 生成(1.3~4s)
+   *   →  p10 3.4s   p50 5.1s   p90 6.1s      ← 只差 2.7 秒
+   * ```
+   * **生成的抖动把延迟的差别吃掉了**，所以用户反馈「感觉随机时间没生效」——
+   * 他没说错：配置本意差 6.6 秒，实际只差 2.7 秒。
+   *
+   * ## 现在的做法
+   * 生成完再补 `目标 - 已用`：
+   * - 生成快（1.3s）、目标 4.5s → 再等 3.2s
+   * - 生成慢（5s）、目标 4.5s → **不再等**（已经超了）
+   *
+   * 于是**总时长**落在目标区间里，跟模型快慢无关 —— 这才是用户能感知的。
+   *
+   * ⚠️ 目标是**下限**不是上限：生成慢就自然慢，没法把时间"压"回去。
+   *    这也合理 —— 想得久本来就该显得久。
+   *
+   * @param {number} tStart `_handle` 开头记的时间戳
+   * @param {object} d 决策结果（要 `targetMs`）
+   * @param {string} [where] 日志里区分是哪条路径
+   * @returns {Promise<number>} 实际又等了多久（毫秒）
+   */
+  async _waitForPace(tStart, d, where = '') {
+    const target = Number(d?.targetMs ?? 0)
+    if (!(target > 0)) return 0
+    const used = Date.now() - tStart
+    const tag = `档位 ${d.delayTier ?? '?'}，上下文 ${d.delayCtxChars ?? '?'} 字 ×${d.delayCtxK ?? 1}`
+    const wait = target - used
+    if (wait > 0) {
+      this.log.info?.(
+        `bridge：${where}用了 ${(used / 1000).toFixed(1)}s，再等 ${(wait / 1000).toFixed(1)}s`
+        + ` → 总共 ${(target / 1000).toFixed(1)}s（${tag}）`,
+      )
+      await sleep(wait)
+      return wait
+    }
+    this.log.info?.(
+      `bridge：${where}已经用了 ${(used / 1000).toFixed(1)}s，超过目标 ${(target / 1000).toFixed(1)}s`
+      + ` —— 不再等（${tag}）`,
+    )
+    return 0
+  }
+
   async _handle(msg, seq) {
+    /*
+     * ⚠️ 记起点 —— 用来算「从收到消息到发出」的**总时长**（2026-10-31）。
+     *
+     * 延迟不再是"生成前先睡一觉"，而是**生成完再补足到目标总时长**
+     * （见 `_waitForPace`）。原因：实测生成本身抖动 1.3~4 秒，
+     * 把延迟的差别淹没了 —— 用户反馈「随机时间感觉没生效」。
+     */
+    const tStart = Date.now()
     const mem = this.memory.get(msg.scope)
     const now = Date.now()
 
@@ -2315,10 +2616,19 @@ export class QQBridge {
       return
     }
 
-    // 3. 按人的节奏延迟
-    if (d.delayMs && d.delayMs > 0) {
-      await sleep(d.delayMs)
-    }
+    /*
+     * 3. 节奏控制 —— **不在生成前睡，改成生成后补足到目标总时长**。
+     *
+     * 原来这里是 `await sleep(d.delayMs)`（生成前先等）。
+     * 实测证明那样**用户感觉不到**：
+     * ```
+     * 总时长 = 延迟(0.4~7.0s) + 生成(1.3~4s)   →  p10 3.4s / p50 5.1s / p90 6.1s
+     * ```
+     * 差别被生成的抖动吃掉了。
+     *
+     * 现在改成 `_waitForPace(tStart, d)` —— 在**发送前**补
+     * `目标总时长 - 已用时间`。调用点有两处：纯表情路径、正常生成路径。
+     */
 
     // ── 3a. 纯表情回应：跳过模型，直接发一个收藏表情 ──────────────
     //
@@ -2347,6 +2657,9 @@ export class QQBridge {
         return
       }
       try {
+        // 纯表情**不调模型** —— 没有"生成耗时"，所以要等满整个目标时长，
+        // 否则表情永远秒回，比文字还快，看着像机器。
+        await this._waitForPace(tStart, d, '纯表情 ')
         // `[表情包]` 走 splitFaceMarkers → _pickMface 随机挑一张收藏表情
         const sentIds = await this._send(msg, '[表情包]')
         this.stats.replied++
@@ -2668,6 +2981,8 @@ export class QQBridge {
         const notes = [banNote, nickNote].filter(Boolean).join('；')
         text = text.trim() ? `${text}（${notes}）` : `${notes}。`
       }
+      // ★ 节奏控制：生成已经花了多少，就只补剩下的（见 `_waitForPace`）
+      await this._waitForPace(tStart, d)
       const sentIds = await this._send(msg, text, coverForSend)
       this.stats.replied++
       mem.push(makeMessage({
@@ -3091,6 +3406,28 @@ export class QQBridge {
     const memoryText = long?.toPrompt() ?? ''
 
     /*
+     * ★ **我最近说过的话**（2026-11-01，参考 dsh-bili-scroll 的章程）。
+     *
+     * ## 为什么单独拎出来
+     * 参考实现里有一句注释说得很准：
+     * > 把「它自己以前发过的评论」喂进去 —— 没有这段，它每轮都从零开始，
+     * > 自然每条都往"平均腔调"上靠（那就是八股）。
+     * > 有这段它才会长出自己的口癖、并避开重复开头。
+     *
+     * 我们的历史消息里虽然有它自己的话，但**模型不会主动去对比**。
+     * 单独列一小段「你刚才说过」+ 一句"别用相同的开头/句式"，
+     * 才是它长出口音、不重复的关键。
+     *
+     * 只取 **3 条**（多了反而变成模板去模仿）。
+     */
+    const recentSelf = mem
+      .recent(24)
+      .filter((m) => m.isMe)
+      .map((m) => String(m.text ?? '').trim())
+      .filter((t) => t && t !== '[SILENT]' && !/^\[表情/.test(t))
+      .slice(-3)
+
+    /*
      * 人物档案：当前说话人优先，其余按最近活跃补几个。
      *
      * 只带「有实际内容（印象或事实）」的人 —— 刚加进来还没沉淀的
@@ -3116,10 +3453,44 @@ export class QQBridge {
     // ⚠️ 不能每条都搜：一次 5~15 秒，群聊里绝大多数是闲聊。
     //    触发判断在 search.js 的 needsFreshInfo()，收得比较紧。
     let searchContext = ''
+    /*
+     * ★ **B 站分享链接 → 免费抓元信息**（2026-10-31）。
+     *
+     * 之前她只看到 `【标题】https://...` 一串文字，**不点、也不搜**（`needsFreshInfo`
+     * 要求「时效词+疑问词」同时命中，B 站分享基本命中不了），只能从标题猜。
+     *
+     * B 站 `x/web-interface/view` 接口**免费、免登录**（实测 code=0），
+     * 能拿到 标题/UP主/时长/播放/简介 —— 足够她判断"这视频大概讲什么"。
+     *
+     * ⚠️ **字幕拿不到**（匿名 `player/v2` 的 `subtitles` 恒为 0 条，要登录态），
+     *    所以**不承诺"看过内容"**；`formatVideoContext` 里明确写了
+     *    「你没看过这个视频，别编」。
+     *
+     * 失败静默：拿不到就当没有，绝不因为一个外链拖垮整条回复。
+     */
+    let biliContext = ''
+    try {
+      biliContext = await this._biliContext(String(msg.text ?? ''))
+    } catch { /* 静默 */ }
     /** 本次回复备下的封面图（随返回值带走，避免实例变量竞态）。 */
     let pendingCover = null
     const qqCfg = this.cfg.search ?? {}
-    if (qqCfg.enabled !== false && this.searchKey) {
+    /*
+     * ★ **已经有 B 站上下文时，别再联网搜那条链接**（2026-10-31）。
+     *
+     * 实测事故链：
+     * ```
+     * 21:00:28  B站：BV1bbeY6wE9x 评论 5 条 / 弹幕 10 条   ✅ 抓到了
+     * 21:00:28  bridge：需要联网（提到具体名字「https」）→ 查「【哔哩哔哩】https://b23.tv/…」
+     * 21:00:30  bridge：联网：已查到 → 264 字 / 5 个来源      ← 垃圾
+     * 21:00:34  我「还是没展开，短链跳不过去」                ← 被搜索带偏
+     * ```
+     * `needsFreshInfo` 把 **`https` 本身**当成"具体名字" → 拿短链去搜索 →
+     * 当然搜不到 → 返回一堆无关内容 → 模型以为"打不开这个链接"。
+     *
+     * **B 站的信息已经抓到（标题/评论/弹幕），再搜一遍纯属帮倒忙。**
+     */
+    if (qqCfg.enabled !== false && this.searchKey && !biliContext) {
       const hit = needsFreshInfo(msg.text)
       if (hit.need) {
         try {
@@ -3323,7 +3694,7 @@ export class QQBridge {
 判断标准：你的回复里如果出现了**对图内容的任何转述**，就是错的。
 
 一句话：**B 类只发图不说话；A 类只说意思不念字。**
-⚠️ 消息里形如「（对方发了个QQ表情，id=20）」的括号是**系统注解**，
+⚠️ 消息里形如「（对方发了个QQ表情：流泪（id=5））」「（你发了个QQ表情：微笑（id=14））」的括号是**系统注解**，
 不是对话内容，绝对不要写进回复里。`
         : hasWords
           // ── 有文字：文字优先，图只作补充 ──────────────────────
@@ -3337,7 +3708,7 @@ export class QQBridge {
 用一句话点出来就够了。
 
 ⚠️ 不要复述画面细节（「图里有个穿裙子的女孩」这种没人要听）。
-⚠️ 消息里形如「（对方发了个QQ表情，id=20）」的括号是**系统注解**，
+⚠️ 消息里形如「（对方发了个QQ表情：流泪（id=5））」「（你发了个QQ表情：微笑（id=14））」的括号是**系统注解**，
 不是对话内容，绝对不要写进回复里。`
           // ── 只有真图片：才以图为主，可以判断像不像自己 ──────────
           : `## 这条消息只有一张图
@@ -3378,7 +3749,7 @@ export class QQBridge {
 不要配「哈哈」「确实」这种字，那等于斗图认输。
 
 ⚠️ 不要描述画面内容（对方自己知道图里是什么）。
-⚠️ 消息里形如「（对方发了个QQ表情，id=20）」的括号是**系统注解**，
+⚠️ 消息里形如「（对方发了个QQ表情：流泪（id=5））」「（你发了个QQ表情：微笑（id=14））」的括号是**系统注解**，
 不是对话内容，绝对不要写进回复里。`)
       : ''
 
@@ -3388,6 +3759,21 @@ export class QQBridge {
       memory: [memoryText, peopleText].filter(Boolean).join('\n\n'),
       scene,
       self,
+      /* ★ 最近自己说过的话（防八股 —— 见 `_generate` 开头的说明）。 */
+      recentSelf,
+      /*
+       * ★ **程序本次核实的事实 —— 走独立通道**（2026-10-31）。
+       *
+       * B 站那段原来在 `extras` 里，结果模型**照着自己上一轮说的「没展开」演**，
+       * 完全不看刚抓到的标题/评论/弹幕（日志明确写「评论 5 条 / 弹幕 10 条」）。
+       *
+       * 根因：模型分不清「程序抓到的真数据」和「我上一轮说过的话」——
+       * 两者在上下文里长得一样，而后者**更近、更像"我的经历"**。
+       *
+       * 所以 B 站这段从 `extras` **挪到 `facts`**：单独成段、带权威标记、
+       * 放最末尾、并明确写「和你之前说过的话冲突时以这里为准」。
+       */
+      facts: [biliContext].filter(Boolean),
       extras: [
         searchContext,
         /*
@@ -3433,6 +3819,18 @@ export class QQBridge {
          * 用过一次就不给用（交替开放），避免连着甩图。
          */
         buildVarietyHint(mem.recent(20)),
+      /*
+       * ★ 告诉模型「你收藏了哪些表情」（2026-10-31）。
+       *
+       * 没有这段，她只会输出 `[表情包]` 占位符，然后被随机挑一张 ——
+       * 就是「对方发表情包、它回了个流泪、人家问哭啥」的根源。
+       * 有了清单，她可以写 `[表情包:哭]`，`_pickMface` 按标签命中。
+       *
+       * ⚠️ 这里只能用**同步可取**的缓存列表（`_facesCache`）——
+       *    extras 是同步拼的，不能 await `_customFaces()`。
+       *    缓存为空（还没取过）就这轮不注入，下次就有了。
+       */
+      this.stickerTags?.toPrompt?.(this._facesCache?.urls ?? []) ?? '',
         buildExpressionHint(mem.recent(20)).hint,
         /*
          * 主动发言的场景说明。
@@ -3441,7 +3839,31 @@ export class QQBridge {
          *    用户说的话去判断要不要联网搜索（实测把「你自己找个话头开口」
          *    整句拿去搜了）。所以单独走 extras。
          */
-        msg.speakHint ?? '',
+        /*
+       * ⚠️ **当前时间必须在公共 extras 里**（2026-10-31 修）。
+       *
+       * 原来它只写在回复路径的 `## 群里刚说到这句` 块里 —— **主动发言拿不到**。
+       * 实测：09:30 主动说「中午了」，被问「现在不才9:56吗」后又改口
+       * 「我当下午了呢」，**两次都错**。而 `speakHint` 还在引导它
+       * 「说吃了什么」—— 有食物话题、没有时钟，它就编了个"中午"。
+       *
+       * 挪到公共位置后两条路径都吃得到，并且**带上时段标签**（早上/中午/下午/晚上），
+       * 双保险：既能算准点，也能知道"这个点该不该说吃饭"。
+       */
+      (() => {
+        let slot = ''
+        try {
+          const s = currentSlot()
+          if (s?.label) slot = `（**${s.label}**）`
+        } catch { /* 时段算不出来就不写，不影响其它 */ }
+        const gap = mem.sinceMyLast?.()
+        return `## 现在
+现在是 ${new Date().toLocaleString('zh-CN', { hour12: false })}${slot}。
+⚠️ 说时间、说"该吃饭了/该睡了/中午了"这类话之前**先看这一行**，别按感觉猜。
+距你上次说话：${Number.isFinite(gap) ? Math.round(gap / 1000) + ' 秒' : '很久/还没说过'}
+你已连续发言：${mem.consecutiveTurns} 轮`
+      })(),
+      msg.speakHint ?? '',
         // 余额偏低时的提醒。
         //
         // ⚠️ 不写"请充值"这种客服腔 —— 大肥鱼的人格里有「Token 是脑力口粮」
@@ -3493,10 +3915,9 @@ export class QQBridge {
         '真没什么想说的，就直接输出 [SILENT]（不算错，也不用解释）。\n' +
         '表情包想发就发 —— 只发一个表情也算回应，不用克制。\n' +
         '不用每次都周全：吐槽、抬杠、装没听懂、只回两个字，都行。',
-        `## 上下文提示
-距你上次说话：${Number.isFinite(mem.sinceMyLast()) ? Math.round(mem.sinceMyLast() / 1000) + ' 秒' : '很久/还没说过'}
-你已连续发言：${mem.consecutiveTurns} 轮
-当前时间是 ${new Date().toLocaleString('zh-CN', { hour12: false })}`,
+        // ⚠️ 原来这里还有 `## 上下文提示`（距上次说话 / 连续发言 / 当前时间）。
+        //    已挪到**公共 extras**（见 `## 现在`）—— 写在这里的话**主动发言拿不到**，
+        //    实测它 09:30 说「中午了」，被问后又改口「我当下午了呢」。
       ].filter(Boolean),
     })
 
@@ -4051,6 +4472,202 @@ export class QQBridge {
    *
    * 结果缓存 10 分钟 —— 收藏会变，但没必要每次发表情都问一遍。
    */
+  /**
+   * 让**视觉模型**给一张表情图打标签（2026-10-31）。
+   *
+   * 提示词照麦麦的 `emoji_content_analysis`：
+   * 「提取主要表达的情绪/语气/常见使用场景标签，最多 5 个，逗号分隔，不要解释」
+   *
+   * @param {object} block 已经做好的 ImageBlock（`gateway.makeImageBlock`）
+   * @returns {Promise<string[]>}
+   */
+  async _callVisionTags(block) {
+    /*
+     * ⚠️ **头一句必须是「只输出答案，不要写思考过程」**（2026-10-31）。
+     *
+     * 当前模型是**推理模型**，第一版提示词让它「提取…标签」时，
+     * 它把 reasoning 一起吐进了 `chunk.text`，于是存进库的"标签"是：
+     * 「分析用户请求**：、可能是动画的一帧）、语气或常见使用场景标签…」
+     * —— 全是我的提示词的回声。
+     *
+     * 另外给了**示例输出**（`开心、得意、炫耀`）和「每个词最多 4 个字」，
+     * 比只说「最多 5 个」更能压住它写长句。
+     */
+    const prompt = '只输出答案本身，不要写任何思考过程、分析、标题或格式说明。\n'
+      + '下面这张是表情包图片（动图的话这里只给了一帧）。\n'
+      + '用 1~5 个**中文短词**说出它表达的情绪 / 语气 / 使用场景，用顿号分隔。\n'
+      + '每个词最多 4 个字。\n'
+      + '示例输出：开心、得意、炫耀\n'
+      + '现在输出：'
+    const candidates = this._candidates?.() ?? []
+    if (!Array.isArray(candidates) || candidates.length === 0) return []
+    const opened = await openFirstAvailable({
+      llm: this.gateway,
+      candidates,
+      request: {
+        messages: [{ role: 'user', content: [{ type: 'text', text: prompt }, block] }],
+      },
+    })
+    let text = ''
+    /*
+     * ⚠️ **必须跳过推理草稿**（2026-10-31，同一个坑 index.js:841 早就踩过）。
+     *
+     * `reasoning-delta` 这个 chunk **也有 `.text`**：
+     * ```
+     * { type: 'reasoning-delta', text: '我们需要回答用户，要求给…' }
+     * { type: 'text-delta',      text: '开心、得意' }
+     * ```
+     * 第一版只写了 `if (typeof chunk?.text === 'string') text += chunk.text`，
+     * 于是把草稿拼了进来 —— 存进标签库的全是
+     * 「分析用户请求**：、可能是动画的一帧）、语气或常见使用场景标签…」。
+     * **规则就是那一条：草稿不是答案。**
+     */
+    for await (const chunk of opened.stream) {
+      if (typeof chunk === 'string') { text += chunk; continue }
+      const kind = chunk?.type
+      if (kind === 'reasoning-delta' || kind === 'reasoning') continue
+      if (typeof chunk?.text === 'string') text += chunk.text
+    }
+    /*
+     * ⚠️ **长了就丢掉**：真正的标签列表不会超过几十个字。
+     * 超过 80 字基本可以断定是 reasoning 漏出来了（宁可这张不打标签）。
+     */
+    if (text.length > 80) {
+      this.log.debug?.(`表情标签：输出过长（${text.length} 字，疑似思考过程），丢弃`)
+      return []
+    }
+    return splitTags(text)
+  }
+
+  /**
+   * **批处理**给收藏表情打标签（2026-10-31）。
+   *
+   * ## 为什么不"收一张打一张"
+   * 每次收藏都调一次视觉模型太费。用户的原话：
+   * 「**现在已有的表情打标签分类，以后的等积累到一定程度再次打标签**」。
+   *
+   * 所以：没标签的攒够 `minPending` 张才动手，一次最多 `batchLimit` 张。
+   * 触发点是 `_customFaces()` 刷新之后（那张表有 10 分钟缓存，天然限频）。
+   *
+   * @param {{minPending?:number, batchLimit?:number}} [opts]
+   */
+  async _tagStickerBatch({ minPending = 3, batchLimit = 5 } = {}) {
+    if (!this.stickerTags || !this.gateway?.makeImageBlock) return
+    if (this._taggingBusy) return
+    this._taggingBusy = true
+    try {
+      const urls = await this._customFaces()
+      if (!Array.isArray(urls) || urls.length === 0) return
+      const todo = urls.filter((u) => !this.stickerTags.get(u))
+      if (todo.length < minPending) return // ★ 攒够才打（用户要求）
+      let done = 0
+      for (const url of todo.slice(0, batchLimit)) {
+        try {
+          const img = await this.onebot.fetchImage(url, {
+            maxBytes: this.cfg.reply?.maxImageBytes ?? 8 * 1024 * 1024,
+          })
+          const m = /^data:([^;]+);base64,(.*)$/s.exec(img?.dataUrl ?? '')
+          if (!m) continue
+          const block = await this.gateway.makeImageBlock({
+            base64: m[2],
+            mediaType: m[1],
+            name: 'sticker-tag',
+          })
+          if (!block) continue
+          const tags = await this._callVisionTags(block)
+          if (tags.length && this.stickerTags.set(url, tags)) {
+            done += 1
+            this.log.info?.(`表情标签：${stickerKey(url).slice(-16)} → ${tags.join('、')}`)
+          }
+        } catch (e) {
+          this.log.debug?.(`表情标签：单张失败（跳过）— ${String(e?.message ?? e)}`)
+        }
+      }
+      const left = Math.max(0, todo.length - done)
+      if (done > 0) {
+        this.log.info?.(`表情标签：本批打了 ${done} 张，还剩 ${left} 张待打`)
+      }
+      /*
+       * ★ 还有就 **30 秒后接着打**（2026-10-31）。
+       *
+       * 用户要「**现在已有的**表情打标签分类」—— 48 张按每批 5 张、
+       * 靠 `_customFaces` 的 10 分钟缓存去触发，要一个半小时。
+       * 这里自己续跑：只要**这批有进展**（`done > 0`）就继续，
+       * 全部打完或这批一张没成就停（避免失败时空转烧钱）。
+       *
+       * 30 秒留够 `finally` 把 `_taggingBusy` 放掉，不会自己把自己挡住。
+       */
+      if (done > 0 && left > 0) {
+        setTimeout(() => { void this._tagStickerBatch?.() }, 30_000)
+      }
+    } catch (e) {
+      this.log.debug?.(`表情标签：批处理失败（忽略）— ${String(e?.message ?? e)}`)
+    } finally {
+      this._taggingBusy = false
+    }
+  }
+
+  /**
+   * B 站链接 → 元信息（**免费接口**，5 分钟缓存）。没有 B 站链接就返回空串。
+   *
+   * 流程：文本里找 BV 号（或 `b23.tv` 短链跟跳）→ `x/web-interface/view`
+   * → 拼成「标题/UP主/时长/播放/简介」。
+   *
+   * ⚠️ 缓存 5 分钟：同一条链接被反复提到时不要反复打人家接口（会被风控）。
+   *
+   * @param {string} text
+   * @returns {Promise<string>}
+   */
+  async _biliContext(text) {
+    if (!hasBiliLink(text)) return ''
+    const bvid = await resolveBvid(text)
+    if (!bvid) return ''
+    const now = Date.now()
+    if (!this._biliCache) this._biliCache = new Map()
+    const hit = this._biliCache.get(bvid)
+    if (hit && now - hit.at < 300_000) return hit.text
+    const info = await fetchVideoInfo(bvid)
+    let ctx = ''
+    if (info) {
+      /*
+       * ★ **评论和弹幕才是重点**（用户原话：「光是标题和简介只是作者说明，
+       *    评论和弹幕才是重点」）。
+       *
+       * 两个都**免登录**（实测：评论 20 条、弹幕 1200 条，均 code=0）。
+       * 并行抓、各自失败不影响主体（`fetchTopComments`/`fetchDanmaku` 内部都吞错）。
+       * 评论按热度取 5 条；弹幕按**出现次数**取 10 条（重复多的就是梗）。
+       */
+      try {
+        const [comments, danmaku] = await Promise.all([
+          fetchTopComments(info.aid, { limit: 5 }),
+          fetchDanmaku(info.cid, { limit: 10 }),
+        ])
+        if (comments.length) info.comments = comments
+        if (danmaku.length) info.danmaku = danmaku
+        /*
+         * ⚠️ **必须留痕**（2026-10-31）。
+         * 上一版这里是静默的 —— 用户看到「只说了标题和时长、评论弹幕一个字没提」，
+         * 而我从日志里**分不清**是"抓失败"还是"抓到了没进提示词"。
+         * 记成 info 级：一次分享只打一行，不吵。
+         */
+        this.log.info?.(
+          `B站：${bvid} 评论 ${comments.length} 条 / 弹幕 ${danmaku.length} 条`
+          + `（aid=${info.aid} cid=${info.cid}）`,
+        )
+      } catch (e) {
+        this.log.warn?.(`B站：抓评论/弹幕失败（只给元信息）— ${String(e?.message ?? e)}`)
+      }
+      ctx = formatVideoContext(info)
+    }
+    this._biliCache.set(bvid, { at: now, text: ctx })
+    if (this._biliCache.size > 50) {
+      this._biliCache.delete(this._biliCache.keys().next().value)
+    }
+    if (ctx) this.log.info?.(`B站：${bvid} → ${String(info?.title ?? '').slice(0, 40)}`)
+    else this.log.debug?.(`B站：${bvid} 没拿到元信息（跳过）`)
+    return ctx
+  }
+
   async _customFaces() {
     const now = Date.now()
     if (this._facesCache && now - this._facesCache.at < 600000) return this._facesCache.urls
@@ -4059,6 +4676,14 @@ export class QQBridge {
       const urls = (Array.isArray(res?.data) ? res.data : []).filter((u) => typeof u === 'string' && /^https?:/.test(u))
       this._facesCache = { at: now, urls }
       if (urls.length) this.log.info?.(`bridge：取到 ${urls.length} 个收藏表情`)
+      /*
+       * ★ 顺手看看有没有新表情要打标签（2026-10-31）。
+       *
+       * 放这里是因为：这张表有 10 分钟缓存 → 天然限频，不会每次发表情都跑。
+       * 内部还有"攒够 minPending 才动手"和 `_taggingBusy` 双保险。
+       * 用 `void` 是因为它只该**后台跑**，绝不能拖慢这次发送。
+       */
+      void this._tagStickerBatch?.()
       return urls
     } catch (e) {
       this.log.debug?.(`bridge：取收藏表情失败 — ${String(e?.message ?? e)}`)
@@ -4196,6 +4821,21 @@ export class QQBridge {
     //    没给名字就随机 —— "随手发个表情"本来就该随机。
     const faces = await this._customFaces()
     if (faces.length > 0) {
+      /*
+       * ★ **先按标签找**（2026-10-31）—— 这才是"按意思挑"。
+       *
+       * 以前是 `hashStr(key) % faces.length`：同一个名字固定挑同一张，
+       * 看着"稳定"，但**那张和「哭/笑/无语」毫无关系** —— 等于闭眼。
+       * 实测：对方发表情包，它回了个"流泪"，人家问「哭啥」。
+       *
+       * 标签由 `_tagStickerBatch()` 用视觉模型打（攒够几张打一批）。
+       * 没标签时才退回老的 hash 挑法（至少还是确定的，不是乱跳）。
+       */
+      const byTag = key ? (this.stickerTags?.findByTag?.(faces, key) ?? null) : null
+      if (byTag) {
+        this.log.info?.(`bridge：表情「${key}」→ 按标签命中 ${stickerKey(byTag).slice(-16)}`)
+        return [{ type: 'image', data: { file: byTag } }]
+      }
       const idx = key
         ? (hashStr(key) % faces.length)
         : Math.floor(Math.random() * faces.length)

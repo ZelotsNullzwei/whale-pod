@@ -6,11 +6,18 @@
 
 <b>简体中文</b> | <a href="#english">English</a>
 
-![version](https://img.shields.io/badge/version-0.3.5-3B6FE0.svg)
+![version](https://img.shields.io/badge/version-0.4.0-3B6FE0.svg)
 ![license](https://img.shields.io/badge/license-MIT-blue.svg)
 ![dsh](https://img.shields.io/badge/dsh-plugin-4B6BFB.svg)
 ![node](https://img.shields.io/badge/node-%E2%89%A522.19-339933.svg)
 ![status](https://img.shields.io/badge/status-beta-orange.svg)
+
+<!--
+  XERJ Corpus Hub 徽章 —— 他们 2026-10-31 收录了本仓库并给了这个可复制的 badge。
+  加它是礼尚往来（他们免费收录 + 署名 + 贡献者页面），不是广告位交换。
+  想撤掉只要删这一行。
+-->
+[![XERJ Corpus Hub contributor](https://hub.xerj.org/contributors/ZelotsNullzwei/badge.svg)](https://hub.xerj.org/contributors/ZelotsNullzwei)
 
 </div>
 

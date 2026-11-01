@@ -981,6 +981,105 @@ function isMarketFace(d) {
 }
 
 /**
+ * 从**分享卡片**（OneBot 的 `json` / `xml` 段）里抠出「标题 + 链接」（2026-10-31）。
+ *
+ * ## 为什么必须处理
+ * QQ 里分享 B 站 / 网易云 / 淘宝时，NapCat 常常给的是 **`json` 段**（结构化卡片），
+ * 不是 text 段。而 `parseMessage` 原来对未知类型是「**其它类型：忽略，不污染文本**」——
+ * **整条消息就没了**，`msg.text` 变成空串，机器人以为对方"手滑发了条空的"。
+ *
+ * 实测踩过：20:16 一条 B 站分享进来，她回「啥也没发，手滑了吧」。
+ *
+ * ## 兼容两种标签
+ * - `json`：`{"app":"com.tencent.structmsg","meta":{"news":{"title":"…","jumpUrl":"…"}}}`
+ *   （B 站/资讯类）；也有 `meta.detail.qqdocurl`（结构化详情卡）
+ * - `xml`：`<msg ... brief="…"><item><title>…</title><url>…</url></item></msg>`
+ *
+ * 抠不到任何东西时给 `[分享]` —— **也不能是空**，否则又变回"手滑"。
+ *
+ * @param {'json'|'xml'} segType
+ * @param {any} d 段里的 data 对象
+ * @returns {string}
+ */
+function extractShareCard(segType, d) {
+  const raw = String(
+    typeof d === 'string' ? d : (d?.data ?? d?.content ?? d?.text ?? d?.xml ?? ''),
+  ).trim()
+  let title = ''
+  let url = ''
+
+  const pickUrl = (s) => {
+    let u = String(s ?? '').trim()
+    if (!u) return ''
+    // qqdocurl 常是 URL-encoded 的，解一下（解不开就用原值）
+    if (/%3A%2F%2F|%2F/i.test(u)) {
+      try { u = decodeURIComponent(u) } catch { /* 保留原值 */ }
+    }
+    return /^https?:\/\//i.test(u) ? u : ''
+  }
+
+  if (raw) {
+    // ① JSON 卡片
+    if (segType === 'json' || raw.startsWith('{')) {
+      try {
+        const j = JSON.parse(raw)
+        const meta = j?.meta ?? {}
+        /*
+         * ★ **通用遍历 `meta` 的所有子对象**（2026-10-31 修）。
+         *
+         * 原来硬编码 `['news','detail','music','video','share']` —— 漏了
+         * **`detail_1`**（QQ 小程序卡片常用的 key，带下划线+数字）。
+         * 实测：一条小程序分享只解析出「【[QQ小程序]小克你最好了】」，**没有 URL**
+         * → 后续 `_biliContext` 根本触发不了 → 评论/弹幕永远拿不到。
+         *
+         * 所以不再猜 key，直接遍历 `Object.values(meta)`。
+         * ⚠️ `preview` 是**封面图**不是跳转链接，绝不能当 url。
+         */
+        for (const m of Object.values(meta)) {
+          if (!m || typeof m !== 'object') continue
+          if (!title) title = String(m.title ?? m.desc ?? '').trim()
+          if (!url) {
+            url = pickUrl(
+              m.jumpUrl ?? m.qqdocurl ?? m.url ?? m.source_url
+              ?? m.sourceUrl ?? m.shareUrl ?? m.link,
+            )
+          }
+        }
+        if (!title) title = String(j?.prompt ?? '').trim()
+        // 顶层也可能直接带（少数实现）
+        if (!url) url = pickUrl(j?.url ?? j?.jumpUrl ?? j?.qqdocurl)
+        /*
+         * ⚠️ 抠不到 url 时把**原始卡片打个日志**（只 debug 级）。
+         * 没有这个，下次再遇到新形状的卡片只能瞎猜字段名 ——
+         * 这轮就是「只出标题不出链接」，靠猜改了两版才对。
+         */
+        if (!url) {
+          console.debug?.(`onebot：分享卡片没抠到 url（type=${segType}）raw=${raw.slice(0, 400)}`)
+        }
+      } catch { /* 不是合法 JSON，走下面 XML */ }
+    }
+    // ② XML 卡片（或 JSON 没抠到）
+    if ((!title || !url) && raw.includes('<')) {
+      if (!title) title = String(raw.match(/<title>([^<]*)<\/title>/i)?.[1] ?? '').trim()
+      if (!url) url = pickUrl(raw.match(/<url>([^<]*)<\/url>/i)?.[1])
+      if (!title) {
+        title = String(
+          raw.match(/brief="([^"]*)"/i)?.[1]
+          ?? raw.match(/summary="([^"]*)"/i)?.[1]
+          ?? '',
+        ).trim()
+      }
+    }
+  }
+
+  if (!title && !url) return '[分享]'
+  const parts = []
+  if (title) parts.push(title.startsWith('【') ? title : `【${title}】`)
+  if (url) parts.push(url)
+  return parts.join('')
+}
+
+/**
  * 把 OneBot 的 message 段（数组或 CQ 码字符串）转成纯文本 + 元信息。
  *
  * OneBot v11 有两种格式：
@@ -1071,6 +1170,18 @@ export function parseMessage(raw) {
         return id ? `[表情:${id}]` : '[表情]'
       }
       if (type === 'reply') return ''
+      /*
+       * ★ **分享卡片**（2026-10-31）：原来这里没有分支 → 落到最后 `return '[json]'`
+       *   或者被当成未知类型丢掉。B 站/网易云/淘宝分享基本都是这两个。
+       *
+       * ⚠️ **不能用上面那个 `data` 对象** —— 它是按 `,` 切出来的键值对，
+       *    而 `data={"meta":{...}}` 里的 JSON **本身就含逗号**，会被切断。
+       *    所以这里直接用**原始 `rest` 串**（去掉前导 `,data=`）。
+       */
+      if (type === 'json' || type === 'xml') {
+        const raw = String(rest).replace(/^,/, '').replace(/^data=/, '')
+        return extractShareCard(type, raw)
+      }
       if (type === 'record') return '[语音]'
       if (type === 'video') return '[视频]'
       return `[${type}]`
@@ -1149,6 +1260,12 @@ export function parseMessage(raw) {
         replyTo = String(d.id ?? d.message_id ?? '')
       }
       else if (t === 'forward') text += '[合并转发]'
+      /*
+       * ★ **分享卡片**（2026-10-31）—— 原来这里写着「其它类型：忽略」，
+       *    于是 B 站/网易云/淘宝的分享**整条消失**，`msg.text` 变成空串，
+       *    机器人以为对方"手滑发了条空的"（实测 20:16 那条就是这么来的）。
+       */
+      else if (t === 'json' || t === 'xml') text += extractShareCard(t, d)
       // 其它类型：忽略，不污染文本
     }
   } else if (raw != null) {

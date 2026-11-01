@@ -86,9 +86,54 @@ export function createDecisionLayer(cfg = {}, deps = {}) {
       const hi = t.max ?? 3500
       delayMs = Math.round(lo + (deps.random ?? Math.random)() * (hi - lo))
     }
-    // ⚠️ 把档位带出去 —— 不然改完只能量"总时长"，
+
+    /*
+     * ## 上下文系数（**不是**单条消息长度）
+     *
+     * 用户原话：「根据**上下文**长短进行回复」（先前打成「上下午」，已澄清）。
+     *
+     * 含义：**聊得越深，越该多想一会儿**；刚接上的闲聊就快答。
+     * 这比"看单条消息多长"更符合直觉 —— 单条长不代表要想（可能是转发的段子），
+     * 但整段上下文厚，说明话题在往深里走。
+     *
+     * 口径：`input.messages` 里**去掉媒体标记后的总字数**。
+     * （「[表情包]」「[图片]」不算内容 —— 否则刷几张图就被判成"聊得很深"。）
+     */
+    const MEDIA = /\[(表情包(?::[^\]]*)?|表情:\d+|图片|SILENT)\]/g
+    const ctxChars = (Array.isArray(input?.messages) ? input.messages : [])
+      .reduce((sum, m) => sum + String(m?.text ?? '').replace(MEDIA, '').trim().length, 0)
+    /** 上下文总字数 → 时长系数 */
+    const CTX_FACTOR = [
+      { max: 200, k: 0.85 }, // 刚接上，没多少要想
+      { max: 600, k: 1.0 },
+      { max: 1500, k: 1.2 },
+      { max: Infinity, k: 1.4 }, // 聊得很深 —— 明显要想一下
+    ]
+    /** 目标**总时长**的基础区间（毫秒），按档位。 */
+    const TARGET_BASE = {
+      easy: { min: 1200, max: 2500 },
+      normal: { min: 2000, max: 4500 },
+      hard: { min: 3500, max: 8000 },
+    }
+    const k = (CTX_FACTOR.find((x) => ctxChars <= x.max) ?? CTX_FACTOR[1]).k
+    const tb = TARGET_BASE[tier] ?? TARGET_BASE.normal
+    const rnd = (deps.random ?? Math.random)()
+    const targetMs = pass
+      ? Math.round((tb.min + rnd * (tb.max - tb.min)) * k)
+      : undefined
+
+    // ⚠️ 把档位和系数带出去 —— 不然改完只能量"总时长"，
     //    分不清是档位没生效还是生成变慢了。
-    return { ...d, reply: pass, delayMs: pass ? delayMs : undefined, threshold, delayTier: tier }
+    return {
+      ...d,
+      reply: pass,
+      delayMs: pass ? delayMs : undefined,
+      targetMs,
+      delayTier: tier,
+      delayCtxChars: ctxChars,
+      delayCtxK: k,
+      threshold,
+    }
   }
 
   /** 决策结果的中文摘要（给日志和 Web UI 用）。 */

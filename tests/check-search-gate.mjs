@@ -143,5 +143,56 @@ ok('⚠️ 源码锁：注入块必须保留「优先于训练记忆」', () => 
   assert.match(t, /不要在群里贴长链接/, '别贴长链接')
 })
 
+// ── 链接不该触发搜索（2026-10-31）────────────────────────────
+/*
+ * ## 事故
+ * ```
+ * 21:00:28  B站：BV1bbeY6wE9x 评论 5 条 / 弹幕 10 条   ✅ 真信息抓到了
+ * 21:00:28  bridge：需要联网（提到具体名字「https」）→ 查「【哔哩哔哩】https://b23.tv/…」
+ * 21:00:30  bridge：联网：已查到 → 264 字 / 5 个来源      ← 垃圾
+ * 21:00:34  我「还是没展开，短链跳不过去」                ← 被搜索带偏
+ * ```
+ * **拿一条链接去联网搜**本来就是错的：短链搜不到，只会返回无关内容，
+ * 让模型以为"这个链接打不开"。而 B 站的真信息**已经抓到了**，再搜一遍纯帮倒忙。
+ */
+
+ok('★ 整段含 URL 时不触发"专有名词"搜索', () => {
+  const urls = [
+    '【哔哩哔哩】https://b23.tv/1sA58D7',
+    '【哔哩哔哩】https://b23.tv/1sA58D7?share_medium=android&share_source=qq&bbid=XX4F12F4&ts=1793451604063',
+    '看这个 https://www.bilibili.com/video/BV1bbeY6wE9x',
+    'https://example.com/abc',
+  ]
+  for (const t of urls) {
+    const r = needsFreshInfo(t)
+    assert.equal(r.need, false, `不该因为链接就搜：${t} → why=${r.why}`)
+  }
+})
+
+ok('★ 短链尾部的随机段（`sA58D7`）不能被当成"具体名字"', () => {
+  /*
+   * 第一版只判断"这个词前后紧邻 URL 字符" ——
+   * `b23.tv/1sA58D7` 结尾那段后面什么都没有，仍然被当成名字
+   * （实测 why=「提到具体名字「sA58D7」」）。
+   * 所以补了"整段含 URL 就直接返回 null"。
+   */
+  const r = needsFreshInfo('【哔哩哔哩】https://b23.tv/1sA58D7')
+  assert.equal(r.need, false)
+  assert.ok(!/sA58D7/.test(r.why ?? ''), `why 里不该出现短链片段：${r.why}`)
+})
+
+ok('⚠️ 但不能因为这条把真问题也拦掉', () => {
+  // 这些**没有** URL，仍然该搜（否则模型拿旧记忆编人名/新番）
+  for (const t of ['黑神话出新DLC了吗', '《咒术回战》第二季播了吗', '祀强吗', '影之刃零真好玩吗']) {
+    const r = needsFreshInfo(t)
+    assert.equal(r.need, true, `漏搜了：${t}`)
+  }
+})
+
+ok('文本 + 链接混排（链接只是附带）时也按不搜处理', () => {
+  const r = needsFreshInfo('看这个 https://b23.tv/abc 挺好笑的')
+  assert.equal(r.need, false, `实际 why=${r.why}`)
+})
+
 console.log(`\n通过 ${pass} / 失败 ${fail}`)
 process.exit(fail > 0 ? 1 : 0)

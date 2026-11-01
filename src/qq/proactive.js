@@ -28,6 +28,19 @@
  */
 
 /**
+ * 主动发言后，等多久来判断「有人接没接」（2026-10-31 加）。
+ *
+ * 30 分钟：太短会把"对方在忙"误判成"没人理"；太长则反馈太迟。
+ */
+const ACK_WINDOW_MS = 30 * 60_000
+
+/**
+ * 多久之内有人说过话，就算「场子活了」—— 顺手清掉"碰壁"计数。
+ * 5 分钟够用：真人不会在 5 分钟内连续吃两次闭门羹。
+ */
+const FRESH_ACK_MS = 5 * 60_000
+
+/**
  * 本地时区的「今天」——用来重置每日计数。
  *
  * ⚠️ 不能用 `toISOString()`（UTC）：东八区凌晨会被算成前一天，
@@ -110,6 +123,42 @@ export class ProactiveState {
     this.lastSpeakAtPrivate = 0
     /** 老字段，只用于读旧 state 时迁移 */
     this.lastSpeakAt = 0
+    /*
+     * 「说了没人接」的连续次数（2026-10-31 加，参考麦麦的 idle_backoff）。
+     *
+     * ## 为什么要它
+     * 原来的主动发言是**纯定时**：安静够 45 分钟就开口，一天 3 次配额
+     * 用完为止。结果是「到点就必须说一句」—— 而真人不是这样：
+     * **真人说了一句没人接，第二次就不太想说了。**
+     *
+     * ## 判定
+     * 主动发言后开一个 30 分钟的观察窗：
+     *   · 窗内有人说话 → 说明有人接 → streak 归零
+     *   · 窗内没人说话 → streak + 1
+     * `streak >= 2` 时**当天不再主动开口** —— 连说两次都没人理，还说什么？
+     *
+     * 这是"最像人"的那一维：**不是越闲越想说话，是没人理就更不想说。**
+     */
+    this.ignoredStreakGroup = 0
+    this.ignoredStreakPrivate = 0
+    /** 刚说完、还在观察窗里（等到点再结算，避免重复计） */
+    this.pendingAckGroup = false
+    this.pendingAckPrivate = false
+    /*
+     * 下一次**最早**什么时候可以说 —— 发言时**掷一次随机**定下来（2026-10-31 加）。
+     *
+     * ## 为什么不留固定冷却
+     * 用户原话：「定时发言就不要了，改成随机发言？群里和私聊都是」。
+     *
+     * 固定的 `cooldownMinutes: 180` 意味着"每天差不多同样的时刻冒泡"，
+     * 很机械。现在改成 `cooldownMinutes ~ cooldownMinutes + cooldownJitterMinutes`
+     * 之间**均匀随机**（默认 180 ~ 300 分钟）。
+     *
+     * ⚠️ **只在发言后掷一次**并存下来 —— 不能每个 tick 重掷，
+     *    否则就变成"每次 tick 都有概率"（累积概率暴涨，又回到"到点必说"）。
+     */
+    this.nextSpeakAtGroup = 0
+    this.nextSpeakAtPrivate = 0
     /** 上次查余额的时间戳 */
     this.lastBalanceCheckAt = 0
     /** 最近一次查到的余额（人民币），null = 还不知道 */
@@ -153,6 +202,14 @@ export class ProactiveState {
       this.lastSpeakAt = Math.max(this.lastSpeakAtGroup, this.lastSpeakAtPrivate)
       if (Number.isFinite(d?.lastBalanceCheckAt)) this.lastBalanceCheckAt = d.lastBalanceCheckAt
       if (Number.isFinite(d?.lastBalanceCny)) this.lastBalanceCny = d.lastBalanceCny
+      // 「说了没人接」的连续计数（2026-10-31 加）
+      if (Number.isFinite(d?.ignoredStreakGroup)) this.ignoredStreakGroup = d.ignoredStreakGroup
+      if (Number.isFinite(d?.ignoredStreakPrivate)) this.ignoredStreakPrivate = d.ignoredStreakPrivate
+      if (d?.pendingAckGroup === true) this.pendingAckGroup = true
+      if (d?.pendingAckPrivate === true) this.pendingAckPrivate = true
+      // 随机冷却的下次可发言时间（2026-10-31 加）
+      if (Number.isFinite(d?.nextSpeakAtGroup)) this.nextSpeakAtGroup = d.nextSpeakAtGroup
+      if (Number.isFinite(d?.nextSpeakAtPrivate)) this.nextSpeakAtPrivate = d.nextSpeakAtPrivate
     } catch {
       // 首次运行 / 文件坏了 —— 从零开始
     }
@@ -171,6 +228,14 @@ export class ProactiveState {
         lastSpeakAtPrivate: this.lastSpeakAtPrivate,
         lastBalanceCheckAt: this.lastBalanceCheckAt,
         lastBalanceCny: this.lastBalanceCny,
+        // 「说了没人接」的连续计数（2026-10-31 加）
+        ignoredStreakGroup: this.ignoredStreakGroup,
+        ignoredStreakPrivate: this.ignoredStreakPrivate,
+        pendingAckGroup: this.pendingAckGroup,
+        pendingAckPrivate: this.pendingAckPrivate,
+        // 随机冷却的下次可发言时间（2026-10-31 加）
+        nextSpeakAtGroup: this.nextSpeakAtGroup,
+        nextSpeakAtPrivate: this.nextSpeakAtPrivate,
       })
       const tmp = `${this.file}.tmp`
       this.fs.writeFileSync(tmp, payload, { mode: 0o600 })
@@ -239,6 +304,8 @@ export class ProactiveScheduler {
     this.onSpeak = opts.onSpeak ?? null
     this.scopes = opts.scopes ?? (() => [])
     this.idleMs = opts.idleMs ?? (() => 0)
+    /** 随机源（测试可注入，保证"随机冷却"可复现） */
+    this._random = opts.random ?? Math.random
     this._timer = null
     this._busy = false
   }
@@ -257,6 +324,67 @@ export class ProactiveScheduler {
    * @param {Date} [now]
    * @returns {{beg:boolean, speak:boolean, reason:string}}
    */
+  /**
+   * 结算「上一次主动发言有没有人接」（2026-10-31 加）。
+   *
+   * ## 为什么需要
+   * 主动发言原来是纯定时的 —— "安静够了就开口"。结果是**到点必须说**，
+   * 哪怕说了根本没人理，下一次照旧说。真人不是这样：
+   * **说了一句没人接，第二次就不太想说了。**
+   *
+   * ## 判定
+   * 发言后开一个 {@link ACK_WINDOW_MS} 的观察窗：
+   *   · 窗内有人说话 → `streak = 0`（有人接，正常）
+   *   · 窗内没人说话 → `streak += 1`
+   * `streak >= 2` 时 {@link plan} 会当天闭嘴（"连着两次没人理，还说什么"）。
+   *
+   * `idleMs()` = 「距上次有人说话多久」。所以：
+   *   · 发言后有人说过话 → `idleMs() < 距发言的时间`
+   *   · 发言后一直没人说 → `idleMs() >= 距发言的时间`
+   *
+   * 另外：只要有人刚说过话（`idleMs` 很小），就顺手把 streak 清掉 ——
+   * 场子活了，它的"碰壁感"也该消。
+   *
+   * @param {Date} [now]
+   */
+  settleAck(now = new Date()) {
+    const t = now.getTime()
+    const idle = this.idleMs()
+    /*
+     * ⚠️ 这些字段都在 **`this.state`** 上，不在调度器自己身上。
+     *    第一版写成 `this.pendingAckGroup` → 恒 undefined → 整个结算
+     *    静默不生效（探针里 streak 一直是 0，就是它）。
+     */
+    const st = this.state
+
+    // 有人刚说过话 → 场子活了，把碰壁感清掉
+    if (idle < FRESH_ACK_MS) {
+      if (st.ignoredStreakGroup > 0) st.ignoredStreakGroup = 0
+      if (st.ignoredStreakPrivate > 0) st.ignoredStreakPrivate = 0
+    }
+
+    for (const kind of ['Group', 'Private']) {
+      const pendKey = `pendingAck${kind}`
+      const streakKey = `ignoredStreak${kind}`
+      const atKey = `lastSpeakAt${kind}`
+      if (st[pendKey] !== true) continue
+      const spokeAt = Number(st[atKey] ?? 0)
+      if (!spokeAt) { st[pendKey] = false; continue }
+      // 观察窗还没结束 —— 再等等
+      if (t - spokeAt < ACK_WINDOW_MS) continue
+      if (idle < t - spokeAt) {
+        st[streakKey] = 0
+      } else {
+        st[streakKey] += 1
+        this.log.info?.(
+          `proactive：${kind === 'Group' ? '群' : '私聊'}上次主动发言 ${Math.round((t - spokeAt) / 60_000)} 分钟没人接`
+          + ` → 连续 ${st[streakKey]} 次`,
+        )
+      }
+      st[pendKey] = false
+    }
+  }
+
   plan(now = new Date()) {
     this.state.rollDay(now)
     const t = now.getTime()
@@ -279,6 +407,8 @@ export class ProactiveScheduler {
     // ── 主动发言 ──────────────────────────────────────────────
     let wantSpeak = false
     if (this.cfg.enabled === true && this.onSpeak) {
+      // ★ 先结算「上一次主动发言有没有人接」
+      this.settleAck(now)
       const idleNeed = Math.max(1, Number(this.cfg.idleMinutes ?? 45)) * 60_000
       /*
        * ⚠️ 额度和冷却都按**类别**算（群/私聊各 3 次、各 3 小时冷却）。
@@ -288,7 +418,17 @@ export class ProactiveScheduler {
        */
       const usable = this.usableScopes(t)
       const quietEnough = this.idleMs() >= idleNeed
-      if (quietEnough && usable.length > 0) wantSpeak = true
+      /*
+       * ★ 「说了没人接，就别再说了」（2026-10-31 加）。
+       *
+       * 原来的逻辑是纯定时：安静够 45 分钟就开口，3 次配额用完为止 ——
+       * **"到点必须说"**。而真人不是：说了一句没人接，第二次就不太想说了。
+       *
+       * 连续 2 次主动发言的观察窗里都没人接 → 当天不再主动开口。
+       * 只要有人说话了（idleMs 归零过），streak 会自动清掉。
+       */
+      const muted = this.state.ignoredStreakGroup >= 2
+      if (quietEnough && usable.length > 0 && !muted) wantSpeak = true
     }
 
     // 讨钱优先：它是「有实际用处的」；主动发言是锦上添花，让路。
@@ -370,10 +510,29 @@ export class ProactiveScheduler {
     return kind === 'private' ? this.state.lastSpeakAtPrivate : this.state.lastSpeakAtGroup
   }
 
-  /** 某类是否已经过了冷却（按类别各算各的）。 */
+  /** 某类"下次最早什么时候可以说"（发言时掷的随机冷却；0 = 还没掷过）。 */
+  nextSpeakAtOf(kind) {
+    return kind === 'private' ? this.state.nextSpeakAtPrivate : this.state.nextSpeakAtGroup
+  }
+
+  /**
+   * 某类是否已经过了冷却（按类别各算各的）。
+   *
+   * ## 2026-10-31：固定冷却 → **随机冷却**
+   * 用户原话：「定时发言就不要了，改成随机发言？群里和私聊都是」。
+   *
+   * 固定 180 分钟意味着"每天差不多同一时刻冒泡"，很机械。
+   * 现在：发言时**掷一次** `cooldownMinutes ~ cooldownMinutes + cooldownJitterMinutes`
+   * （默认 180~300 分钟），存进 `nextSpeakAt*`。
+   *
+   * ⚠️ 掷一次就存下来，**不是每 tick 重掷** —— 否则累积概率会暴涨，
+   *    又变回"到点必说"。老 state 没有 `nextSpeakAt` 时退回旧公式（兼容）。
+   */
   isCooled(kind, t) {
-    const cooldown = Math.max(1, Number(this.cfg.cooldownMinutes ?? 180)) * 60_000
-    return t - this.lastSpeakAtOf(kind) >= cooldown
+    const base = Math.max(1, Number(this.cfg.cooldownMinutes ?? 180)) * 60_000
+    const nextAt = this.nextSpeakAtOf(kind)
+    const due = nextAt > 0 ? nextAt : this.lastSpeakAtOf(kind) + base
+    return t >= due
   }
 
   /**
@@ -482,14 +641,34 @@ export class ProactiveScheduler {
     const kind = this.kindOf(scope)
     const ok = await this.onSpeak(scope)
     if (ok) {
+      /*
+       * ★ 掷一次**随机冷却**（2026-10-31）——
+       * `cooldownMinutes ~ cooldownMinutes + cooldownJitterMinutes`（默认 180~300 分钟）。
+       * 存进 `nextSpeakAt*`，之后 `isCooled()` 就看它。
+       * **每次发言只掷一次**，不是每 tick 重掷。
+       */
+      const baseMs = Math.max(1, Number(this.cfg.cooldownMinutes ?? 180)) * 60_000
+      const jitterMs = Math.max(0, Number(this.cfg.cooldownJitterMinutes ?? 120)) * 60_000
+      const rnd = (this._random ?? Math.random)()
+      const gapMs = baseMs + Math.round(rnd * jitterMs)
+      const nextAt = t + gapMs
       // 按**实际**发到哪一类来计数（scope 是字符串，必须用 kindOf 解析）
       if (kind === 'private') {
         this.state.speakCountPrivate += 1
         this.state.lastSpeakAtPrivate = t
+        // ★ 开观察窗：30 分钟后结算"有没有人接"
+        this.state.pendingAckPrivate = true
+        this.state.nextSpeakAtPrivate = nextAt
       } else {
         this.state.speakCountGroup += 1
         this.state.lastSpeakAtGroup = t
+        this.state.pendingAckGroup = true
+        this.state.nextSpeakAtGroup = nextAt
       }
+      this.log.info?.(
+        `proactive：下次${kind === 'private' ? '私聊' : '群'}最早 ${Math.round(gapMs / 60_000)} 分钟后`
+        + `（${Math.round(baseMs / 60_000)}~${Math.round((baseMs + jitterMs) / 60_000)} 随机）`,
+      )
       this.state.speakCount = this.state.speakCountGroup + this.state.speakCountPrivate
       this.state.lastSpeakAt = Math.max(this.state.lastSpeakAtGroup, this.state.lastSpeakAtPrivate)
     }

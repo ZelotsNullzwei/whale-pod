@@ -11,6 +11,7 @@
  */
 
 import assert from 'node:assert/strict'
+import fs from 'node:fs'
 import { dayKey, inActiveHours, ProactiveState, ProactiveScheduler } from '../src/qq/proactive.js'
 
 let pass = 0
@@ -396,6 +397,208 @@ await ok('群满但私聊还有额度 → 私聊仍可用（不被误过滤）',
   const usable = sched.usableScopes(Date.now())
   assert.equal(usable.length, 1, '应该只剩私聊')
   assert.ok(String(usable[0]).startsWith('private:'), `实际：${usable[0]}`)
+})
+
+// ── 「说了没人接就别再说了」（2026-10-31 加）─────────────────────
+/*
+ * ## 为什么加这条
+ * 主动发言原来是**纯定时**：安静够 45 分钟就开口，3 次配额用完为止 ——
+ * 本质是「**到点必须说一句**」。而真人不是：**说了一句没人接，第二次就不太想说了。**
+ *
+ * 参考麦麦（MaiBot）的 `idle_backoff.py`：连续"无事可做"之后**指数退避**，
+ * 越来越不愿意说话。它甚至整个项目都**没有** proactive 功能。
+ *
+ * 判定：发言后开 30 分钟观察窗，窗内有人说话 → streak 归零；
+ * 没人说话 → streak+1；streak >= 2 → 当天不再主动开口。
+ */
+const mkAckSched = (state, idleMinFn) =>
+  new ProactiveScheduler({
+    cfg: { enabled: true, idleMinutes: 45, cooldownMinutes: 180, maxPerDay: 3, hours: [8, 23], inGroups: true, inPrivate: false },
+    state,
+    idleMs: idleMinFn,
+    scopes: () => ['group:1'],
+    onSpeak: async () => true,
+    log: {},
+  })
+
+await ok('★ 说了没人接 → streak +1', () => {
+  const T0 = new Date('2026-10-31T10:00:00+08:00').getTime()
+  const state = new ProactiveState({})
+  let idleMin = 60
+  const sched = mkAckSched(state, () => idleMin * 60_000)
+  state.lastSpeakAtGroup = T0
+  state.pendingAckGroup = true
+  idleMin = 100 // 发言后又过 40 分钟，仍没人说话
+  sched.settleAck(new Date(T0 + 40 * 60_000))
+  assert.equal(state.ignoredStreakGroup, 1, '应记 1 次没人接')
+  assert.equal(state.pendingAckGroup, false, '结算完要清掉 pending，别重复计')
+})
+
+await ok('★ 连续两次没人接 → 当天不再开口', () => {
+  const T0 = new Date('2026-10-31T10:00:00+08:00').getTime()
+  const state = new ProactiveState({})
+  let idleMin = 60
+  const sched = mkAckSched(state, () => idleMin * 60_000)
+  // 第一次
+  state.lastSpeakAtGroup = T0
+  state.pendingAckGroup = true
+  idleMin = 100
+  sched.settleAck(new Date(T0 + 40 * 60_000))
+  // 第二次
+  state.lastSpeakAtGroup = T0 + 60 * 60_000
+  state.pendingAckGroup = true
+  idleMin = 140
+  sched.settleAck(new Date(T0 + 100 * 60_000))
+  assert.equal(state.ignoredStreakGroup, 2)
+  idleMin = 200
+  const p = sched.plan(new Date(T0 + 160 * 60_000))
+  assert.equal(p.speak, false, '★ 连说两次没人理，就不该再说了')
+})
+
+await ok('★ 有人在观察窗内接话 → streak 归零（不是"没人理"）', () => {
+  const T0 = new Date('2026-10-31T10:00:00+08:00').getTime()
+  const state = new ProactiveState({})
+  state.lastSpeakAtGroup = T0
+  state.pendingAckGroup = true
+  state.ignoredStreakGroup = 1
+  // 发言后 10 分钟有人说过话 → idleMs(10) < 距发言(40)
+  const sched = mkAckSched(state, () => 10 * 60_000)
+  sched.settleAck(new Date(T0 + 40 * 60_000))
+  assert.equal(state.ignoredStreakGroup, 0, '有人接就要归零')
+})
+
+await ok('有人刚说过话 → 顺手把碰壁感清掉', () => {
+  const T0 = new Date('2026-10-31T10:00:00+08:00').getTime()
+  const state = new ProactiveState({})
+  state.ignoredStreakGroup = 2
+  state.ignoredStreakPrivate = 1
+  const sched = mkAckSched(state, () => 60_000) // 1 分钟前有人说话
+  sched.settleAck(new Date(T0))
+  assert.equal(state.ignoredStreakGroup, 0)
+  assert.equal(state.ignoredStreakPrivate, 0)
+})
+
+await ok('还没到 30 分钟观察窗 → 不动 streak', () => {
+  const T0 = new Date('2026-10-31T10:00:00+08:00').getTime()
+  const state = new ProactiveState({})
+  let idleMin = 10
+  const sched = mkAckSched(state, () => idleMin * 60_000)
+  state.lastSpeakAtGroup = T0
+  state.pendingAckGroup = true
+  sched.settleAck(new Date(T0 + 10 * 60_000)) // 才过 10 分钟
+  assert.equal(state.ignoredStreakGroup, 0, '窗没结束不该判')
+  assert.equal(state.pendingAckGroup, true, 'pending 要留着，等窗结束再结算')
+})
+
+ok('⚠️ 源码锁：settleAck 必须读写 this.state（第一版写成 this.* 静默失效）', () => {
+  /*
+   * 第一版把字段写成调度器自己的 `this.xxx` —— 但它们在 `this.state` 上。
+   * 于是 `pendingAck` 恒 undefined → `continue` → **整个结算静默不生效**，
+   * 探针里 streak 一直是 0 才暴露。这种"静默不生效"最坑，必须锁住。
+   *
+   * ⚠️ 查之前**必须剥掉注释**：解释这件事的注释里就写着那个错误写法，
+   *    裸正则会把注释匹配上、报假失败（这个会话第 N 次撞注释了）。
+   */
+  const raw = fs.readFileSync(new URL('../src/qq/proactive.js', import.meta.url), 'utf8')
+  const code = raw
+    .split('\n')
+    .filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l))
+    .join('\n')
+  const at = code.indexOf('settleAck(')
+  assert.ok(at > 0, '要有 settleAck')
+  const seg = code.slice(at, at + 1600)
+  assert.match(seg, /const st = this\.state/, '要先取 this.state')
+  assert.ok(
+    !/[^.\w]this\.(pendingAck|ignoredStreak)/.test(seg),
+    '不能直接用 this.pendingAck*/this.ignoredStreak*（它们在 state 上）',
+  )
+})
+
+ok('⚠️ 源码锁：speakHint 不能再命令它「按『今天我』的状态说」', () => {
+  /*
+   * 那句就是「橘子」事故的源头 —— 它等于让模型**念日程表**：
+   * 「洗漱完煮了八个速冻小馄饨，汤里放了紫菜、虾皮和几滴香油…」
+   * 结果主动发言变成日记朗读（「福是真福，就是橘子吃完手黏」）。
+   *
+   * 现在改成：「今天我」只是**背景**，别人问才答，不要主动念。
+   */
+  const src = fs.readFileSync(new URL('../src/qq/bridge.js', import.meta.url), 'utf8')
+  const at = src.indexOf('const speakHint = idle < FRESH_MS')
+  assert.ok(at > 0, '要能找到 speakHint')
+  const seg = src.slice(at, at + 2200)
+  assert.ok(
+    !/按「今天我」的状态说/.test(seg),
+    '不能再说「按『今天我』的状态说」—— 那就是让它念日程表',
+  )
+  assert.match(seg, /不要主动念日程/, '要明确禁止主动念日程')
+  assert.match(seg, /\[SILENT\]/, '要允许沉默')
+  assert.match(seg, /别因为/, '要写明"别因为该说话了就硬凑"')
+})
+
+// ── 随机冷却（2026-10-31）─────────────────────────────────────
+/*
+ * 用户原话：「定时发言就不要了，改成随机发言？群里和私聊都是」。
+ *
+ * 固定 `cooldownMinutes: 180` = 每天差不多同一时刻冒泡，很机械。
+ * 现在实际间隔 = `cooldownMinutes ~ cooldownMinutes + cooldownJitterMinutes`
+ * （默认 180~300 分钟），**每次发言掷一次**并存进 `nextSpeakAt*`。
+ *
+ * ⚠️ 关键是"只掷一次"：如果每 tick 重掷，累积概率会暴涨，又变回"到点必说"。
+ */
+const mkCoolSched = (state, t0) =>
+  new ProactiveScheduler({
+    cfg: { enabled: true, idleMinutes: 45, cooldownMinutes: 180, cooldownJitterMinutes: 120, maxPerDay: 3, hours: [8, 23], inGroups: true, inPrivate: false },
+    state,
+    idleMs: () => 99 * 60_000,
+    scopes: () => ['group:1'],
+    onSpeak: async () => true,
+    log: {},
+    random: () => 0.5,
+  })
+
+await ok('★ 随机冷却：发言后掷一次，间隔落在 180~300 分钟', () => {
+  const T0 = new Date('2026-10-31T10:00:00+08:00').getTime()
+  const sched = mkCoolSched(new ProactiveState({}))
+  // random=0.5 → 180 + 0.5*120 = 240 分钟
+  const base = 180 * 60_000
+  const jit = 120 * 60_000
+  sched.state.nextSpeakAtGroup = T0 + base + Math.round(0.5 * jit)
+  assert.equal(sched.isCooled('group', T0 + 200 * 60_000), false, '200 分钟还没到 240，冷却中')
+  assert.equal(sched.isCooled('group', T0 + 240 * 60_000), true, '240 分钟到了')
+})
+
+await ok('随机冷却：jitter=0 时退回固定 180（老行为）', () => {
+  const T0 = new Date('2026-10-31T10:00:00+08:00').getTime()
+  const state = new ProactiveState({})
+  const sched = new ProactiveScheduler({
+    cfg: { enabled: true, cooldownMinutes: 180, cooldownJitterMinutes: 0, maxPerDay: 3, hours: [8, 23], inGroups: true, inPrivate: false },
+    state, idleMs: () => 99 * 60_000, scopes: () => ['group:1'], onSpeak: async () => true, log: {},
+  })
+  state.lastSpeakAtGroup = T0
+  state.nextSpeakAtGroup = 0 // 没掷过 → 退回 lastSpeakAt + base
+  assert.equal(sched.isCooled('group', T0 + 179 * 60_000), false)
+  assert.equal(sched.isCooled('group', T0 + 181 * 60_000), true)
+})
+
+ok('⚠️ 源码锁：_doSpeak 的随机冷却必须走可注入的随机源', () => {
+  const raw = fs.readFileSync(new URL('../src/qq/proactive.js', import.meta.url), 'utf8')
+  const code = raw.split('\n').filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l)).join('\n')
+  const at = code.indexOf('async _doSpeak(')
+  assert.ok(at > 0, '要有 _doSpeak')
+  const seg = code.slice(at, at + 2400)
+  assert.match(seg, /cooldownJitterMinutes/, '要用抖动配置')
+  assert.match(seg, /nextSpeakAtGroup|nextSpeakAtPrivate/, '要存下次可发言时间')
+  /*
+   * ⚠️ 只锁**冷却那行**用注入的随机源。
+   * `_doSpeak` 里还有一处合法的裸 `Math.random()` ——
+   * `list[Math.floor(Math.random() * list.length)]`（随机挑一个会话）。
+   * 第一版断言"整段不许出现 Math.random()"把这条也禁了，是**测试写太宽**。
+   */
+  assert.match(
+    seg,
+    /const rnd = \(this\._random \?\? Math\.random\)\(\)/,
+    '随机冷却要走 this._random（否则测试没法固定）',
+  )
 })
 
 console.log(`\n通过 ${pass} / 失败 ${fail}`)

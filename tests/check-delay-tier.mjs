@@ -134,5 +134,109 @@ ok('源码锁：缺档位时回退到 min/max（老 config.json 不会炸）', a
   assert.match(src, /delayTier: tier/, '档位要带出去 —— 否则无法量出是否生效')
 })
 
+// ── 目标总时长（2026-10-31）──────────────────────────────────
+/*
+ * ## 为什么改成「总时长」
+ * 实测 38 次「决策→发出」：
+ * ```
+ * p10 3.4s   p50 5.1s   p90 6.1s      ← 只差 2.7 秒
+ * 配置延迟   0.4s ~ 7.0s              ← 本意差 6.6 秒
+ * ```
+ * `总时长 = 延迟 + 生成`，而**生成本身抖动 1.3~4 秒**，把延迟的差别吃掉了。
+ * 用户反馈「感觉随机时间没生效」—— 他没说错。
+ *
+ * 所以改成：`targetMs`（目标**总时长**），生成完再补 `目标 - 已用`。
+ *
+ * ## 用户的原话（澄清过一次）
+ * 「根据**上下文**长短进行回复」—— 先前打成「上下午」，不是时段。
+ */
+const { createDecisionLayer } = await import('../src/decision/index.js')
+
+const layer = createDecisionLayer(
+  {
+    delay: { min: 800, max: 3500, easy: { min: 400, max: 1500 }, hard: { min: 2000, max: 7000 } },
+    model: { enabled: false },
+  },
+  { random: () => 0.5 },
+)
+
+/**
+ * ⚠️ 最后一条必须 `mentionsMe: true`。
+ *
+ * 否则「嗯」「？」会被判**沉默**，`targetMs` 就是 `undefined` ——
+ * 我第一版探针没注意这点，把 undefined 打印成 NaN，误判成"算错了"。
+ */
+const mkInput = (texts) => ({
+  scope: 'private:1',
+  messages: texts.map((t, i) => ({
+    text: t,
+    isMe: false,
+    sender: '1',
+    mentionsMe: i === texts.length - 1,
+  })),
+})
+
+await (async () => {
+  const d = await layer.shouldReply(mkInput(['嗯']))
+  ok('★ 会回的时候必须给出 targetMs（目标总时长）', () => {
+    assert.equal(d.reply, true, '这条应该会回')
+    assert.ok(Number.isFinite(d.targetMs) && d.targetMs > 0, `targetMs 要是正数，实际 ${d.targetMs}`)
+  })
+})()
+
+await (async () => {
+  const easy = await layer.shouldReply(mkInput(['嗯']))
+  const hard = await layer.shouldReply(mkInput(['为什么会这样']))
+  ok('★ 档位影响目标：hard 明显慢于 easy', () => {
+    assert.equal(easy.delayTier, 'easy')
+    assert.equal(hard.delayTier, 'hard')
+    assert.ok(
+      hard.targetMs > easy.targetMs * 1.8,
+      `hard(${hard.targetMs}ms) 该明显慢于 easy(${easy.targetMs}ms)`,
+    )
+  })
+})()
+
+await (async () => {
+  const filler = '今天下午上课上到九点，回来路上买了个煎饼，边吃边走'
+  const small = await layer.shouldReply(mkInput(['嗯']))
+  const big = await layer.shouldReply(mkInput([...Array.from({ length: 45 }, () => filler), '嗯']))
+  ok('★ 上下文越长 → 目标总时长越长', () => {
+    assert.ok(big.delayCtxChars > 1000, `大上下文的字数该 >1000，实际 ${big.delayCtxChars}`)
+    assert.ok(
+      big.delayCtxK > small.delayCtxK,
+      `系数该变大：${small.delayCtxK} → ${big.delayCtxK}`,
+    )
+    assert.ok(
+      big.targetMs > small.targetMs,
+      `目标该变长：${small.targetMs}ms → ${big.targetMs}ms`,
+    )
+  })
+})()
+
+await (async () => {
+  const media = await layer.shouldReply(mkInput(['[表情包]', '[表情包]', '[图片]', '嗯']))
+  ok('媒体标记不算上下文（刷几张图不该被判成"聊得深"）', () => {
+    assert.ok(
+      media.delayCtxChars <= 5,
+      `全是 [表情包]/[图片] 时字数该很小，实际 ${media.delayCtxChars}`,
+    )
+  })
+})()
+
+ok('源码锁：`_waitForPace` 必须在**发送前**补时，且两处发送点都调了', async () => {
+  const fs = await import('node:fs')
+  const src = fs.readFileSync(new URL('../src/qq/bridge.js', import.meta.url), 'utf8')
+  const atDef = src.indexOf('async _waitForPace(')
+  assert.ok(atDef > 0, '要有 `_waitForPace` 方法')
+  const calls = src.split('this._waitForPace(').length - 1
+  assert.ok(calls >= 2, `两处发送点都要调（纯表情 + 正常），实际 ${calls} 处`)
+  // 生成前**不该**再睡 delayMs 了 —— 那样会把生成时间又叠加上去
+  assert.ok(
+    !/if \(d\.delayMs && d\.delayMs > 0\)/.test(src),
+    '生成前的 delayMs 睡眠该已删除 —— 改成发送前补足',
+  )
+})
+
 console.log(`\n通过 ${pass} / 失败 ${fail}`)
 process.exit(fail > 0 ? 1 : 0)

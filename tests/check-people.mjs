@@ -12,7 +12,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { PeopleStore, PersonProfile, personKey } from '../src/memory/person.js'
-import { LongTermMemory, parsePeople, renderPeople } from '../src/memory/long.js'
+import { LongTermMemory, parsePeople, renderPeople, parsePersonFacts, stripFactsSection } from '../src/memory/long.js'
 
 let pass = 0
 let fail = 0
@@ -76,8 +76,8 @@ ok('印象超长会被截断', () => {
 
 ok('事实去重 + 上限', () => {
   const p = new PersonProfile('1')
-  p.addFact('在杭州')
-  p.addFact('在杭州')   // 重复
+  p.addFact('在本地')
+  p.addFact('在本地')   // 重复
   assert.equal(p.facts.length, 1, '同一件事不该记两遍')
   for (let i = 0; i < 20; i++) p.addFact(`事实${i}`)
   assert.ok(p.facts.length <= 12, `实际上限 ${p.facts.length}`)
@@ -155,14 +155,14 @@ ok('落盘后能恢复，别名和印象都在', () => {
   a.touch('12345', '阿甲', 1000)
   a.touch('12345', '不是不是阿甲', 2000)
   a.get('12345').setImpression('爱攒抽')
-  a.get('12345').addFact('在杭州')
+  a.get('12345').addFact('在本地')
   a.save()
 
   const b = new PeopleStore({ home })
   const p = b.get('12345')
   assert.equal(p.impression, '爱攒抽')
   assert.deepEqual(p.aliases, ['阿甲', '不是不是阿甲'])
-  assert.deepEqual(p.facts, ['在杭州'])
+  assert.deepEqual(p.facts, ['在本地'])
   assert.equal(p.seen, 2)
 
   fs.rmSync(home, { recursive: true, force: true })
@@ -177,6 +177,96 @@ ok('文件损坏不炸', () => {
   assert.equal(s.people.size, 1)
 
   fs.rmSync(home, { recursive: true, force: true })
+})
+
+// ── 事实层（2026-10-31 新增）──────────────────────────────────
+/*
+ * ## 事故：人物档案里 facts 永远是空的
+ * `PersonProfile.addFact()` 写好了（去重 + 上限 12），但 **`PeopleStore` 上
+ * 没有入口** → 全项目零调用 → `people.json` 里 5 个人 facts 全是 `[]`。
+ *
+ * 于是"记住一个人"只剩一句性格标签：
+ * `"impression": "学生党，周末要值班…爱发表情包叫我小馋猫"`
+ * —— **具体的事一件都没留下**，而且混入了机器人视角（「叫我」）。
+ *
+ * ## 改法
+ * 摘要多输出一段【事实】（`QQ号 | 一件事`）→ `parsePersonFacts`
+ * → `PeopleStore.addFact` → `people.json`（跨会话累积）
+ * → `toPromptLine()` 渲染时带上。
+ * 然后 `stripFactsSection` 从摘要里摘掉（避免两份、避免裁剪时神秘消失）。
+ */
+
+ok('★ parsePersonFacts 能解析【事实】段', () => {
+  /*
+   * ⚠️ ID 必须 ≥4 位 —— 解析器和 `parsePersonLines` 同一口径（`\d{4,12}`，
+   * 真 QQ 号就是 5-12 位）。我第一版测试用 `123`（3 位），解析器正确地
+   * 跳过了它，测试却报"解析出 0 条"—— **是测试数据错，不是代码错**。
+   */
+  const text = [
+    '【人】',
+    '123450002 | 甲 | 学生',
+    '',
+    '【事实】',
+    '123450002 | 周末要值班',
+    '123450002 | 住的地方晚上会断电',
+    '',
+    '【事】',
+    '在上课。',
+  ].join('\n')
+  const facts = parsePersonFacts(text)
+  assert.equal(facts.length, 2, `应解析出 2 条，实际 ${facts.length}`)
+  assert.equal(facts[0].id, '123450002')
+  assert.match(facts[0].fact, /周末要值班/)
+})
+
+ok('parsePersonFacts 不会越过【事实】去吃后面的段', () => {
+  const text = '【事实】\n123450002 | 在玩一款手游\n【我】\n我越来越会等了。'
+  const facts = parsePersonFacts(text)
+  assert.equal(facts.length, 1, '【我】那段不该被当事实')
+  assert.match(facts[0].fact, /手游/)
+})
+
+ok('★ stripFactsSection 摘掉【事实】，其它段一个不动', () => {
+  const text = '【人】\n123450002 | 甲 | 学生\n\n【事实】\n123450002 | 在玩一款手游\n\n【事】\n在上课。\n\n【梗】\n本鱼 | 自称'
+  const out = stripFactsSection(text)
+  assert.ok(!out.includes('【事实】'), '【事实】该被摘掉')
+  assert.ok(!out.includes('手游'), '事实内容也该一起带走')
+  for (const sec of ['【人】', '【事】', '【梗】']) {
+    assert.ok(out.includes(sec), `${sec} 不能被误删`)
+  }
+})
+
+ok('★ PeopleStore.addFact 真的写进 facts（以前是零调用）', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'wp-facts-'))
+  try {
+    const store = new PeopleStore({ home })
+    store.addFact('123450002', '周末要值班')
+    store.addFact('123450002', '在玩一款手游')
+    const p = store.get('123450002')
+    assert.ok(p, '该建出这个人的档案')
+    assert.equal(p.facts.length, 2, `facts 该有 2 条，实际 ${p.facts.length}`)
+    // 去重
+    store.addFact('123450002', '周末要值班')
+    assert.equal(store.get('123450002').facts.length, 2, '重复的事实不该再加')
+    // 渲染时带上
+    const line = store.get('123450002').toPromptLine()
+    assert.match(line, /值班/, `toPromptLine 要带事实：${line}`)
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true })
+  }
+})
+
+ok('addFact 也累积昵称别名（和 setImpression 一致）', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'wp-facts2-'))
+  try {
+    const store = new PeopleStore({ home })
+    store.addFact('123450002', '在玩一款手游', '阿甲')
+    store.addFact('123450002', '课到九点', '不是不是阿甲')
+    const p = store.get('123450002')
+    assert.deepEqual(p.aliases, ['阿甲', '不是不是阿甲'], '两个昵称都要留作别名')
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true })
+  }
 })
 
 console.log(`\n通过 ${pass} / 失败 ${fail}`)

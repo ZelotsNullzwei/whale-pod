@@ -32,6 +32,7 @@ import { LongTermStore } from './memory/long.js'
 import { DayPlanStore } from './memory/dayPlan.js'
 import { HotTopicStore } from './qq/hot-topics.js'
 import { PeopleStore } from './memory/person.js'
+import { StickerTagStore } from './qq/sticker-tags.js'
 import { PersonaStore } from './persona/store.js'
 import { OneBotClient } from './qq/onebot.js'
 import { QQBridge } from './qq/bridge.js'
@@ -517,7 +518,8 @@ export async function main(argv = process.argv.slice(2)) {
       dir: cfg.memory?.dir,
       log,
       summarize: async ({ messages, previous, scene, self }) => {
-        const { SUMMARY_PROMPT, parsePersonLines } = await import('./memory/long.js')
+        const { SUMMARY_PROMPT, parsePersonLines, parsePersonFacts, stripFactsSection } =
+          await import('./memory/long.js')
         /*
          * ⚠️ 每条消息必须带上**QQ 号**（2026-10-28 修，用户报「老是记小事」）。
          *
@@ -608,12 +610,30 @@ export async function main(argv = process.argv.slice(2)) {
             for (const p of parsePersonLines(out)) {
               if (p?.id) people.setImpression(p.id, p.impression, p.name)
             }
+            /*
+             * ⚠️ **【事实】段 → 人物档案的 facts**（2026-10-31 补接线）。
+             *
+             * 在这之前 `people.json` 里 5 个人 `facts` 全是空数组 ——
+             * `PersonProfile.addFact()` 写好了却**零调用**。
+             * 于是"记住一个人"只剩一句性格标签，具体的事一件都留不下。
+             *
+             * 事实的真相源是 `people.json`（跨会话、累积、去重、上限 12 条），
+             * **不在摘要里存第二份**（下面 `stripFactsSection` 会摘掉）。
+             */
+            for (const f of parsePersonFacts(out)) {
+              if (f?.id && f.fact) people.addFact(f.id, f.fact)
+            }
           }
         } catch (e) {
           log.warn?.(`人物档案同步失败（不影响摘要）：${String(e?.message ?? e)}`)
         }
 
-        return out
+        /*
+         * 摘掉【事实】段再返回 —— 它已经进 `people.json` 了。
+         * 留着会：① 重复占注入预算 ② `renderPeople()` 重建摘要时不带它，
+         * 下次裁剪就神秘消失（更糊涂）。
+         */
+        return stripFactsSection(out)
       },
     })
 
@@ -632,6 +652,14 @@ export async function main(argv = process.argv.slice(2)) {
     // 从没写出来都没人发现）。
     const people = new PeopleStore({ home: store.home, log })
     state.people = people
+    /*
+     * 收藏表情的标签库（2026-10-31）。
+     *
+     * `fetch_custom_face` 只给 URL，没有名字/描述 —— 所以机器人发表情是闭眼随机。
+     * 这张表存「URL(去签名) → 标签」，由 `_tagStickerBatch()` 用视觉模型分批打。
+     */
+    const stickerTags = new StickerTagStore({ home: store.home, log })
+    state.stickerTags = stickerTags
 
     /*
      * 免费热点源（2026-10-29）。
@@ -854,6 +882,8 @@ export async function main(argv = process.argv.slice(2)) {
         hotTopics,
         persona,
         people,
+    // 收藏表情的标签（让 `[表情包:哭]` 能真的挑到"哭"）
+    stickerTags,
         usage,
         activity,
         // 联网搜索用 DeepSeek 的 key（没有就自动跳过搜索，不影响其它功能）

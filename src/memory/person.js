@@ -21,7 +21,7 @@
  *     "id": "123450002",
  *     "aliases": ["阿甲", "不是不是阿甲"],
  *     "impression": "爱攒抽、爱发图，说话随意，遇到不懂的会拿玩笑带过",
- *     "facts": ["在杭州读高中", "玩绝区零"],
+ *     "facts": ["在读高中", "在玩一款手游"],
  *     "firstSeen": 1792979561420,
  *     "lastSeen":  1792980123456,
  *     "seen": 137
@@ -307,6 +307,46 @@ export class PeopleStore {
   /** @param {string|number} id */
   get(id) {
     return this.people.get(personKey(id)) ?? null
+  }
+
+  /**
+   * 给某个人**追加一条事实**（2026-10-31 新增）。
+   *
+   * ## 为什么现在才加
+   * `PersonProfile.addFact()` 早就写好了（去重 + 上限 12 条），
+   * 但 **`PeopleStore` 上没有对应入口** → 全项目零调用 →
+   * `people.json` 里 5 个人 `facts` 全是空数组。
+   *
+   * 于是"记住一个人"只剩一句 `impression`（性格标签），
+   * 具体的事一件都留不下 —— 而真人记的是具体的事。
+   *
+   * ## 入口
+   * 摘要的【事实】段（`parsePersonFacts`）→ 这里 → `people.json`。
+   * 事实是**跨会话**的：这个人换个群说话，事实还是同一份。
+   *
+   * @param {string|number} id QQ 号
+   * @param {string} text 一条事实（空串 = 忽略）
+   * @param {string} [name] 当前昵称，作为别名记下
+   * @returns {PersonProfile|null}
+   */
+  addFact(id, text, name) {
+    const key = personKey(id)
+    if (!key) return null
+    const s = String(text ?? '').trim()
+    const n = String(name ?? '').trim()
+    if (!s && !n) return null
+    let p = this.people.get(key)
+    if (!p) {
+      p = new PersonProfile(String(id))
+      this.people.set(key, p)
+    }
+    if (n && !p.aliases.includes(n)) {
+      p.aliases.push(n)
+      if (p.aliases.length > MAX_ALIASES) p.aliases = p.aliases.slice(-MAX_ALIASES)
+    }
+    if (s) p.addFact(s)
+    this._dirty = true
+    return p
   }
 
   /**
