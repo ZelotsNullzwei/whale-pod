@@ -32,7 +32,8 @@ import { extractBanMarkers, stripBanMarkers, validateBan, describeBanMinutes, ex
 import { applyQuestionOverride } from './questionGate.js'
 import { shouldAnswerSticker } from './stickerGate.js'
 import { StickerTagStore, stickerKey, splitTags } from './sticker-tags.js'
-import { hasBiliLink, resolveBvid, fetchVideoInfo, fetchTopComments, fetchDanmaku, formatVideoContext } from './bilibili.js'
+import { hasBiliLink, resolveBvid, fetchVideoInfo, fetchTopComments, fetchDanmaku, fetchAudioCandidates, downloadAudio, formatVideoContext } from './bilibili.js'
+import { transcribeVideoCached } from './asr.js'
 import { buildBalanceHint } from './balanceHint.js'
 import { buildVarietyHint, buildExpressionHint } from '../persona/variety.js'
 import { currentSlot, renderDayPlan } from '../memory/dayPlan.js'
@@ -3176,10 +3177,30 @@ export class QQBridge {
       this.log.info?.('bridge：这条是表情包 —— 附图，让它看懂梗再自己说')
     }
 
-    const refs = withImg.images.slice(0, this.cfg.reply?.maxImages ?? 2)
+    /*
+     * ⚠️ **超出上限时要留痕**（2026-11-01）。
+     *
+     * 实测事故：用户发 **4 张**图，日志写「发现 2 张待取图片」——
+     * 因为 `maxImages` 配的是 2（旧配置）。模型只看到 2 张，
+     * 后面用户说「我把图下过来了，你看看」时它回「图还是没出来诶」，
+     * 用户以为它坏了。
+     *
+     * 两个教训：
+     *   ① `DEFAULTS` 只填**缺失**的键 —— config.json 里已有的旧值不会被覆盖
+     *      （`maxImages` 代码默认早就是 4，但用户配置里写着 2，所以永远用 2）
+     *   ② **超出上限不能默默丢** —— 至少要能在日志里看出来
+     */
+    const allImgs = Array.isArray(withImg.images) ? withImg.images : []
+    const maxImg = Number(this.cfg.reply?.maxImages ?? 4)
+    const refs = allImgs.slice(0, maxImg)
+    const skippedImgs = Math.max(0, allImgs.length - refs.length)
     // ⚠️ 这几条以前是 debug 级 —— 图坏了日志里什么都看不到，用户只能猜。
     //    图片属于"看不见就是功能坏了"的东西，失败必须留下痕迹。
-    this.log.info?.(`bridge：发现 ${refs.length} 张待取图片（引用示例：${String(refs[0]).slice(0, 80)}）`)
+    this.log.info?.(
+      `bridge：发现 ${refs.length} 张待取图片`
+      + (skippedImgs > 0 ? `（**共 ${allImgs.length} 张，还有 ${skippedImgs} 张没看** —— 超出 maxImages=${maxImg}）` : '')
+      + `（引用示例：${String(refs[0]).slice(0, 80)}）`,
+    )
     for (const ref of refs) {
       try {
         // ── 图片缓存 ──────────────────────────────────────────
@@ -4657,6 +4678,45 @@ export class QQBridge {
       } catch (e) {
         this.log.warn?.(`B站：抓评论/弹幕失败（只给元信息）— ${String(e?.message ?? e)}`)
       }
+
+      /*
+       * ★★ **视频里到底说了什么**（2026-11-01）。
+       *
+       * 用户原话：「视频内容还是看不见这种感觉，还是在读评论和弹幕」——
+       * 评论弹幕是**别人怎么看**，不是**视频说了什么**。
+       *
+       * 官方字幕匿名拿不到（`subtitle.subtitles` 恒 0），AI 总结 `-403`，
+       * **但音频流免登录** → 下载音频 → 本地 whisper 转写 → 等于"听懂"了。
+       *
+       * ## 三道限制（都是为了别拖垮回复）
+       * 1. **只看 5 分钟以内的视频** —— 转写是 CPU 活，长视频能跑到分钟级
+       * 2. **20 秒超时** —— 超时就当没有，绝不阻塞
+       * 3. **缓存**（`transcribeVideoCached`）—— 同一条只转一次，内存 LRU 50 条
+       *
+       * 失败静默：没装 / 没模型 / 没语音（纯音乐、无声演示）都返回空串。
+       */
+      if (info.duration > 0 && info.duration <= 300) {
+        try {
+          const t0 = Date.now()
+          const text = await transcribeVideoCached(
+            bvid,
+            info.cid,
+            { fetchAudioCandidates, downloadAudio },
+            { timeoutMs: 20_000, log: this.log },
+          )
+          if (text) {
+            info.transcript = text
+            this.log.info?.(
+              `B站：${bvid} 转写出 ${text.length} 字（${Math.round((Date.now() - t0) / 1000)}s）`,
+            )
+          } else {
+            this.log.debug?.(`B站：${bvid} 没有转写（无语音 / 没装 ASR / 超时）`)
+          }
+        } catch (e) {
+          this.log.debug?.(`B站：转写异常（忽略）— ${String(e?.message ?? e)}`)
+        }
+      }
+
       ctx = formatVideoContext(info)
     }
     this._biliCache.set(bvid, { at: now, text: ctx })

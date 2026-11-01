@@ -12,10 +12,18 @@
  * ```
  * **完全免费、免登录** —— 只要带 `Referer: https://www.bilibili.com/` 和普通 UA。
  *
- * ## 字幕：拿不到（所以不做）
+ * ## 字幕：拿不到，所以改成**听**
  * `/x/player/v2?bvid=&cid=` 匿名访问 `subtitle.subtitles` **恒为 0 条**
- * （B 站 CC 字幕要登录态）。所以**不指望"看内容"，只给元信息 + 简介**。
- * 简介（desc）通常就是内容概述，对教程/评测类已经够模型接话了。
+ * （B 站 CC 字幕要登录态）。AI 总结接口也 `-403`。
+ *
+ * **但音频流是免登录的**（2026-11-01 实测）：
+ * ```
+ * x/player/playurl?fnval=16  → dash.audio[]  每条带 baseUrl + backupUrl
+ * ```
+ * 拿到地址就能下载 → 本地 whisper 转写 → **等于"听懂"了视频说了什么**。
+ *
+ * ⚠️ **主地址常常连不上**（实测 `mcdn.bilivideo.cn:8082` DNS 直接解析不了），
+ * 但 `backupUrl` 里的 `*.bilivideo.com` 能下。所以必须**按顺序试所有候选**。
  *
  * ## 短链
  * `b23.tv/xxxx` 要**跟随跳转**才能拿到真 BV 号（`res.url` 里）。
@@ -276,7 +284,48 @@ export function formatVideoContext(info, descLimit = 160) {
   if (!isJunkDesc(desc)) {
     parts.push(`简介：${desc.slice(0, descLimit)}${desc.length > descLimit ? '…' : ''}`)
   }
-  let body = `## 对方分享的 B 站视频\n${parts.join('\n')}`
+  let body = `## 对方分享的 B 站视频（**他刚发来的，你以前没看过**）\n${parts.join('\n')}`
+
+  /*
+   * ★★ **视频里说了什么**（2026-11-01）—— 放在评论**前面**。
+   *
+   * 这是唯一"真内容"：评论是别人怎么看，弹幕是别人在刷什么，
+   * 只有这段是**视频本身**。
+   *
+   * ⚠️ 转写是 whisper 出的，会有错字（尤其人名/术语，实测
+   * 「DeepSeek Harness」被转成「DipSikHanis」）。所以要明说"可能有错字"，
+   * 别让模型拿它当精确引文。
+   */
+  const transcript = String(info.transcript ?? '').trim()
+  /*
+   * ⚠️ **太短的转写 = 没语音**（2026-11-01）。
+   *
+   * 实测音乐视频（`gemini 翻唱《人是猫》`，132 秒）只转出 20 个字：
+   * ```
+   * Hit-o-watt-dada-dada
+   * ```
+   * 那是**歌词拟声**，不是内容。这种塞给模型只会让它拿"dada-dada"瞎猜。
+   * 所以短于 30 字就当成"没有可用语音"，只给元信息。
+   */
+  const USABLE_TRANSCRIPT_MIN = 30
+  const usableTranscript = transcript.length >= USABLE_TRANSCRIPT_MIN ? transcript : ''
+
+  if (usableTranscript) {
+    body += `\n\n## 视频里说了什么（**你刚听到的**语音转文字）\n${usableTranscript.slice(0, 1200)}`
+      + (usableTranscript.length > 1200 ? '…' : '')
+      + '\n（这段是**机器听写**的，大意准，但人名/术语可能有错字 —— '
+      + '别把里面的词当精确引文，也别逐字复述。）'
+  } else if (transcript) {
+    /*
+     * 有转写但太短 → 大概率是唱歌 / 纯音乐 / 只有音效。
+     *
+     * ⚠️ 这里**只说"没有台词"这个事实**，不指定"该聊什么" ——
+     * 「该聊什么」统一放到结尾那段说（那里才看得到弹幕/评论长什么样）。
+     * 之前两处都写了建议，结果**互相矛盾**（这里说"聊标题"、结尾说"别聊标题"）。
+     */
+    body += '\n\n（这条**没有台词** —— 转出来只有拟声词（"dada-dada"这种），'
+      + '说明它是**唱歌 / 纯音乐 / 没配音**。别拿那串拟声词当内容。）'
+  }
 
   /*
    * ★ **评论区**（2026-10-31）—— 用户原话：「评论和弹幕才是重点」。
@@ -299,8 +348,42 @@ export function formatVideoContext(info, descLimit = 160) {
     body += `\n\n## 弹幕在刷什么（按出现次数）\n${lines.join('\n')}`
   }
 
-  body += '\n（⚠️ 上面是**抓到的真实评论/弹幕**，不是你的猜测；但你**没看过这个视频本身**。'
-    + '按大家的反应接话就行；真要聊视频里讲了啥、而评论弹幕没说，就直说没看过、别编。）'
+  /*
+   * ⚠️ **结尾的提醒要分情况**（2026-11-01 修）。
+   *
+   * 原来一律写「你没看过这个视频本身」—— 但**有转写时这句话就是错的**：
+   * 已经听过语音了，再说"没看过"会让模型自我怀疑（实测它真的回
+   * 「本鱼一条都没真看到啊」）。所以有转写和没转写要说不同的话。
+   */
+  if (usableTranscript) {
+    /*
+     * ⚠️ **措辞要点：先说"你知道内容"，再说"画面细节不知道"**（2026-11-01）。
+     *
+     * 原来写的是「你听过这条视频的语音，但**没看过画面**」——
+     * 实测模型抓住"没看过"三个字，回「这条没看到内容诶，是个啥」，
+     * **明明上面 546 字转写就在 prompt 里**。
+     *
+     * 这是措辞顺序的问题：**负面暗示在前，模型就只记住负面**。
+     * 改成正面陈述在前。
+     */
+    body += '\n（⚠️ 上面那段**就是视频里说的话**（机器听写）—— 你刚听到，所以**知道它讲了什么**。'
+      + '只有**画面细节**（表情、演示、字幕贴纸）你没看到，那种别编。'
+      + '⚠️ 如果是动画/短剧配音，听写出来会是**角色之间的对话**（有"我""你"来回）——'
+      + '那是剧情台词，不是有人在跟你说话，别对着台词直接答。）'
+  } else if (transcript) {
+    /*
+     * 有转写但太短 → 唱歌 / 纯音乐 / 只有音效。
+     *
+     * ⚠️ **这里什么都不加** —— "没有台词"这句话在**上面渲染转写的地方**
+     * 已经说过一次了（紧跟在标题/简介后面，位置更自然）。
+     * 这里再加一遍就是**同一句出现两次**，白占 prompt。
+     * 实测过：两处都写，模型反而更乱。
+     */
+  } else {
+    body += '\n（⚠️ 上面是**抓到的真实评论/弹幕**，不是你的猜测；但你**没看过这个视频本身**。'
+      + '按大家的反应接话就行；真要聊视频里讲了啥、而评论弹幕没说，就直说没看过、别编。）'
+  }
+
   /*
    * ★ **必须"说"出来**（2026-10-31）。
    *
@@ -311,11 +394,170 @@ export function formatVideoContext(info, descLimit = 160) {
    * 模型把"有料"理解成"不用讲"。而**真人收到视频分享是会说的**
    * （「看了，评论都在刷『你就宠她吧』」）。
    *
-   * 所以这里明确要求：**至少提一个具体的东西**（标题 / 评论 / 弹幕），
-   * 而不是靠它自觉。而且给的是**短句示范**，不违反"往短了说"。
+   * 所以这里明确要求：**至少提一个具体的东西**，而不是靠它自觉。
+   * 而且给的是**短句示范**，不违反"往短了说"。
+   *
+   * ⚠️ 有转写时，**转写内容排第一优先** —— 那才是"视频说了什么"。
+   *
+   * ⚠️⚠️ 还有一条**措辞禁令**（2026-11-01 实测）：
+   * 不许说「这个有印象」/「我记得」/「以前看过」。
+   * 实测它回「**这个有印象**，冰棍是从地下一百米挖出来的万年冰…」——
+   * 内容全对，但「有印象」是**假话**（明明刚收到）。
+   * 这属于"把刚拿到的信息说成自己的记忆"，比说错更让人不舒服。
    */
+  /*
+   * ★★ **三样信息各有分工，要结合起来用**（2026-11-01 用户提出）。
+   *
+   * 用户原话：「都参考怎么样，分开分类，弹幕，音频，评论三者结合」。
+   *
+   * 对 —— 现在只是把三段**平铺**在那儿，没告诉模型它们**分别回答什么问题**。
+   * 于是它要么只念一样，要么把三样混着倒。
+   *
+   * 定角色：
+   *   · **音频转写** = 视频**本身**（讲了什么）
+   *   · **弹幕**     = **当场反应**（哪个瞬间炸了、哪句被反复刷 = 梗）
+   *   · **评论**     = **事后评价**（值不值、大家怎么看）
+   *
+   * 三样合起来才是"看完一个视频的真实感受"。
+   * 位置：**最末尾**（紧贴生成位置，前面验证过位置越靠后约束力越强）。
+   */
+  const hasTranscript = Boolean(usableTranscript)
+  const hasDanmaku = hotDm.length > 0
+  const hasComments = comments.length > 0
+
+  if (hasTranscript || hasDanmaku || hasComments) {
+    const roles = []
+    if (hasTranscript) roles.push('**音频转写** = 视频本身讲了什么（内容）')
+    if (hasDanmaku) roles.push('**弹幕** = 当场反应（哪个瞬间炸了、哪句被反复刷 = 梗）')
+    if (hasComments) roles.push('**评论** = 事后评价（值不值、大家在吐槽什么）')
+    if (roles.length >= 2) {
+      body += '\n\n## 上面这几块怎么用（**结合起来，别只念一样**）\n'
+        + roles.map((r) => `· ${r}`).join('\n')
+        /*
+         * ⚠️ 措辞要**动态**（2026-11-01）：
+         * 原来写死「三样是互补的」，但实测有条视频弹幕全是 count=1（被过滤掉），
+         * 实际只有**两样**（转写 + 评论）→ 文案和事实对不上，模型会找不存在的第三样。
+         */
+        + `\n\n⚠️ 这${roles.length === 3 ? '三' : '两'}样是**互补**的，不是几份材料各念一句 —— `
+        + '真人看完一个视频，说的是"讲了什么 + 哪里好玩 + 值不值"的**混合体**。'
+        + '比如：「视频讲 X，但评论区全在说 Y」/「大家觉得 Z，我看完觉得…」'
+    }
+  }
+
   body += '\n⚠️ **对方分享了视频，你得说点具体的** —— 光「看到了」等于没看。'
-    + '挑**一个**最有意思的说：标题里那个点、或者评论区在刷什么、或者弹幕的梗。'
-    + '一两句就够（「评论区都在刷你就宠她吧」这种），**不用把上面全念一遍**。'
+  if (hasTranscript) {
+    body += '从**听写**里挑一件事说（视频讲了什么、他提了什么梗），'
+      + '再叠一句**弹幕或评论**里的反应。'
+  } else if (transcript) {
+    // 音乐 / 纯音乐：**别拿标题当话题**，内容在听众反应里
+    body += '这条没有台词，所以**从弹幕和评论里挑** —— '
+      + '弹幕反复刷的那句、或者评论区在说的梗，挑一个说。**别聊标题**（歌名没信息量）。'
+  } else {
+    body += '挑**一个**最有意思的说：标题里那个点、或者评论区在刷什么、或者弹幕的梗。'
+  }
+  body += '一两句就够，**不用把上面全念一遍**。'
+  body += '\n⚠️ **别写「这个有印象」/「我记得」/「以前看过」** —— '
+    + '这是**刚收到**的视频，你以前没看过。直接说「看了」「这条…」就行。'
   return body
+}
+
+/**
+ * 拿**音频流**的候选地址（免登录，2026-11-01）。
+ *
+ * ## 为什么能拿到
+ * `x/player/playurl` 是匿名可用的 —— 它返回 DASH 清单，
+ * 里面每条音轨都有 `baseUrl` + `backupUrl[]`。
+ * **不需要登录、不需要 cookie**，只要 Referer + 普通 UA。
+ *
+ * ## ⚠️ 必须返回**一组**地址，不是一个
+ * 实测：`baseUrl` 常常指向 `mcdn.bilivideo.cn:8082` ——
+ * **这个域名在本机 DNS 直接解析不了**（`EBADNAME`），下载必然失败。
+ * 而 `backupUrl` 里的 `*.bilivideo.com` 能通（HTTP 200）。
+ *
+ * 所以这里**把主地址和所有备用地址平铺成一个列表**，由调用方按顺序试。
+ *
+ * @param {string} bvid
+ * @param {number} cid
+ * @param {{fetchImpl?:Function, timeoutMs?:number}} [opts]
+ * @returns {Promise<string[]>} 候选地址（可能为空）
+ */
+export async function fetchAudioCandidates(bvid, cid, opts = {}) {
+  const id = String(bvid ?? '').trim()
+  const c = Number(cid)
+  if (!BV_RE.test(id) || !Number.isFinite(c) || c <= 0) return []
+  const fetchImpl = opts.fetchImpl ?? globalThis.fetch
+  if (typeof fetchImpl !== 'function') return []
+  try {
+    const ctl = AbortSignal.timeout(Number(opts.timeoutMs ?? 8000))
+    const res = await fetchImpl(
+      `https://api.bilibili.com/x/player/playurl?bvid=${encodeURIComponent(id)}&cid=${c}&fnval=16&fourk=1`,
+      {
+        headers: { 'User-Agent': UA, Referer: 'https://www.bilibili.com/', Accept: 'application/json' },
+        signal: ctl,
+      },
+    )
+    const j = await res.json()
+    if (j?.code !== 0) return []
+    const audios = j.data?.dash?.audio ?? []
+    if (!audios.length) return []
+    // 挑**码率最低**的那条（转写够用，体积最小）
+    const pick = audios.slice().sort((a, b) => Number(a.bandwidth ?? 0) - Number(b.bandwidth ?? 0))[0]
+    const urls = [pick.baseUrl, pick.base_url, ...(pick.backupUrl ?? []), ...(pick.backup_url ?? [])]
+      .filter((u) => typeof u === 'string' && /^https?:\/\//.test(u))
+    // 去重，保持顺序
+    return [...new Set(urls)]
+  } catch {
+    return []
+  }
+}
+
+/**
+ * 按顺序试候选地址，下第一个成功的。
+ *
+ * ⚠️ **大小上限是硬要求**：长视频的音频能到几十 MB，
+ * 转写之前得先把内存撑爆了。默认 12MB（约 20 分钟中等码率）。
+ *
+ * @param {string[]} candidates
+ * @param {{fetchImpl?:Function, maxBytes?:number, timeoutMs?:number, log?:object}} [opts]
+ * @returns {Promise<{buffer:Buffer, url:string}|null>}
+ */
+export async function downloadAudio(candidates, opts = {}) {
+  const list = Array.isArray(candidates) ? candidates : []
+  if (!list.length) return null
+  const fetchImpl = opts.fetchImpl ?? globalThis.fetch
+  if (typeof fetchImpl !== 'function') return null
+  const maxBytes = Number(opts.maxBytes ?? 12 * 1024 * 1024)
+  const timeoutMs = Number(opts.timeoutMs ?? 25000)
+  for (const url of list) {
+    try {
+      const ctl = AbortSignal.timeout(timeoutMs)
+      const res = await fetchImpl(url, {
+        headers: { 'User-Agent': UA, Referer: 'https://www.bilibili.com/' },
+        signal: ctl,
+      })
+      if (!res.ok) {
+        opts.log?.debug?.(`B站音频：${hostOf(url)} HTTP ${res.status}`)
+        continue
+      }
+      const buf = Buffer.from(await res.arrayBuffer())
+      if (buf.length < 1024) {
+        opts.log?.debug?.(`B站音频：${hostOf(url)} 内容太小（${buf.length}B）`)
+        continue
+      }
+      if (buf.length > maxBytes) {
+        opts.log?.info?.(`B站音频：${hostOf(url)} 太大（${(buf.length / 1048576).toFixed(1)}MB > 上限），跳过`)
+        return null
+      }
+      return { buffer: buf, url }
+    } catch (e) {
+      // DNS 解析不了 / 连接重置 —— 换下一个，别抛
+      opts.log?.debug?.(`B站音频：${hostOf(url)} 失败 — ${String(e?.message ?? e).slice(0, 60)}`)
+    }
+  }
+  return null
+}
+
+/** 取 URL 的 host（只用于日志，失败给 `?`）。 */
+function hostOf(url) {
+  try { return new URL(url).host } catch { return '?' }
 }

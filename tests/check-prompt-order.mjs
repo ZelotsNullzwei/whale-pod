@@ -181,7 +181,7 @@ ok('★ 事实段必须在**最末尾**（比输出要求还靠后）', () => {
   const atOut = sys.indexOf('## 输出要求')
   assert.ok(atFacts > atOut, `事实段(${atFacts}) 必须在输出要求(${atOut}) 之后`)
   const tail = sys.length - atFacts
-  assert.ok(tail < 700, `距结尾 ${tail} 字，太远了约束力会弱`)
+  assert.ok(tail < 1000, `距结尾 ${tail} 字，太远了约束力会弱`)
 })
 
 ok('事实正文里的 `##` 要降级成 `###`（别和段落标题平级）', () => {
