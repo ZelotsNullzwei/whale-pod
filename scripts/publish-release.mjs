@@ -163,13 +163,50 @@ for (const a of rel.assets) {
   const d = await api(`/repos/${OWNER_REPO}/releases/assets/${a.id}`, { method: 'DELETE' })
   console.log(`   ${d.status === 204 ? '✅ 删除' : `❌ ${d.status}`} ${a.name}`)
 }
-const buf = fs.readFileSync(ZIP)
-const up = await fetch(
-  `https://uploads.github.com/repos/${OWNER_REPO}/releases/${rel.id}/assets?name=${encodeURIComponent(assetName)}`,
-  { method: 'POST', headers: { ...H, 'Content-Type': 'application/zip' }, body: buf },
-).then((r) => r.json())
-if (!up.id) { console.error('❌ 上传失败：' + JSON.stringify(up).slice(0, 400)); process.exit(1) }
-console.log(`   ✅ ${up.name}  ${(up.size / 1024).toFixed(0)} KB  state=${up.state}`)
+/*
+ * ⚠️ 上传**必须带重试和长超时**（2026-11-01 踩过）。
+ *
+ * 实测 `uploads.github.com` 是通的，但**首次连接会慢**：
+ * ```
+ * fetch 直连 → 200，用了 3.6s   ← 成功那次
+ * 上一次    → ConnectTimeoutError (10s) ← undici 的默认连接超时
+ * ```
+ * 10 秒的默认值对这种"慢但在"的域名不够用，而且它是**瞬时**的 ——
+ * 重试一次就过了。所以这里：显式 60s 超时 + 最多 3 次。
+ *
+ * 踩中的后果很讨厌：旧 asset 已经 DELETE 掉了，上传却失败 ——
+ * Release 会**光着**留在那里（本次就是这样，必须手工补传）。
+ * 所以这一步的重试不是锦上添花。
+ */
+const uploadAsset = async () => {
+  const buf = fs.readFileSync(ZIP)
+  let lastErr = null
+  for (let i = 1; i <= 3; i++) {
+    const t0 = Date.now()
+    const ctl = new AbortController()
+    const timer = setTimeout(() => ctl.abort(), 60_000)
+    try {
+      const up = await fetch(
+        `https://uploads.github.com/repos/${OWNER_REPO}/releases/${rel.id}/assets?name=${encodeURIComponent(assetName)}`,
+        { method: 'POST', headers: { ...H, 'Content-Type': 'application/zip' }, body: buf, signal: ctl.signal },
+      ).then((r) => r.json())
+      clearTimeout(timer)
+      if (!up.id) throw new Error('返回里没有 id：' + JSON.stringify(up).slice(0, 200))
+      console.log(`   ✅ 第 ${i} 次成功  ${up.name}  ${(up.size / 1024).toFixed(0)} KB  state=${up.state}  (${Date.now() - t0}ms)`)
+      return up
+    } catch (e) {
+      clearTimeout(timer)
+      lastErr = e
+      console.log(`   ⚠️ 第 ${i} 次失败 (${Date.now() - t0}ms)：${String(e?.cause?.code ?? e?.message).slice(0, 120)}`)
+      if (i < 3) await new Promise((r) => setTimeout(r, 2000 * i))
+    }
+  }
+  console.error('❌ 上传三次都失败：' + String(lastErr?.cause?.code ?? lastErr?.message))
+  console.error(`   ⚠️ 旧 asset 已删除，Release 现在是**没有附件**的状态。补传：重跑本脚本即可（这一步可重入）。`)
+  process.exit(1)
+}
+
+const up = await uploadAsset()
 
 // ── 6. 校验 ────────────────────────────────────────────────
 console.log('\n[6/6] 校验…')
