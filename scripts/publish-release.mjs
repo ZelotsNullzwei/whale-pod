@@ -63,8 +63,20 @@ const H = {
   Accept: 'application/vnd.github+json',
 }
 
+/*
+ * ⚠️ header 必须**合并**，不能 `{ headers: H, ...init }`（2026-11-01 踩过）。
+ *
+ * 那样写的话，`init.headers`（我们只想加个 Content-Type）会把整个 H
+ * **连同 Authorization 一起覆盖掉** —— 所有带 body 的调用全 401
+ * 「Requires authentication」，而 GET 却是好的（GET 不传 init.headers）。
+ * 症状极具误导性：看着像 token 权限不够，其实是自己把 token 扔了。
+ * （`create-release.mjs` 原来也是这个写法，一并修了。）
+ */
 const api = async (p, init = {}) => {
-  const r = await fetch(`https://api.github.com${p}`, { headers: H, ...init })
+  const r = await fetch(`https://api.github.com${p}`, {
+    ...init,
+    headers: { ...H, ...(init.headers ?? {}) },
+  })
   const t = await r.text()
   let j = null
   try { j = JSON.parse(t) } catch { /* 非 JSON（DELETE 返回空） */ }
