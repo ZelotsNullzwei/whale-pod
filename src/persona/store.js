@@ -340,6 +340,22 @@ export class PersonaStore {
     this.home = opts.home
     this.dir = path.join(opts.home, 'persona', 'roles')
     this.active = opts.active ?? 'default'
+    /*
+     * ★ **按会话指定角色**（2026-11-01 加）。
+     *
+     * 原来角色是**全局**的：`this.active` 一个值，群里私聊都一样。
+     * 用户要「群聊和私聊分开」→ 这里存一张表，键可以是：
+     *   'group'                    → 所有群
+     *   'private'                  → 所有私聊
+     *   'private:2129024700'       → 那一个私聊
+     *   'group:704291282'          → 那一个群
+     *
+     * 查找顺序 **精确 → 类型 → 全局 `active`**（`pickActive`）。
+     * ⚠️ 匹配不上的就回落到全局 —— 一个键写错了不该让某个会话没人格。
+     */
+    this.activeByScope = (opts.activeByScope && typeof opts.activeByScope === 'object')
+      ? { ...opts.activeByScope }
+      : {}
     this.log = opts.log ?? {}
     this._cache = new Map()
     /** 记录「上次由内置模板写入时的内容指纹」，用来区分「没改过」与「用户改过」。 */
@@ -539,9 +555,58 @@ export class PersonaStore {
   }
 
   /** 切换当前角色。 */
-  setActive(name) {
+  /**
+   * 切换角色。
+   *
+   * @param {string} name  角色名
+   * @param {string} [scope]
+   *   不传 → 改**全局**（老行为，群和私聊都跟着变）
+   *   传了 → 只改**这个会话**（'private' / 'group' 表示一整类，
+   *          'private:2129024700' 表示某一个）
+   */
+  setActive(name, scope = null) {
     if (!fs.existsSync(this.path(name))) throw new Error(`角色不存在：${name}`)
+    if (scope) {
+      this.activeByScope[String(scope)] = name
+      return name
+    }
     this.active = name
+    return this.active
+  }
+
+  /**
+   * 清掉所有「按会话指定」。
+   *
+   * ⚠️ 为什么需要它（2026-11-02 实测被抓到）：
+   * `pickActive` 的顺序是 **精确 scope → 类型 → 全局**，
+   * 所以只要 `activeByScope` 里有 `group` / `private` 那两条，
+   * **全局 `active` 就永远轮不到** —— 用户在设置页选
+   * 「全局（群和私聊都跟着变）」会发现**毫无变化**，看着像按钮坏了。
+   * 选「全局」时必须先清掉这些覆盖，那句话才成立。
+   */
+  clearScopes() {
+    this.activeByScope = {}
+    return this.activeByScope
+  }
+
+  /**
+   * 这个会话该用哪个角色 —— **精确 → 类型 → 全局**。
+   *
+   * ⚠️ 两处刻意的宽松：
+   *   · 表里写了但**文件不存在** → 跳过，继续往下找（别让一个手滑的名字
+   *     把整个会话变成没人格）
+   *   · 都找不到 → 回落全局 `active`（永远有个能用的）
+   */
+  pickActive(scope) {
+    const key = String(scope ?? '')
+    const kind = key.includes(':') ? key.slice(0, key.indexOf(':')) : key
+    for (const k of [key, kind]) {
+      if (!k) continue
+      const name = this.activeByScope[k]
+      if (!name) continue
+      if (fs.existsSync(this.path(name))) return name
+      this.log.warn?.(`人格：会话 ${k} 指定的角色 "${name}" 不存在，忽略`)
+    }
     return this.active
   }
 
@@ -577,9 +642,14 @@ export class PersonaStore {
    *   所以给①一个**独立通道**：单独成段、带权威标记、放在**最末尾**、
    *   并明确写「和你之前说过的话冲突时，以这里为准」。
    */
-  buildSystemPrompt({ extras = [], memory = '', scene = null, self = null, facts = [], recentSelf = [] } = {}) {
+  buildSystemPrompt({ extras = [], memory = '', scene = null, self = null, facts = [], recentSelf = [], scope = null } = {}) {
     const parts = []
-    parts.push(this.read(this.active) || DEFAULT_PERSONA)
+    /*
+     * ★ 按会话取角色（2026-11-01）：群和私聊可以是**不同的人格文件**。
+     *   见 `pickActive` —— 精确 scope → 类型（group/private）→ 全局 active。
+     *   `scope` 不传时行为跟以前完全一样（全局那一个）。
+     */
+    parts.push(this.read(this.pickActive(scope)) || DEFAULT_PERSONA)
 
     if (scene?.kind === 'group') {
       parts.push(`## 当前场景\n你在一个 QQ 群${scene.groupName ? `「${scene.groupName}」` : ''}里聊天。群里不只有你，别人也会说话。`)
@@ -927,6 +997,8 @@ ${body}
   stats() {
     return {
       active: this.active,
+      /** 按会话指定的角色（群/私聊可以不同）。 */
+      activeByScope: { ...this.activeByScope },
       roles: this.list(),
       detailed: this.listDetailed(),
       dir: this.dir,

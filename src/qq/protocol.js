@@ -1360,9 +1360,31 @@ export class ProtocolSupervisor {
       }
     }
 
+    /*
+     * ⚠️ **绝对不能把系统代理变量传给 NapCat**（2026-11-02 实测，用户直接卡住）。
+     *
+     * 现场：她的消息**发不出去**，日志里 OneBot 回的是
+     *   {"status":"failed","message":"connect ECONNREFUSED 127.0.0.1:7890"}
+     * —— 注意这是 **NapCat 自己**的报错（请求已经到了它那儿）。
+     *
+     * 原因：NapCat 也是 Node 应用，跟着继承了我们的
+     * `HTTP_PROXY=127.0.0.1:7890`，而那个代理（Clash 之类）**没在跑** →
+     * 它自己出网全挂（发图、上传、拉资源都受影响），我们这边只看到"发送失败"。
+     *
+     * QQ 是国内服务，本来就不该走代理。所以这里把代理变量**剔掉**，
+     * 再显式给一个 `NO_PROXY=*`，让 NapCat 内部无论用 fetch 还是 http 都直连。
+     */
+    const napcatEnv = { ...process.env, ...(opts.env ?? {}) }
+    for (const k of ['HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy',
+      'ALL_PROXY', 'all_proxy', 'NODE_USE_ENV_PROXY']) {
+      delete napcatEnv[k]
+    }
+    napcatEnv.NO_PROXY = '*'
+    napcatEnv.no_proxy = '*'
+
     const child = spawn(spawnExe, spawnArgs, {
       cwd: path.dirname(exe),
-      env: { ...process.env, ...(opts.env ?? {}) },
+      env: napcatEnv,
       windowsHide: true,
       stdio: ['ignore', 'pipe', 'pipe'],
     })

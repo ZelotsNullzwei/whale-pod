@@ -163,6 +163,104 @@ export class StickerTagStore {
   }
 
   /**
+   * 按「标签组合相似度」去重：**同一类最多留 N 张**，保留**最近入库的**那些。
+   *
+   * ## 为什么需要（2026-11-02 用户要求）
+   * 收藏表情越攒越多，**同一情绪**的图往往有十几张。池子太大会：
+   *   ① 提示词清单越来越长，白占 token
+   *   ② 按标签挑时同类互相挤，效果更差
+   * 用户原话：「**同类型的表情只留 3 个**」。
+   *
+   * ## 为什么不用"第一个标签"归类（第一版就是这么写的，被数据打回）
+   * 库里「无语」打头的有 **14 张**，但第二标签差别很大：
+   * ```
+   * 无语、愤怒、压迫感、发疯
+   * 无语、嫌弃、警告、暴躁、别惹我
+   * 无语、嫌弃、冷漠、看戏、死亡凝视
+   * ```
+   * 只按第一个标签归类，会把这 14 张当同类**砍到 3 张** ——
+   * 等于把"愤怒/警告/看戏"这些明显不同的图删掉。用户选了"按相似度"。
+   *
+   * ## 算法
+   * 两两算 **Jaccard**（交集 / 并集）。相似度 ≥ `minSimilarity`（默认 **0.5**）
+   * 就算同一类，用并查集归到一起；每类只留**最新**的 N 张。
+   *
+   * ### 0.5 是怎么定的（**对着真实库试跑出来的，不是猜的**）
+   * 拿现有 72 张逐档试：
+   * ```
+   * 0.4 → 清 9 张   把「狂笑、嘲讽、得意、看戏」和「无语、冷漠、看戏」归成一组 —— 过度合并
+   * 0.5 → 清 3 张   组内全是真同义（"无语+嫌弃+冷漠" 的各种排列）  ★ 取这个
+   * 0.6 → 清 0 张   完全不触发（这个库里没有两张相似到 0.6）
+   * 0.7 → 清 0 张
+   * ```
+   * ⚠️ 我最初把默认值写成 0.6，理由是"0.5~0.6 最能分开同义和只是都带无语"——
+   *    **那是猜的**，试跑发现 0.6 在这份库上一张都不清。所以改成 0.5。
+   *    以后库变了要重新试跑（`_scratch/sticker-dedupe-dryrun.mjs` 就是干这个的）。
+   *
+   * ## 为什么留"最近的"
+   * `set()` 每次把条目挪到 Map 末尾（近似 LRU），末尾就是最新的。
+   * 用户刚收藏的通常是他现在想用的。
+   *
+   * ⚠️ 只清理**标签库**，**不删表情本身** —— 图还在她收藏里，
+   *    只是不再进提示词清单、也不被按标签挑到。删图要经过用户。
+   *
+   * @param {number} [keep] 每类留几张
+   * @param {number} [minSimilarity] 判定同类的 Jaccard 阈值
+   * @returns {{removed:string[], classes:number}}
+   */
+  dedupeByTag(keep = 3, minSimilarity = 0.5) {
+    const n = Math.max(1, Number(keep) || 3)
+    const th = Number(minSimilarity) || 0.6
+    const keys = [...this.map.keys()]
+    if (keys.length <= n) return { removed: [], classes: keys.length }
+
+    const tagsOf = (k) => new Set((this.map.get(k)?.tags ?? []).map((t) => t.trim()))
+    /* 并查集：把"像"的归到一起 */
+    const parent = new Map(keys.map((k) => [k, k]))
+    const find = (x) => {
+      let r = x
+      while (parent.get(r) !== r) r = parent.get(r)
+      while (parent.get(x) !== r) { const nx = parent.get(x); parent.set(x, r); x = nx }
+      return r
+    }
+    const union = (a, b) => {
+      const ra = find(a); const rb = find(b)
+      if (ra !== rb) parent.set(ra, rb)
+    }
+
+    for (let i = 0; i < keys.length; i++) {
+      const ta = tagsOf(keys[i])
+      if (ta.size === 0) continue
+      for (let j = i + 1; j < keys.length; j++) {
+        const tb = tagsOf(keys[j])
+        if (tb.size === 0) continue
+        let inter = 0
+        for (const t of ta) if (tb.has(t)) inter++
+        const unionSize = ta.size + tb.size - inter
+        if (unionSize > 0 && inter / unionSize >= th) union(keys[i], keys[j])
+      }
+    }
+
+    /* 每组按"新的在后"排（Map 顺序 ≈ LRU），留最后 n 个 */
+    const groups = new Map()
+    for (const k of keys) {
+      const r = find(k)
+      if (!groups.has(r)) groups.set(r, [])
+      groups.get(r).push(k)
+    }
+    const removed = []
+    for (const [, ks] of groups) {
+      if (ks.length <= n) continue
+      for (const k of ks.slice(0, ks.length - n)) {
+        this.map.delete(k)
+        removed.push(k)
+      }
+    }
+    if (removed.length) this.save()
+    return { removed, classes: groups.size }
+  }
+
+  /**
    * 在**给定的 URL 列表**里，按标签找最合适的一张。
    *
    * 匹配规则（从紧到松）：

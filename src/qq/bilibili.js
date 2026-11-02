@@ -62,7 +62,12 @@ export function hasBiliLink(text) {
  * 把 `b23.tv/xxx` 跟跳到真链接，取出 BV 号。
  *
  * @param {string} text
- * @param {{fetchImpl?:Function, timeoutMs?:number}} [opts]
+ * @param {{fetchImpl?:Function, timeoutMs?:number, log?:object}} [opts]
+ *   `log` 用来把**跳转失败的原因**说出来 —— 见下面的 catch。
+ *   2026-11-01 实测事故：这里原来是 `catch { return null }`（**静默**），
+ *   而当时环境里配的代理（`https_proxy=127.0.0.1:7890`）**没在跑** →
+ *   短链一律 ECONNREFUSED → 返回 null → 日志里**一个字都没有**。
+ *   用户问「鱼说又看不了视频了」，只能靠手工复现才查出原因。
  * @returns {Promise<string|null>}
  */
 export async function resolveBvid(text, opts = {}) {
@@ -287,6 +292,26 @@ export function formatVideoContext(info, descLimit = 160) {
   let body = `## 对方分享的 B 站视频（**他刚发来的，你以前没看过**）\n${parts.join('\n')}`
 
   /*
+   * ★ **长视频：还在后台听**（2026-11-01）—— 见 `_biliContext`。
+   *
+   * 长视频的音频太大（26 分钟那条就有 12.9MB，超过 12MB 上限），同步转写会让回复
+   * 多等十几秒（用户明确抱怨过的量级）。所以改成：**先回一句**，
+   * 转写丢后台（只取开头 2MB），完了再补一条。
+   *
+   * ⚠️ 这里必须**在最前面就返回**，连评论/弹幕都不给 —— 两个理由：
+   *   ① 下面弹幕那段会追加一句「你**没看过**这个视频本身」，
+   *      和我这句「先应一声」**自相矛盾**（这个仓库为同类矛盾修过一次注释）。
+   *   ② 用户要的就是「先回复我先看看」：**一条短的应声**，
+   *      不是拿评论弹幕硬凑一段"观后感"。评论区一给，它就会去念。
+   */
+  if (info.pendingLong) {
+    body += '\n\n⚠️ **这条比较长，你刚开始听** —— 也就是说：**你现在还不知道里面讲了什么。**\n'
+      + '先应一声就行（「我去看看」「等下跟你说」这种，一两句，语气随意）。\n'
+      + '**别装作看过，也别拿标题硬凑"内容"。** 等听完了再聊里面具体的东西。'
+    return body
+  }
+
+  /*
    * ★★ **视频里说了什么**（2026-11-01）—— 放在评论**前面**。
    *
    * 这是唯一"真内容"：评论是别人怎么看，弹幕是别人在刷什么，
@@ -311,10 +336,21 @@ export function formatVideoContext(info, descLimit = 160) {
   const usableTranscript = transcript.length >= USABLE_TRANSCRIPT_MIN ? transcript : ''
 
   if (usableTranscript) {
-    body += `\n\n## 视频里说了什么（**你刚听到的**语音转文字）\n${usableTranscript.slice(0, 1200)}`
+    /*
+     * ★ **只听了开头一段**（2026-11-01）：长视频走异步补听，
+     *   这里拿到的是**前缀转写**（Range 取的 2MB ≈ 前 4 分钟）。
+     *
+     * ⚠️ **必须说清范围** —— 不然她会把开头几分钟当成整条视频，
+     *    后面一旦聊到结尾就露馅（这跟"别装作看过"是同一类毛病）。
+     */
+    const headNote = info.prefixOnly
+      ? '（你**只听了开头几分钟**，不是整条 —— 后面发生了什么你没听到，\n'
+        + '别把开头的东西说成"整条都在讲这个"。）'
+      : '（这段是**机器听写**的，大意准，但人名/术语可能有错字 —— '
+        + '别把里面的词当精确引文，也别逐字复述。）'
+    body += `\n\n## ${info.prefixOnly ? '视频开头讲了什么' : '视频里说了什么'}（**你刚听到的**语音转文字）\n${usableTranscript.slice(0, 1200)}`
       + (usableTranscript.length > 1200 ? '…' : '')
-      + '\n（这段是**机器听写**的，大意准，但人名/术语可能有错字 —— '
-      + '别把里面的词当精确引文，也别逐字复述。）'
+      + '\n' + headNote
   } else if (transcript) {
     /*
      * 有转写但太短 → 大概率是唱歌 / 纯音乐 / 只有音效。
@@ -381,7 +417,25 @@ export function formatVideoContext(info, descLimit = 160) {
      */
   } else {
     body += '\n（⚠️ 上面是**抓到的真实评论/弹幕**，不是你的猜测；但你**没看过这个视频本身**。'
-      + '按大家的反应接话就行；真要聊视频里讲了啥、而评论弹幕没说，就直说没看过、别编。）'
+      + '按大家的反应接话就行；别聊视频里讲了啥、也**别编「我点开想干嘛」**。）'
+    /*
+     * ★★ **连"我点开想看什么"也不许编**（2026-11-02 实测事故）。
+     *
+     * 现场：视频标题是「你爸回你消息了」，评论弹幕全在聊"大肥鱼/赛博养鱼"。
+     * 她的回复是：
+     *   「（看完，先笑了一声）**点开想学修电脑**，结果评论全在要饭。」
+     *
+     * - 「点开想学修电脑」—— 标题/简介/评论/弹幕里**一个字都没有**，纯编
+     * - 「评论全在要饭」—— 半对（弹幕「人来！✋😡🤚」确实像在喊人）
+     *
+     * **为什么上面那句警告没拦住**：它只禁"聊视频里讲了啥"。
+     * 而"我点开是想学修电脑"是**编了个观看理由** —— 模型不觉得那算"讲内容"，
+     * 而且它比"我没看过"更像聊天，所以选了它。
+     *
+     * ⚠️ **这段必须短**：B 站上下文有个"距结尾不超过 600 字"的约束
+     *    （见 `tests/check-prompt-order.mjs`），加长了会把 B 站那段推出窗口，
+     *    约束力反而变弱 —— 第一版写了 180 字，两个测试当场就红了。
+     */
   }
 
   /*
@@ -517,9 +571,25 @@ export async function fetchAudioCandidates(bvid, cid, opts = {}) {
  * ⚠️ **大小上限是硬要求**：长视频的音频能到几十 MB，
  * 转写之前得先把内存撑爆了。默认 12MB（约 20 分钟中等码率）。
  *
+ * ## ★ 只要开头一段（2026-11-01）
+ *
+ * 传 `prefixBytes` 就发 `Range: bytes=0-N-1`，只要**开头 N 字节**。
+ * 这是给长视频用的：26 分钟的音频有 12.9MB，会被上面的 `maxBytes` 直接挡死 ——
+ * 于是**长视频连一句内容都没有**（实测：两道门，300 秒时长 + 12MB 音频）。
+ *
+ * 实测（BV1dXxp6xEk3，26 分 46 秒）：
+ * ```
+ * accept-ranges=bytes                       ← B 站 CDN 支持
+ * Range: 0-2MB     → HTTP 206，2.00MB，496ms
+ * 2MB ≈ 前 4 分 09 秒音频
+ * whisper(tiny)    → 1518 字，用时 9.6s      ← 截断的 m4a **能解码**（这点必须先验）
+ * ```
+ * 截断的 m4a 之所以能解：DASH 的 moov 在文件前部，前缀就是一段可播的音频。
+ * 但这**不是普适真理** —— 换平台/换封装就可能解不了，所以调用方拿到空串要当"没听到"。
+ *
  * @param {string[]} candidates
- * @param {{fetchImpl?:Function, maxBytes?:number, timeoutMs?:number, log?:object}} [opts]
- * @returns {Promise<{buffer:Buffer, url:string}|null>}
+ * @param {{fetchImpl?:Function, maxBytes?:number, timeoutMs?:number, prefixBytes?:number, log?:object}} [opts]
+ * @returns {Promise<{buffer:Buffer, url:string, truncated:boolean}|null>}
  */
 export async function downloadAudio(candidates, opts = {}) {
   const list = Array.isArray(candidates) ? candidates : []
@@ -528,14 +598,23 @@ export async function downloadAudio(candidates, opts = {}) {
   if (typeof fetchImpl !== 'function') return null
   const maxBytes = Number(opts.maxBytes ?? 12 * 1024 * 1024)
   const timeoutMs = Number(opts.timeoutMs ?? 25000)
+  /** >0 = 只取开头这么多字节（长视频用）；0 = 整条下（原行为） */
+  const prefixBytes = Math.max(0, Number(opts.prefixBytes ?? 0))
   for (const url of list) {
     try {
+      const headers = { 'User-Agent': UA, Referer: 'https://www.bilibili.com/' }
+      if (prefixBytes > 0) headers.Range = `bytes=0-${prefixBytes - 1}`
       const ctl = AbortSignal.timeout(timeoutMs)
-      const res = await fetchImpl(url, {
-        headers: { 'User-Agent': UA, Referer: 'https://www.bilibili.com/' },
-        signal: ctl,
-      })
-      if (!res.ok) {
+      const res = await fetchImpl(url, { headers, signal: ctl })
+      /*
+       * ⚠️ Range 模式下**必须是 206**。有的 CDN 不认 Range 会回 200（整条），
+       * 那就等于白下了几十 MB —— 宁可换下一个源，也不要在这里悄悄下整条。
+       */
+      if (prefixBytes > 0 && res.status !== 206) {
+        opts.log?.debug?.(`B站音频：${hostOf(url)} 不支持 Range（HTTP ${res.status}），换下一个源`)
+        continue
+      }
+      if (!res.ok && res.status !== 206) {
         opts.log?.debug?.(`B站音频：${hostOf(url)} HTTP ${res.status}`)
         continue
       }
@@ -548,7 +627,8 @@ export async function downloadAudio(candidates, opts = {}) {
         opts.log?.info?.(`B站音频：${hostOf(url)} 太大（${(buf.length / 1048576).toFixed(1)}MB > 上限），跳过`)
         return null
       }
-      return { buffer: buf, url }
+      // truncated=true 表示这是**开头一段**，不是完整音频 —— 调用方要据此如实告诉模型
+      return { buffer: buf, url, truncated: prefixBytes > 0 }
     } catch (e) {
       // DNS 解析不了 / 连接重置 —— 换下一个，别抛
       opts.log?.debug?.(`B站音频：${hostOf(url)} 失败 — ${String(e?.message ?? e).slice(0, 60)}`)

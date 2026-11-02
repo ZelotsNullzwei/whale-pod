@@ -4179,14 +4179,27 @@ export const CLIENT_JS = `
   // ══ 人格 ══════════════════════════════════════════════════
   function renderPersona(){
     setMain(loading('读取人格…'))
-    api('/api/persona').then(function(p){
+    // 一起取 /api/memory：那里有当前活跃的会话列表，用来做"只对这一条会话生效"
+    Promise.all([api('/api/persona'), api('/api/memory').catch(function(){ return {} })]).then(function(r){
+      var p = r[0], mem = r[1] || {}
       var wrap = el('<div></div>')
+      /* 会话范围的中文名：'' = 全局，'group' = 群聊，'private' = 私聊，其它照原样显示 */
+      function scopeLabel(s){
+        if (!s) return '全局'
+        if (s === 'group') return '群聊'
+        if (s === 'private') return '私聊'
+        return s
+      }
+      var assigned = Object.keys(p.activeByScope || {}).map(function(k){
+        return '<b>' + esc(scopeLabel(k)) + '</b> <span class="mono">' + esc(p.activeByScope[k]) + '</span>'
+      }).join('　')
       var chips = (p.roles || []).map(function(r){
         return '<span class="chip click ' + (r === p.current ? 'accent' : '') + '" data-role="' + esc(r) + '">' + esc(r) + '</span>'
       }).join('')
       wrap.appendChild(card('smile', '角色', '<div class="chips">' + (chips || '<span class="note">无</span>') + '</div>' +
-        '<div class="note mt-sm">当前生效：<b id="pcur">' + esc(p.active) + '</b>　' +
-        '目录：<span class="mono">' + esc(p.dir) + '</span></div>'))
+        '<div class="note mt-sm">全局：<b id="pcur">' + esc(p.active) + '</b>　' +
+        '按会话：' + (assigned || '未指定（群和私聊都用全局那个）') + '</div>' +
+        '<div class="note mt-sm">目录：<span class="mono">' + esc(p.dir) + '</span></div>'))
 
       var edit = el('<div class="card mt"><div class="hd"><span class="ico">' + svgIcon('edit', 16) + '</span>' +
         '<h2>编辑「<span id="pname">' + esc(p.current) + '</span>」</h2>' +
@@ -4196,9 +4209,11 @@ export const CLIENT_JS = `
         '<textarea id="ptext" style="min-height:360px;font-family:ui-monospace,Consolas,monospace;font-size:12.5px">' +
           esc(p.content) + '</textarea>' +
         '<div class="note mt-sm">写具体的说话习惯，别写形容词。「偶尔只发个草」比「你很幽默」有用得多。</div>' +
-        '<div class="mt-sm" style="display:flex;gap:8px;align-items:center">' +
+        '<div class="mt-sm" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">' +
           '<button class="act" id="psave">保存</button>' +
-          '<button class="act ghost" id="pactive">设为当前角色</button>' +
+          '<span class="note">应用到</span>' +
+          '<select id="pscope" style="max-width:235px;padding:4px 6px"></select>' +
+          '<button class="act ghost" id="pactive">切换</button>' +
           '<span class="note" id="pmsg"></span>' +
         '</div></div></div>')
       wrap.appendChild(edit)
@@ -4227,13 +4242,25 @@ export const CLIENT_JS = `
           .then(function(){ m.innerHTML = '<span class="txt-ok">已保存</span>' })
           .catch(function(e){ m.innerHTML = '<span class="txt-err">' + esc(e.message) + '</span>' })
       }
+      /*
+       * 范围下拉：全局 / 群聊 / 私聊 / 每条真实会话各一项。
+       * ⚠️ 'group'、'private' 是**类型**（管一整类），'group:123'、'private:456' 是**具体会话**（优先级更高）。
+       * 具体会话从 /api/memory 的 scopes 里拿 —— 那是当前真正活跃的会话，不用手打。
+       */
+      var scopeSel = document.getElementById('pscope')
+      var scopeOpts = [['', '全局（群和私聊都跟着变）'], ['group', '群聊'], ['private', '私聊']]
+      ;((mem && mem.scopes) || []).forEach(function(s){ scopeOpts.push([s, s]) })
+      scopeSel.innerHTML = scopeOpts.map(function(o){
+        return '<option value="' + esc(o[0]) + '">' + esc(o[1]) + '</option>'
+      }).join('')
       document.getElementById('pactive').onclick = function(){
         var m = document.getElementById('pmsg'); m.textContent = '切换中…'
+        var scope = scopeSel.value || ''
         api('/api/persona', { method: 'POST', headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ active: curRole }) })
+          body: JSON.stringify({ active: curRole, scope: scope || undefined }) })
           .then(function(){
-            m.innerHTML = '<span class="txt-ok">当前角色已切换</span>'
-            document.getElementById('pcur').textContent = curRole
+            // 重新拉一遍，让上面的「按会话」那行显示新分配（比手改 DOM 可靠）
+            renderPersona()
           })
           .catch(function(e){ m.innerHTML = '<span class="txt-err">' + esc(e.message) + '</span>' })
       }

@@ -945,10 +945,31 @@ export function createWebServer(opts) {
           return json(res, 200, { ok: true, name: body.name })
         }
         if (body.active) {
-          persona.setActive(body.active)
-          store.update({ persona: { active: body.active } })
-          log.info('Web：当前角色切换为 ' + body.active)
-          return json(res, 200, { ok: true, active: body.active })
+          /*
+           * ★ 可选 `scope`（2026-11-01）：带了就只改**那一个会话/那一类会话**，
+           *   不带就是改全局（老行为）。见 PersonaStore#setActive / #pickActive。
+           *     { active:'close', scope:'private' }            → 所有私聊
+           *     { active:'close', scope:'private:2129024700' }  → 那一个私聊
+           *
+           * ★★ 可选 `clearScopes`（2026-11-02，**用户实测抓到的 bug**）：
+           *   `pickActive` 的顺序是 **精确 scope → 类型 → 全局**，
+           *   所以只要 `activeByScope` 里有 group/private，**全局值永远轮不到** ——
+           *   用户点「全局（群和私聊都跟着变）」会发现**毫无变化**。
+           *   所以面板选「全局」时会带上 `clearScopes: true`，把覆盖清掉，
+           *   那句话才成立。
+           */
+          const scope = body.scope ? String(body.scope) : null
+          if (body.clearScopes === true && !scope) {
+            persona.clearScopes?.()
+            persona.setActive(body.active)
+            store.update({ persona: { active: body.active, activeByScope: {} } })
+            log.info(`Web：角色切换为 ${body.active}（全局，并清掉了按会话的指定）`)
+            return json(res, 200, { ok: true, active: body.active, scope: null, clearedScopes: true })
+          }
+          persona.setActive(body.active, scope)
+          store.update({ persona: scope ? { activeByScope: persona.activeByScope } : { active: body.active } })
+          log.info(`Web：角色切换为 ${body.active}${scope ? `（只作用于 ${scope}）` : '（全局）'}`)
+          return json(res, 200, { ok: true, active: body.active, scope })
         }
         return json(res, 400, { error: '需要 name+content 或 active' })
       }
@@ -2107,7 +2128,18 @@ async function whalePodCompat(o) {  const { sub, method, url, req, res, json, re
         // 侧栏右上角「已活跃 N 天」读这个字段。
         activity: state.activity?.stats?.() ?? null,
         memory: memory?.stats?.() ?? null,
-        persona: { active: persona?.active ?? null, list: persona?.list?.() ?? [] },
+        /*
+         * ★ 人格状态。`activeByScope` / `scopes` 是 2026-11-01 加的：
+         *   群和私聊可以是**不同角色**，插件面板要能显示、也要能选范围。
+         *   见 `PersonaStore#pickActive`（精确 scope → 类型 → 全局）。
+         *   `scopes` 直接给面板当选项用 —— 省得用户手打 `private:2129024700`。
+         */
+        persona: {
+          active: persona?.active ?? null,
+          list: persona?.list?.() ?? [],
+          activeByScope: { ...(persona?.activeByScope ?? {}) },
+          scopes: memory?.scopes?.() ?? [],
+        },
         gateway: {
           enabled: cfg.gateway?.enabled !== false,
           strategy: cfg.gateway?.strategy ?? 'free-first',
@@ -2498,9 +2530,24 @@ async function whalePodCompat(o) {  const { sub, method, url, req, res, json, re
       }
       const name = String(body.active ?? '')
       if (!name || !list.includes(name)) return json(res, 400, { error: `人格不存在：${name}` })
-      persona?.setActive?.(name)
-      store.update({ persona: { active: name } })
-      return json(res, 200, { ok: true, active: name })
+      /*
+       * ⚠️ **这是插件面板走的那条路**（`/api/whale-pod/persona` → `sub === '/persona'`），
+       *    跟上面 `p === '/api/persona'`（WhalePod 自带网页面板）是**两个 handler**。
+       *    2026-11-02 实测踩过：只给上面那个加了 `clearScopes`，结果从插件点「全局」
+       *    走的是这里、没加 → 看着像"全局没反应"。
+       *    **两边必须同时改**（这类"两条路"的坑今天踩了不止一次）。
+       */
+      const scope = body.scope ? String(body.scope) : null
+      if (body.clearScopes === true && !scope) {
+        persona?.clearScopes?.()
+        persona?.setActive?.(name)
+        store.update({ persona: { active: name, activeByScope: {} } })
+        log.info(`[whale-pod 兼容层] 人格切换为 ${name}（全局，并清掉了按会话的指定）`)
+        return json(res, 200, { ok: true, active: name, scope: null, clearedScopes: true })
+      }
+      persona?.setActive?.(name, scope)
+      store.update({ persona: scope ? { activeByScope: persona.activeByScope } : { active: name } })
+      return json(res, 200, { ok: true, active: name, scope })
     }
 
     // ── 决策 ─────────────────────────────────────────────────────

@@ -27,12 +27,34 @@ import { needsFreshInfo } from '../gateway/search.js'
  * - 只覆盖**别人的**消息（`isMe` 时不覆盖）
  * - 已经是 `reply: true` 的不动（没必要二次加工）
  * - 可以通过 `enabled: false` 整条关掉
+ * - ⚠️ **明确 @ 了别人（且不是 @ 我）的提问，不覆盖**（2026-11-02 实测事故）
+ *
+ *   ## 那个事故
+ *   群里有人发：「**@某群友(2129024700) 发个CAD嘞**」—— @ 的是**另一个人**，
+ *   决策层已经判「沉默（先不接，还在听）」，**判得对**。
+ *   但这一层看到"发个CAD嘞"是个问句、`needsFreshInfo` 为真，就**直接覆盖成回答**，
+ *   还去联网查了一遍：
+ *   ```
+ *   03:35:48 决策 → 沉默（模型判断：先不接）
+ *   03:35:48 这条是提问 → 覆盖沉默，改成回答（查「@某群友 发个CAD嘞」）
+ *   03:35:52 [我]「CAD 啊，本鱼刚瞅了眼，有人说这玩意儿得一千块才给」
+ *   ```
+ *   用户看到的就是**别人被 @ 时她插嘴** —— 群聊体验上的真问题。
+ *
+ *   ## 为什么这条判据可靠
+ *   `mentionsMe` 在入库时就定好了（= 被 @ 或**引用了她自己的消息**，见 `_handle`），
+ *   不是这里现算的，所以读它不会引入新的误判。
+ *
+ *   ⚠️ **只有"明确 @ 了别人"时才拦**（`atSomeoneElse`）。没有 @ 的普通提问照旧覆盖
+ *      —— 那是这条规则本来的用途，别一刀切掉。
  *
  * @param {object} d    决策结果
  * @param {string} text 原始消息文本
  * @param {object} [opts]
- * @param {boolean} [opts.isMe]    是不是自己发的
- * @param {boolean} [opts.enabled] 默认 true
+ * @param {boolean} [opts.isMe]          是不是自己发的
+ * @param {boolean} [opts.enabled]       默认 true
+ * @param {boolean} [opts.mentionsMe]    这条是不是 @ 了我（入库时算好的）
+ * @param {boolean} [opts.atSomeoneElse] 这条**明确 @ 了别人**（且不是 @ 我）
  * @returns {object} 处理后的决策（可能与入参同一个对象）
  */
 export function applyQuestionOverride(d, text, opts = {}) {
@@ -40,6 +62,8 @@ export function applyQuestionOverride(d, text, opts = {}) {
   if (d.reply) return d
   if (opts.isMe === true) return d
   if (opts.enabled === false) return d
+  /* ★ 明确 @ 了别人的提问不归我答 —— 见上面那段事故 */
+  if (opts.atSomeoneElse === true && opts.mentionsMe !== true) return d
 
   let nf
   try {

@@ -2814,6 +2814,14 @@ export class QQBridge {
       d = applyQuestionOverride(d, msg.text, {
         isMe: msg.isMe,
         enabled: this.cfg.reply?.questionGate !== false,
+        /*
+         * ★ 让「提问覆盖」知道这条到底在问谁（2026-11-02）。
+         * `mentionsMe` 是入库时算好的（被 @ 或引用了她的消息）。
+         * `atSomeoneElse` = 文本里**有 @ 但不是 @ 她** —— 那种提问该由被 @ 的人答，
+         * 不归她。实测事故：有人发「@某群友 发个CAD嘞」，她插嘴答了。
+         */
+        mentionsMe: Boolean(msg.mentionsMe),
+        atSomeoneElse: /@\S+/.test(String(msg.text ?? '')) && !msg.mentionsMe,
       })
       if (d !== before) {
         this.log.info?.(
@@ -3242,6 +3250,21 @@ export class QQBridge {
     //    查「思考内容外泄」时被 120 卡住 —— 超过 120 字的回复，日志只剩
     //    干净的前半段，泄漏的后半段根本看不到，白白浪费好几轮排查。
     this.log.info?.(`bridge：[我] ${msg.scope}「${String(text).slice(0, 400)}」`)
+      /*
+       * ★ **长视频：回复已经发出去了，现在等后台听完再补一句**（2026-11-01）。
+       *
+       * 用户原话：
+       * > 「时长太长的，就先回复我先看看，然后正常聊天，那边结束了再提视频内容。」
+       *
+       * 放在**这里**（而不是 `_generate` 里 await）是刻意的：
+       * 即时回复的延迟必须是 0 —— 后台任务跟这条回复**并行**跑，
+       * 谁先完都不互相等。这一句 `void` 就是"派出去，不等"。
+       */
+      const vjob = this._videoJobs?.get(String(msg.scope ?? ''))
+      if (vjob) {
+        this._videoJobs.delete(String(msg.scope ?? ''))
+        void this._videoFollowUp(vjob, msg, mem, scene, self)
+      }
       // 记下自己发出的 message_id —— 过时检测要靠它认出
       // 「后续消息引用了我的回复」= 有人在追问我，不能判过时。
       this._rememberMyReplyIds(msg.scope, sentIds)
@@ -3719,7 +3742,20 @@ export class QQBridge {
      */
     let biliContext = ''
     try {
-      biliContext = await this._biliContext(String(msg.text ?? ''))
+      const bili = await this._biliContext(String(msg.text ?? ''))
+      biliContext = bili.ctx
+      /*
+       * 长视频会在这里挂一个**后台转写任务**，交给 `_handle` 在回复发完之后补发
+       * （见 `_videoFollowUp`）。
+       *
+       * ⚠️ 为什么用「按 scope 存」而不是从返回值带出去：`_generate` 的返回值是**文本**，
+       *    塞不进第二个东西；而同一会话的 `_handle` 是**串行**的（见 `_queues`），
+       *    所以按 scope 存不会串会话。
+       */
+      if (bili.job) {
+        if (!this._videoJobs) this._videoJobs = new Map()
+        this._videoJobs.set(String(msg.scope ?? ''), bili.job)
+      }
     } catch { /* 静默 */ }
     /** 本次回复备下的封面图（随返回值带走，避免实例变量竞态）。 */
     let pendingCover = null
@@ -3899,6 +3935,17 @@ export class QQBridge {
 
     const lastMsg = mem.recent(1)[0]
     const lastText = String(lastMsg?.text ?? '')
+    /*
+     * ★ **这条是不是在叫她？**（2026-11-01）
+     *
+     * 决定生成提示词里那段用哪个版本：
+     *   · 是 →「被点名就得应一声」，**不给 [SILENT] 出口**
+     *   · 不是 → 照旧「最终由你定」，可以 [SILENT]
+     *
+     * `mentionsMe` 在入库时就定好了（`_handle` 里 = 被 @ 或**引用了她自己的消息**，
+     * 见那里 `quotedMine`），所以这里直接读，不用重算。
+     */
+    const addressedToMe = Boolean(lastMsg?.mentionsMe)
     const hasMedia = /\[表情包|\[表情:|\[图片\]/.test(lastText)
 
     /*
@@ -4020,6 +4067,15 @@ export class QQBridge {
       : ''
 
     const system = this.persona.buildSystemPrompt({
+      /*
+       * ★ **按会话取人格**（2026-11-01）：群聊和私聊可以是不同角色文件。
+       *   用户要的是「群里还是那只鱼鱼，私聊换一版」——
+       *   原来 `persona.active` 是全局的，切一下群里也跟着变。
+       *   现在把这个会话的 scope 传下去，由 `PersonaStore#pickActive` 决定
+       *   （精确 scope → 类型 group/private → 全局 active）。
+       *   ⚠️ 不传的话行为跟以前一模一样，所以主动发言那类路径不受影响。
+       */
+      scope: msg?.scope,
       // 会话记忆 + 人物档案分两段传：前者是「这里发生过什么」，
       // 后者是「这些人是谁」，混在一起模型容易把两者当同一层事实。
       memory: [memoryText, peopleText].filter(Boolean).join('\n\n'),
@@ -4175,12 +4231,36 @@ export class QQBridge {
          * 把它变成了**默认逃生口**（无话可说 → 甩表情）。前者是正常的说话方式，
          * 后者才是躲事。所以：**删掉频率约束，只留"别拿表情当避难所"的语义。**
          */
-        '## 群里刚说到这句\n' +
-        '上层已经判过「该不该接」，结论是接 —— 但**最终由你定**。\n' +
-        '想接就接：接得住就接，接不住别硬凑。\n' +
-        '真没什么想说的，就直接输出 [SILENT]（不算错，也不用解释）。\n' +
-        '表情包想发就发 —— 只发一个表情也算回应，不用克制。\n' +
-        '不用每次都周全：吐槽、抬杠、装没听懂、只回两个字，都行。',
+        /*
+         * ★ **被点名时，`[SILENT]` 不该是出口**（2026-11-01 实测）。
+         *
+         * 现场（群里）：
+         * ```
+         * 21:22:50 客「@蓝色大鲸鱼 给我jm的白毛本的神秘数字」
+         *          决策 → 发言 (p=0.95, 被 @ 了（不判断，直接回）)   ← 决策层说必须回
+         * 21:22:53 人格选择不说（[SILENT]）                        ← 生成层把她按住了
+         * ```
+         * 用户看到的就是「叫它它不理」。
+         *
+         * 根因：下面那段通用文案**无条件**给了 [SILENT] 出口，而人格里
+         * 「有人叫你 → 这就是在叫你，要应」被它盖掉了。所以被点名时换一段。
+         *
+         * ⚠️ 保留一个例外：政治 / 人身攻击那种（人格「什么时候闭嘴」里本来就说不接的），
+         *    照旧可以不接 —— 别把"被点名必须回"变成"什么都要回"。
+         */
+        addressedToMe
+          ? '## 有人点了你的名\n'
+            + '**被点名就得应一声。** 给不了、不知道、不想给，都直接说出来'
+            + '（「没有」「你要这个干嘛」这种），**但别不吭声** ——\n'
+            + '装没看见比说"不给"更失礼，人家会觉得你没在听。\n'
+            + '唯一例外：政治 / 人身攻击那类你本来就不接的，照旧当没看见。\n'
+            + '不用周全，一两句就行。**被点名时不要输出 [SILENT]。**'
+          : '## 群里刚说到这句\n'
+            + '上层已经判过「该不该接」，结论是接 —— 但**最终由你定**。\n'
+            + '想接就接：接得住就接，接不住别硬凑。\n'
+            + '真没什么想说的，就直接输出 [SILENT]（不算错，也不用解释）。\n'
+            + '表情包想发就发 —— 只发一个表情也算回应，不用克制。\n'
+            + '不用每次都周全：吐槽、抬杠、装没听懂、只回两个字，都行。',
         // ⚠️ 原来这里还有 `## 上下文提示`（距上次说话 / 连续发言 / 当前时间）。
         //    已挪到**公共 extras**（见 `## 现在`）—— 写在这里的话**主动发言拿不到**，
         //    实测它 09:30 说「中午了」，被问后又改口「我当下午了呢」。
@@ -4854,6 +4934,22 @@ export class QQBridge {
         this.log.info?.(`表情标签：本批打了 ${done} 张，还剩 ${left} 张待打`)
       }
       /*
+       * ★★ **打完就顺手收敛同类**（2026-11-02 用户要求：「同类型的表情只留 3 个」）。
+       *
+       * 为什么挂在这里：`minPending = 3` 已经是"攒够 3 张才打"，
+       * 所以**这一批打完就等于又积累了一轮**，正好在这里收敛一次。
+       * 比单独起一个定时器简单，也不会漏。
+       *
+       * ⚠️ 只清理**标签库**（不删表情本身）—— 图还在她收藏里，
+       *    只是不再进提示词清单、也不被按标签挑到。删图要经过用户，不能顺手干。
+       */
+      if (done > 0 && typeof this.stickerTags.dedupeByTag === 'function') {
+        const r = this.stickerTags.dedupeByTag(3)
+        if (r.removed.length) {
+          this.log.info?.(`表情标签：同类收敛，清掉 ${r.removed.length} 张（${r.classes} 类，每类留 3 张）`)
+        }
+      }
+      /*
        * ★ 还有就 **30 秒后接着打**（2026-10-31）。
        *
        * 用户要「**现在已有的**表情打标签分类」—— 48 张按每批 5 张、
@@ -4885,15 +4981,22 @@ export class QQBridge {
    * @returns {Promise<string>}
    */
   async _biliContext(text) {
-    if (!hasBiliLink(text)) return ''
+    if (!hasBiliLink(text)) return { ctx: '', job: null }
     const bvid = await resolveBvid(text)
-    if (!bvid) return ''
+    if (!bvid) return { ctx: '', job: null }
     const now = Date.now()
     if (!this._biliCache) this._biliCache = new Map()
     const hit = this._biliCache.get(bvid)
-    if (hit && now - hit.at < 300_000) return hit.text
+    /*
+     * 缓存命中就直接用 —— 长视频那条后台任务早就把**更完整的上下文**
+     * 写回缓存了（见 `_startVideoTranscribe`），所以补发那一条重新生成时
+     * 自然读到的是"听完开头"的版本，不需要额外传参。
+     */
+    if (hit && now - hit.at < 300_000) return { ctx: hit.text, job: null }
     const info = await fetchVideoInfo(bvid)
     let ctx = ''
+    /** 长视频的后台转写任务（{bvid, promise, at}）；短视频为 null */
+    let job = null
     if (info) {
       /*
        * ★ **评论和弹幕才是重点**（用户原话：「光是标题和简介只是作者说明，
@@ -4940,6 +5043,22 @@ export class QQBridge {
        *
        * 失败静默：没装 / 没模型 / 没语音（纯音乐、无声演示）都返回空串。
        */
+      /*
+       * ★★ 转写：**短视频同步、长视频异步**（2026-11-01 重构）。
+       *
+       * 原来只有一道 `duration <= 300` 的门槛，超了**什么都不做** ——
+       * 于是长视频连一句内容都没有，只能读评论弹幕（用户原话：
+       * 「视频内容还是看不见这种感觉，还是在读评论和弹幕」）。
+       * 实测 26 分 46 秒那条：音频 12.9MB，**同时**超过 300 秒时长和 12MB 字节两道门。
+       *
+       * 为什么不能简单地"提高门槛"：26 分钟的音频要转 ~40-60 秒，
+       * 同步等就得让回复多等这么久 —— 那是用户明确抱怨过的量级。
+       *
+       * 所以长视频走**异步**：
+       *   ① 这一步**立刻**返回（`pendingLong` 让提示词如实说"你刚开始听"）
+       *   ② 后台只取音频**开头 2MB**（≈前 4 分钟，实测转写 9.6s）并缓存
+       *   ③ 转完更新缓存，由 `_handle` 那边补发一句（见 `_videoFollowUp`）
+       */
       if (info.duration > 0 && info.duration <= 300) {
         try {
           const t0 = Date.now()
@@ -4955,11 +5074,24 @@ export class QQBridge {
               `B站：${bvid} 转写出 ${text.length} 字（${Math.round((Date.now() - t0) / 1000)}s）`,
             )
           } else {
-            this.log.debug?.(`B站：${bvid} 没有转写（无语音 / 没装 ASR / 超时）`)
+            /*
+             * ⚠️ 这里原来是 **debug** 级 —— 默认日志里看不见，
+             *    于是"这条为什么没内容"从日志根本查不出来（我就是靠重跑一遍才摸到两道门的）。
+             *    一次分享只打一行，不吵。
+             */
+            this.log.info?.(`B站：${bvid} 没转出可用语音（${info.duration}s 短片：无语音/没装 ASR/超时）`)
           }
         } catch (e) {
-          this.log.debug?.(`B站：转写异常（忽略）— ${String(e?.message ?? e)}`)
+          this.log.warn?.(`B站：转写异常（忽略）— ${String(e?.message ?? e)}`)
         }
+      } else if (info.duration > 300) {
+        info.pendingLong = true
+        job = this._startVideoTranscribe(bvid, info)
+        this.log.info?.(
+          `B站：${bvid} 是长视频（${Math.round(info.duration / 60)} 分钟）→ 先回一句，后台听开头`,
+        )
+      } else {
+        this.log.info?.(`B站：${bvid} 拿不到时长，跳过转写`)
       }
 
       ctx = formatVideoContext(info)
@@ -4969,8 +5101,170 @@ export class QQBridge {
       this._biliCache.delete(this._biliCache.keys().next().value)
     }
     if (ctx) this.log.info?.(`B站：${bvid} → ${String(info?.title ?? '').slice(0, 40)}`)
-    else this.log.debug?.(`B站：${bvid} 没拿到元信息（跳过）`)
-    return ctx
+    else this.log.info?.(`B站：${bvid} 没拿到元信息（跳过）`)
+    return { ctx, job }
+  }
+
+  /**
+   * 长视频的**后台转写**：只取音频开头一段，转完把更完整的上下文写回缓存。
+   *
+   * ## 为什么异步（2026-11-01，用户提的设计）
+   * 用户原话：
+   * > 「时长太长的，就先回复我先看看，然后正常聊天，那边结束了再提视频内容。」
+   *
+   * 这比"同步多等十几秒"好得多：
+   * ```
+   * 同步：收到链接 → 等转写 10~60s → 才开始生成 → 用户干等
+   * 异步：收到链接 → 立刻回「我去看看」→ 用户继续聊 → 转完补一句
+   * ```
+   * 真人就是这么干的，而且**即时回复那一侧的延迟是 0**。
+   *
+   * ## 只取开头一段
+   * 长视频的音频动不动十几 MB，整条下有被 `maxBytes` 挡死的风险，转起来也慢。
+   * 实测（26 分 46 秒那条）：`Range: 0-2MB` → 2.00MB，**≈前 4 分 09 秒**，
+   * tiny 模型转写 **9.6s**，出来的内容是能读的（各 AI 自我介绍那段）。
+   * 前缀长度可用 `qq.bilibili.prefixBytes` 调。
+   *
+   * ## 转完之后
+   * 把 `prefixOnly` 的完整上下文**写回 `_biliCache`** ——
+   * 补发那一条重新走 `_generate` 时会自然读到它，不需要额外传参。
+   *
+   * @param {string} bvid
+   * @param {object} info  `fetchVideoInfo` 的结果（含 cid）
+   * @returns {{bvid:string, promise:Promise<null|{text:string,ctx:string}>, at:number}}
+   */
+  _startVideoTranscribe(bvid, info) {
+    if (!this._biliJobs) this._biliJobs = new Map()
+    const existed = this._biliJobs.get(bvid)
+    if (existed) return existed
+    const prefixBytes = Number(this.cfg.bilibili?.prefixBytes ?? 2 * 1024 * 1024)
+    const at = Date.now()
+    const promise = (async () => {
+      try {
+        const text = await transcribeVideoCached(
+          bvid,
+          info.cid,
+          { fetchAudioCandidates, downloadAudio },
+          // ⚠️ 超时给足：这是**后台**任务，不挡任何人的回复，所以不必抠 20 秒
+          { timeoutMs: 120_000, prefixBytes, log: this.log },
+        )
+        if (!text) {
+          this.log.info?.(`B站：${bvid} 后台没听出内容（只取开头 ${(prefixBytes / 1048576).toFixed(0)}MB）`)
+          return null
+        }
+        const sec = Math.round((Date.now() - at) / 1000)
+        this.log.info?.(`B站：${bvid} 后台听完开头一段 → ${text.length} 字（${sec}s）`)
+        const ctx = formatVideoContext({ ...info, transcript: text, prefixOnly: true, pendingLong: false })
+        this._biliCache.set(bvid, { at: Date.now(), text: ctx })
+        return { text, ctx }
+      } catch (e) {
+        this.log.warn?.(`B站：${bvid} 后台转写失败 — ${String(e?.message ?? e)}`)
+        return null
+      } finally {
+        // 任务结束就摘掉 —— 但**调用方手上还拿着这个 promise**，所以摘了不影响补发
+        this._biliJobs.delete(bvid)
+      }
+    })()
+    const rec = { bvid, promise, at }
+    this._biliJobs.set(bvid, rec)
+    return rec
+  }
+
+  /**
+   * 长视频的**补发**：后台听完了，回来把内容说一句。
+   *
+   * ## 用户要的行为
+   * > 「先回复我先看看，然后正常聊天，那边结束了再提视频内容」
+   *
+   * 所以这条**不走决策层**（不需要再判一次"该不该说"——她刚才已经答应要看了），
+   * 直接用当前对话 + 新的视频上下文生成一句，然后发。
+   *
+   * ## 几道闸（防打扰）
+   * 1. 转写拿到可用文本（空 → 不提）
+   * 2. 距原链接 **≤ 5 分钟**（`qq.bilibili.followUpMaxAgeMs`）—— 太久就是翻篇了
+   * 3. **同一条视频只补一次**（`_videoFollowed`）
+   * 4. 这一条**不受冷却/主动发言闸门管** —— 它是"答应过的事"，不是主动搭话
+   *
+   * @param {{bvid:string, promise:Promise, at:number}} job
+   * @param {object} msg    原来那条分享消息（`_send` 要它的 scope/kind/groupId/userId）
+   * @param {object} mem    该会话记忆
+   * @param {object} scene
+   * @param {object} self
+   */
+  async _videoFollowUp(job, msg, mem, scene, self) {
+    try {
+      const r = await job.promise
+      if (!r?.text) return
+      if (!this._videoFollowed) this._videoFollowed = new Map()
+      if (this._videoFollowed.has(job.bvid)) return
+      const maxAge = Number(this.cfg.bilibili?.followUpMaxAgeMs ?? 5 * 60_000)
+      const age = Date.now() - job.at
+      if (age > maxAge) {
+        this.log.info?.(`B站：${job.bvid} 听完了，但已经过了 ${Math.round(age / 1000)}s → 不补了`)
+        return
+      }
+      const scope = String(msg.scope ?? '')
+      if (!scope) return
+      this._videoFollowed.set(job.bvid, Date.now())
+      if (this._videoFollowed.size > 100) {
+        this._videoFollowed.delete(this._videoFollowed.keys().next().value)
+      }
+
+      const gen = await this._generate(msg, mem, scene, self)
+      /*
+       * ⚠️⚠️ `_generate` 返回的是 **`{ text, cover }`**，不是字符串（2026-11-01 实测踩到）。
+       *
+       * 我第一版写了 `cleanModelText(await this._generate(...))` —— 把一个对象丢进
+       * `String()`，于是**真的往 QQ 发了一条「[object Object]」**。
+       * 日志上是这样的：
+       * ```
+       * B站：BV1dXxp6xEk3 看完补一句（等了 10s）「[object Object]」
+       * ```
+       *
+       * `_handle` 那边是 `gen?.text ?? ''` + `gen?.cover ?? null`（L2943 附近），照抄。
+       * 另外这里**多一道类型闸**：不是字符串就不发 —— 这类"把对象当文本"的错误
+       * 不该有机会到用户眼前。
+       */
+      if (typeof gen?.text !== 'string') {
+        this.log.warn?.(`B站：${job.bvid} 补发时生成层返回的不是字符串（${typeof gen?.text}），跳过`)
+        return
+      }
+      const rawText = gen.text
+      const cover = gen?.cover ?? null
+      /*
+       * ⚠️ 判据**照抄 `_handle`**，别自己发明：
+       * `[SILENT]` 只在**整条就是它**时才算"不说话"；混在正文里要剥掉后照发。
+       * （我第一版写的是 `clean === '[SILENT]'` —— 那会漏掉「[表情包][SILENT]」
+       *   「好了[SILENT]」这种，而且大小写/全角都不认。`_handle` 那边有现成的正则。）
+       */
+      const hadSilent = /[\[［]\s*[SILENTsilent]{6}\s*[\]］]/.test(rawText)
+      const clean = rawText.replace(/[\[［]\s*[SILENTsilent]{6}\s*[\]］]/g, '').trim()
+      if (!clean) {
+        if (hadSilent) {
+          this.stats.silent++
+          this.log.info?.(`B站：${job.bvid} 听完了，但她选择不说（[SILENT]）`)
+        } else {
+          this.log.info?.(`B站：${job.bvid} 听完了，但生成出来是空的 → 不补了`)
+        }
+        return
+      }
+      const sentIds = await this._send(msg, clean, cover)
+      mem.push(makeMessage({
+        id: sentIds.length ? sentIds[sentIds.length - 1] : undefined,
+        sender: this.selfId ?? '0',
+        senderName: this.selfName,
+        text: clean,
+        at: Date.now(),
+        isMe: true,
+        provider: this._lastRoute?.provider ?? null,
+        model: this._lastRoute?.model ?? null,
+      }))
+      this.stats.replied++
+      this._rememberMyReplyIds(scope, sentIds)
+      this.log.info?.(`B站：${job.bvid} 看完补一句（等了 ${Math.round(age / 1000)}s）「${clean.slice(0, 80)}」`)
+    } catch (e) {
+      this.log.warn?.(`B站：补发失败 — ${String(e?.message ?? e)}`)
+    }
   }
 
   async _customFaces() {

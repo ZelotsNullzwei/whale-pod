@@ -205,6 +205,44 @@ WhalePod —— QQ 机器人运行时 + 免费优先的 LLM 网关
 `.trim()
 
 export async function main(argv = process.argv.slice(2)) {
+  /*
+   * ★★ **第一件事：让国内站点绕过系统代理**（2026-11-02）。
+   *
+   * ## 必须放在最前面
+   * Node 的 fetch 会在**第一次调用时**建好 dispatcher（`EnvHttpProxyAgent`），
+   * 建好之后**再改环境变量就无效了** —— 实测：进程跑起来再删 `https_proxy`，
+   * 照样 ECONNREFUSED。所以只能在这儿、在任何网络请求之前做。
+   *
+   * ## 治的是什么
+   * 本机装了代理软件（Clash 之类），关掉之后 `HTTP_PROXY=127.0.0.1:7890`
+   * 还留在环境变量里。于是**所有 fetch 都往一个死端口上撞**：
+   * ```
+   * 贴吧订阅：明日方舟 取失败 — fetch failed
+   * 热点：取失败 — tieba: fetch failed / bilibili: fetch failed
+   * B 站：短链 b23.tv 解不出 BV 号 → 「本鱼这边放不出来」
+   * ```
+   * 而**裸 TCP 连 bilibili.com:443 是通的** —— 国内站根本不需要代理。
+   *
+   * 修法：把国内域名追加进 `no_proxy`（undici 认这个），代理挂了也不连带它们。
+   * 外网（需要翻墙的）照旧走代理，不受影响。
+   *
+   * ⚠️ NapCat 那边是另一条路 —— 它是子进程，继承同一份环境变量，
+   *    所以在 `protocol.js` spawn 时**剔除**代理变量（见那里的注释）。
+   *    两处都做了，这一整类故障才算堵住。
+   */
+  try {
+    const { applyDomesticBypass, probeProxy } = await import('./net/proxy.js')
+    const r = applyDomesticBypass()
+    if (r.applied) {
+      // 探一下代理活没活 —— 挂了就在日志里吼一声，别让人再靠猜
+      const p = await probeProxy()
+      if (p.configured && p.ok === false) {
+        console.warn(`[启动] ⚠️ 代理 ${p.target} 连不上（关了代理软件但环境变量还在？）`
+          + ` —— 国内站点已改直连，需要翻墙的功能会失败`)
+      }
+    }
+  } catch { /* 代理兜底失败不该拦住启动 */ }
+
   const args = parseArgs(argv)
   if (args.help) { console.log(HELP); return { code: 0 } }
 
@@ -506,6 +544,8 @@ export async function main(argv = process.argv.slice(2)) {
     const persona = new PersonaStore({
       home: store.home,
       active: cfg.persona?.active ?? 'default',
+      // 群/私聊可以指定不同角色，见 PersonaStore#pickActive
+      activeByScope: cfg.persona?.activeByScope ?? {},
       log,
     })
     persona.init()

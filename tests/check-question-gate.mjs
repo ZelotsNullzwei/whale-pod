@@ -97,5 +97,42 @@ ok('空文本 → 保持沉默', () => {
   assert.equal(applyQuestionOverride(silent(), '').reply, false)
 })
 
+/*
+ * ★ 2026-11-02 实测事故：群里「@某群友 发个CAD嘞」——@ 的是**别人**，
+ *   决策层已判沉默（判得对），但这一层看到问句就强制回答，还联网查了一遍。
+ *   用户看到的是「别人被 @ 时她插嘴」。
+ */
+ok('@ 了别人的提问 → 不覆盖（该由被 @ 的人答）', () => {
+  const r = applyQuestionOverride(silent(), '@某群友(2129024700) 发个CAD嘞', {
+    mentionsMe: false,
+    atSomeoneElse: true,
+  })
+  assert.equal(r.reply, false, '明确 @ 了别人，不该她答')
+})
+
+ok('@ 了我的提问 → 照旧覆盖（这条规则本来的用途）', () => {
+  const r = applyQuestionOverride(silent(), '@大肥鱼 你知道祀是谁吗', {
+    mentionsMe: true,
+    atSomeoneElse: false,
+  })
+  assert.equal(r.reply, true, '@ 了我就要答')
+})
+
+ok('**没有** @ 的普通提问 → 照旧覆盖（别一刀切掉）', () => {
+  const r = applyQuestionOverride(silent(), '你知道祀是谁吗', {
+    mentionsMe: false,
+    atSomeoneElse: false,
+  })
+  assert.equal(r.reply, true, '没 @ 人，就是普通提问')
+})
+
+ok('既 @ 了别人又 @ 了我 → 仍要答', () => {
+  const r = applyQuestionOverride(silent(), '@某群友 @大肥鱼 发个CAD嘞', {
+    mentionsMe: true,
+    atSomeoneElse: true,
+  })
+  assert.equal(r.reply, true, '只要 @ 了我，就该我答')
+})
+
 console.log(`\n通过 ${pass} / 失败 ${fail}`)
 process.exit(fail > 0 ? 1 : 0)

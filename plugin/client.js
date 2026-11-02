@@ -339,6 +339,12 @@ window.__ModuleLoader__.load({
 
         'persona.active': '当前人格',
         'persona.hint': '人格文件位于 WhalePod 数据目录的 persona/ 下',
+        'persona.scopeGlobal': '全局（清掉按会话的指定，两边都用这个）',
+        'persona.scopeGroup': '群聊',
+        'persona.scopePrivate': '私聊',
+        'persona.scopeBy': '按会话',
+        'persona.scopeHint': '只改选中的范围；选「全局」会清掉按会话的指定，群和私聊都用这一个',
+        'persona.scopeEffective': '这一档现在生效',
         'memory.stats': '记忆统计',
         'memory.clear': '清空记忆',
         'memory.cleared': '已清空',
@@ -610,6 +616,12 @@ window.__ModuleLoader__.load({
 
         'persona.active': 'Active persona',
         'persona.hint': 'Persona files live under persona/ in the WhalePod data directory',
+        'persona.scopeGlobal': 'Global (groups and DMs together)',
+        'persona.scopeGroup': 'Groups',
+        'persona.scopePrivate': 'DMs',
+        'persona.scopeBy': 'Per scope',
+        'persona.scopeHint': 'Only the selected scope changes; “Global” changes both.',
+        'persona.scopeEffective': 'Effective here',
         'memory.stats': 'Memory stats',
         'memory.clear': 'Clear memory',
         'memory.cleared': 'Cleared',
@@ -1026,6 +1038,82 @@ window.__ModuleLoader__.load({
           h('b', null, label),
           hint === undefined ? null : h('i', null, hint)),
         children)
+    }
+
+    /**
+     * 「当前人格」+「范围」选择器（2026-11-01 加）。
+     *
+     * ## 为什么要单独拎成一个组件
+     * 这里需要**局部 state** 记住用户选的「范围」。原来那段是直接写在渲染树里的
+     * 表达式 —— 在那儿塞 hook 有风险，所以独立出来。
+     *
+     * ## 两个坑（都是用户实测抓到的）
+     * ① **不能拿 `persona.active` 当下拉的 value** —— 那是**全局**那个。
+     *    选了「私聊」却显示全局值的话，改完私聊一刷新下拉就跳回全局值，
+     *    看着就是"**选中了没变化**"。
+     *    要显示的是**所选范围下真正生效的角色**。
+     * ② **「范围」必须接 state** —— 不接的话改范围右边不跟着更新，
+     *    看着就是"**选不中**"。
+     *
+     * ⚠️ 下面 `effective` 的算法必须跟服务端 `PersonaStore#pickActive` **完全一致**
+     *    （精确 scope → 类型 → 全局）。两边不一致的话，界面显示的和实际用的会对不上 ——
+     *    那种 bug 最难查。
+     */
+    function PersonaPicker({ persona, busy, post, reload, setToast, t }) {
+      const [scope, setScope] = useState('')
+      const p = persona ?? {}
+      const byScope = p.activeByScope ?? {}
+      /*
+       * ⚠️ `sc` 这一步的 `String(scope ?? '')` 是**跟服务端对齐**用的：
+       *    服务端 `pickActive` 就是这么归一化的（`String(scope ?? '')`）。
+       *    少这一步的话，传 undefined 时两边行为会不一样 —— 那条一致性测试会红。
+       */
+      const sc = String(scope ?? '')
+      const kind = sc.includes(':') ? sc.slice(0, sc.indexOf(':')) : sc
+      const effective = (sc ? (byScope[sc] ?? byScope[kind]) : undefined) ?? p.active ?? ''
+      const scopeOpts = [
+        ['', t('persona.scopeGlobal')],
+        ['group', t('persona.scopeGroup')],
+        ['private', t('persona.scopePrivate')],
+      ].concat((p.scopes ?? []).map((s) => [s, s]))
+      const nameOf = (k) => (k === 'group' ? t('persona.scopeGroup')
+        : k === 'private' ? t('persona.scopePrivate') : k)
+      const summary = Object.keys(byScope).map((k) => `${nameOf(k)} ${byScope[k]}`).join(' ｜ ')
+      const hint = t('persona.hint')
+        + (summary ? `　${t('persona.scopeBy')}：${summary}` : '')
+        + (scope ? `　${t('persona.scopeEffective')}：${effective}` : '')
+      return h(Row, { label: t('persona.active'), hint },
+        h('div', { style: { display: 'flex', gap: '6px', alignItems: 'center', flex: 'none' } },
+          h('select', {
+            className: 'gd_select',
+            value: scope,
+            disabled: busy,
+            title: t('persona.scopeHint'),
+            onChange: (event) => setScope(event.target.value),
+            style: { width: '200px', flex: 'none' },
+          }, scopeOpts.map((pair) => h('option', { key: pair[0] || 'all', value: pair[0] }, pair[1]))),
+          h('select', {
+            className: 'gd_select',
+            value: effective,
+            disabled: busy,
+            onChange: (event) => {
+              /*
+               * ⚠️ 选「全局」时要带 `clearScopes`（2026-11-02，用户实测抓到的 bug）。
+               *
+               * 服务端 `pickActive` 的顺序是 **精确 scope → 类型 → 全局**，
+               * 只要 `activeByScope` 里还有 group/private，**全局值就轮不到** ——
+               * 于是点「全局」看着像没反应。带上这个标记，服务端会把覆盖清掉。
+               */
+              post('/persona', {
+                active: event.target.value,
+                scope: sc || undefined,
+                clearScopes: sc ? undefined : true,
+              })
+                .then(() => reload())
+                .catch((error) => setToast({ ok: false, text: String(error?.message ?? error) }))
+            },
+            style: { width: '140px', flex: 'none' },
+          }, (p.list ?? []).map((name) => h('option', { key: name, value: name }, name)))))
     }
 
     function Toggle({ checked, onChange, disabled }) {
@@ -2537,16 +2625,14 @@ window.__ModuleLoader__.load({
               label: `${p.label ?? p.id}`,
               value: `${p.ok ? '✓' : '✗'} ${p.detail ?? ''}`.slice(0, 60),
             }))),
-          h(Row, { label: t('persona.active'), hint: t('persona.hint') },
-            h('select', {
-              className: 'gd_select',
-              value: s?.persona?.active ?? '',
-              disabled: busy,
-              onChange: (event) => post('/persona', { active: event.target.value })
-                .then(() => { status.reload() })
-                .catch((error) => setToast({ ok: false, text: String(error?.message ?? error) })),
-              style: { width: '160px', flex: 'none' },
-            }, (s?.persona?.list ?? []).map((name) => h('option', { key: name, value: name }, name)))),
+          h(PersonaPicker, {
+            persona: s?.persona,
+            busy,
+            post,
+            reload: () => status.reload(),
+            setToast,
+            t,
+          }),
           h('div', { className: 'gd_actions' },
             h('button', {
               className: 'gd_btn',
