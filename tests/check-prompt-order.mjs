@@ -60,7 +60,7 @@ ok('★ B 站那段必须在 `## 输出要求` **之后**（离生成更近）',
     scene: { kind: 'private' },
     self: { name: '蓝色大肥鱼', qq: '1000000001' },
   })
-  const atBili = sys.indexOf('## 对方分享的 B 站视频')
+  const atBili = sys.indexOf('## 他发给你的 B 站视频')
   const atOut = sys.indexOf('## 输出要求')
   assert.ok(atBili > 0, 'B 站那段要在 prompt 里')
   assert.ok(atOut > 0, '要有输出要求')
@@ -77,7 +77,7 @@ ok('★ B 站那段要接近末尾（距结尾不超过 600 字）', () => {
     scene: { kind: 'private' },
     self: { name: '蓝色大肥鱼', qq: '1000000001' },
   })
-  const at = sys.indexOf('## 对方分享的 B 站视频')
+  const at = sys.indexOf('## 他发给你的 B 站视频')
   const tail = sys.length - at
   assert.ok(tail < 600, `B 站那段距结尾 ${tail} 字 —— 太远了，约束力会弱`)
 })
@@ -92,7 +92,7 @@ ok('其它 extras（比如「现在」）仍然在中间，不受影响', () => 
   })
   assert.ok(sys.includes(nowCtx), '「现在」那段不能丢')
   const atNow = sys.indexOf('## 现在')
-  const atBili = sys.indexOf('## 对方分享的 B 站视频')
+  const atBili = sys.indexOf('## 他发给你的 B 站视频')
   assert.ok(atNow < atBili, '只有 B 站那段被挪后，「现在」保持原位')
 })
 
@@ -193,9 +193,9 @@ ok('事实正文里的 `##` 要降级成 `###`（别和段落标题平级）', (
   })
   const at = sys.indexOf('## 【本次程序核实的事实】')
   const seg = sys.slice(at)
-  assert.match(seg, /### 对方分享的 B 站视频/, '正文标题要降成三级')
+  assert.match(seg, /### 他发给你的 B 站视频/, '正文标题要降成三级')
   assert.ok(
-    !/^## 对方分享的 B 站视频/m.test(seg),
+    !/^## 他发给你的 B 站视频/m.test(seg),
     '不能和「## 【本次程序核实的事实】」平级 —— 看着像另一个并列章节',
   )
 })

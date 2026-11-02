@@ -5,7 +5,9 @@
  *   1. 配置       ← 其它层都读它
  *   2. 日志       ← 配置里有 level
  *   3. 凭据       ← 网关和决策层都要
- *   4. LLM 网关核心 ← 装载 channel-pack（14 渠道）
+ *   4. LLM 网关核心 ← 自备渠道（手填 / DSH 发现 / 内置官方凭证）
+ *                      ⚠️ 2026-11-02 之前这里还装 DSH 的 channel-pack
+ *                      （14 个免费渠道），已按用户决定整个拆掉
  *   5. 决策层     ← 独立于 LLM，但共享凭据与日志
  *   6. HTTP 服务  ← 暴露 OpenAI 兼容端点
  *   7. Web UI     ← 管理界面
@@ -20,11 +22,11 @@ import { fileURLToPath } from 'node:url'
 import { ConfigStore } from './config/store.js'
 import { Credentials } from './config/credentials.js'
 import { Logger } from './logger.js'
-import { findDshAppDir, findChannelPack, linkDshModules, createLlmGateway } from './gateway/llm-core.js'
+import { findDshAppDir } from './gateway/dsh-appdir.js'
 import { createGatewayServer, mintKey } from './gateway/server.js'
 import { UsageTracker } from './gateway/usage.js'
 import { ActivityTracker } from './gateway/activity.js'
-import { resolveCandidates, openFirstAvailable, DEFAULT_FREE_ORDER } from './gateway/router.js'
+import { resolveCandidates, openFirstAvailable } from './gateway/router.js'
 import { createDecisionLayer } from './decision/index.js'
 import { createWebServer } from './web/server.js'
 import { MemoryStore } from './memory/short.js'
@@ -46,79 +48,6 @@ import { createFallbackLlm } from './gateway/fallback.js'
 import { createAttachmentSupport } from './gateway/attachment.js'
 import { discoverDshProviders, resolveChannelKey } from './gateway/dsh-providers.js'
 
-/**
- * 把「DSH 渠道」和「自备渠道」合成一个 llm 对象。
- *
- * 为什么要合：router 只看 `llm.stream()` 与 `llm.listProviders()`。
- * 只要这两个方法能同时覆盖两边的 provider，上层（网关 / QQ / 决策）
- * 就完全不用改 —— 融合发生在这一个点上。
- *
- * 优先级：DSH 免费渠道优先（省钱），自备渠道作为候补与兜底。
- * `stream()` 按 provider 归属派发，所以同名也不会串。
- */
-function mergeLlm(core, extra, log) {
-  const coreProviders = () => {
-    try { return (core.providers ?? []).slice() } catch { return [] }
-  }
-  const extraProviders = () => extra.listProviders()
-
-  return {
-    __merged: true,
-    /** 暴露原始对象，便于调试与状态页展示。 */
-    __core: core,
-    __extra: extra,
-
-    get providers() {
-      return [...coreProviders(), ...extraProviders()]
-    },
-
-    /** provider → 默认模型（router 的 auto 模式需要它认识自备渠道）。 */
-    defaultModels() {
-      return { ...(core.defaultModels?.() ?? {}), ...(extra.defaultModels?.() ?? {}) }
-    },
-
-    get catalog() {
-      return core.catalog ?? []
-    },
-
-    listProviders() {
-      return this.providers
-    },
-
-    listModels(o = {}) {
-      const p = o?.provider
-      if (p && extraProviders().includes(p)) return extra.listModels(o)
-      return core.llm?.listModels?.(o) ?? []
-    },
-
-    refreshCatalog(o) {
-      return core.refreshCatalog?.(o) ?? Promise.resolve([])
-    },
-
-    /**
-     * 按 provider 归属派发流。
-     *
-     * 注意：必须**原样返回**底层迭代器（不能包一层 async generator），
-     * 因为 router 的 takeFirst() 会手动调 it.return() 来放弃失败的候选 ——
-     * 中间多一层会让那个清理动作落不到真正的流上。
-     */
-    stream(o = {}) {
-      const p = o?.provider
-      if (p && extraProviders().includes(p)) return extra.stream(o)
-      if (!core.llm?.stream) {
-        // DSH 侧不可用时的兜底（例如 core 起来了但 llm 服务缺失）
-        return (async function* () {
-          yield { type: 'finish', reason: { kind: 'error', failure: { message: 'DSH 渠道不可用' } } }
-        })()
-      }
-      return core.llm.stream(o)
-    },
-
-    close() {
-      try { core.close?.() } catch { /* ignore */ }
-    },
-  }
-}
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 const projectRoot = path.resolve(here, '..')
@@ -200,7 +129,7 @@ WhalePod —— QQ 机器人运行时 + 免费优先的 LLM 网关
   --no-web           不启动管理界面
   --no-tray          不创建托盘图标
   --dsh-app <dir>    DSH 安装目录（默认自动探测）
-  --profile <name>   使用哪个 DSH profile 的 channel-pack
+  --profile <name>   使用哪个 DSH profile 的设置（读里面的模型提供商）
   -h, --help         显示本帮助
 `.trim()
 
@@ -288,27 +217,77 @@ export async function main(argv = process.argv.slice(2)) {
     const refCount = creds.listRefs().length
     log.info(`凭据：${refCount} 个 ref（源 ${creds.file}，模式 ${creds.mode}）`)
     if (creds.load().dshMissing) {
-      log.warn('未找到 DSH 凭据文件 —— 免费渠道可能全部不可用')
+      log.warn('未找到 DSH 凭据文件 —— 内置官方渠道（DEEPSEEK_API_KEY）会挂不上')
     }
 
     // ── 4. LLM 网关核心 ───────────────────────────────────────
     //
     // 两条来源，可叠加：
     //
-    //   ① DSH 的 channel-pack —— 14 个免费渠道（有 DSH 才有）
-    //   ② 自备渠道           —— 用户自己填的 OpenAI 兼容端点（Ollama/DeepSeek/…）
+    //   ★ 2026-11-02：**只剩②了**。①（DSH 的 channel-pack，那 14 个免费渠道）
+    //     已按用户决定整个拆掉 ——「不用了，现在就用 magpie，算是自备渠道」。
+    //     现在渠道只有三种来源，都在下面 `allChannels` 里：
+    //       手填 gateway.channels / DSH 设置自动发现 / 内置官方凭证
     //
-    // 少了 ① 不该让程序起不来 —— 那样没有 DSH 的用户就完全用不了。
-    // 所以这里把「找不到 DSH」降级成警告：能用自备渠道就继续跑，
-    // 两个都没有才报错（因为那时确实没法回话）。
+    // 一个渠道都没有时才报错（那时确实没法回话）。
     const appDir = findDshAppDir(args.dshApp)
-    const pack = appDir ? findChannelPack({ profile: args.profile }) : null
-    // 记录到 state —— Web UI（渠道页 / 总览）靠这两个字段判断
-    // "到底有没有 DSH"。漏掉会导致界面同时显示"14 个渠道"和"没检测到 DSH"。
+    /*
+     * 记到 state —— Web UI 用它显示"到底有没有 DSH"。
+     *
+     * ⚠️ `dshPack` / `profile` 两个字段**不再写了**（渠道包已拆）。
+     *    留着只是为兼容老 state 文件；界面那边也一并清掉了。
+     */
     state.dshAppDir = appDir ?? null
-    state.dshPack = pack ?? null
-    state.profile = pack?.profile ?? null
     const selfChannels = (cfg.gateway?.channels ?? []).filter((c) => c && c.enabled !== false && c.baseUrl)
+
+    /*
+     * ── 内置官方渠道（DeepSeek 官方 API Key）────────────────────
+     *
+     * 用户要求：「初始渠道只留官方默认的那条 api key」。
+     *
+     * ## 为什么必须在这里补一条
+     * `deepseek-official` 原来**只由 `createLlmGateway()` 挂载**
+     * （见 `gateway/llm-core.js` 的「4b. 装 DSH 内置渠道」），
+     * 而那条路要求 `appDir && pack` —— **没装 channel-pack 的机器走不到**。
+     *
+     * 实测本机（2026-11-02）：`findChannelPack()` 返回 `null`，
+     * 启动日志只有「可用渠道：DSH 自动发现 1 个（magpie）」，
+     * 官方那条**不在任何渠道列表里** → "只留官方默认"等于**一个渠道都没有**。
+     *
+     * 所以这里直接从凭据取 `DEEPSEEK_API_KEY` 拼成一条标准 OpenAI 兼容渠道，
+     * 交给下面的 `createFallbackLlm`。**没有 key 就不加** ——
+     * 不制造"渠道在列表里但永远用不了"的假象。
+     *
+     * ## 为什么排最后
+     * 它是**付费**通道，原来的定位就是"付费兜底"（llm-core.js 原话）。
+     * 排前面会把你现在用的免费渠道挤掉，等于悄悄涨价。
+     * 顺序：手填 > DSH 自动发现 > 内置官方。
+     */
+    const officialChannels = []
+    if (!selfChannels.some((c) => c.id === 'deepseek-official')) {
+      const officialKey = resolveChannelKey({ apiKeyEnv: 'DEEPSEEK_API_KEY' }, creds)
+      if (officialKey) {
+        officialChannels.push({
+          id: 'deepseek-official',
+          label: 'DeepSeek 官方（内置凭证）',
+          kind: 'openai',
+          baseUrl: 'https://api.deepseek.com/v1',
+          apiKey: officialKey,
+          /*
+           * ⚠️ **模型名必须用这个端点真实存在的**（2026-11-02 实测）。
+           * `/v1/models` 只返回两个：
+           *   deepseek-flash     DeepSeek-V4.1-Flash   ctx=1048576
+           *   deepseek-v4-pro    DeepSeek-V4-Pro       ctx=1048576
+           * 原来这里写 `deepseek-chat`（那是老 DeepSeek 开放平台的 id）——
+           * 写错了这个渠道就是废的：每次调用 404，而列表里看着"有渠道"。
+           */
+          models: ['deepseek-flash', 'deepseek-v4-pro'],
+          model: 'deepseek-flash',
+          // 界面据此显示「内置」标签、并且不给删（删了 key 还在，没意义）
+          builtin: true,
+        })
+      }
+    }
 
     // ── 自动发现 DSH 设置里的模型提供商 ─────────────────────────
     //
@@ -347,9 +326,24 @@ export async function main(argv = process.argv.slice(2)) {
         const key = resolveChannelKey(c, creds)
         return key ? { ...c, apiKey: key } : c
       })
-    const allChannels = [...selfChannels, ...autoChannels]
+    const allChannels = [...selfChannels, ...autoChannels, ...officialChannels]
     // 记到 state，Web UI 的渠道页要显示「这个渠道是怎么来的」
     state.autoChannels = autoChannels.map((c) => c.id)
+    state.officialChannels = officialChannels.map((c) => c.id)
+    /*
+     * ★ **完整对象也存一份**（2026-11-02）。
+     *
+     * 只存 id 不够 —— 渠道页要能把**三类渠道平铺成一张表**：
+     *   手填（可编辑可删）/ DSH 自动发现 / 内置官方
+     * 用户的原话：「magpie 其实算自定义渠道吧」—— 对，
+     * 它就是一条 OpenAI 兼容渠道，只是来源是自动发现。
+     * 所以界面上不该分成两套概念，只有 `source` 不同。
+     */
+    state.selfChannelList = selfChannels
+    state.autoChannelList = autoChannels
+    state.officialChannelList = officialChannels
+    // 渠道总数（不含关掉的）—— 总览页「可用渠道」那张卡用它
+    state.channelCount = allChannels.length
 
     const fallbackLlm = allChannels.length > 0
       ? createFallbackLlm({
@@ -358,21 +352,23 @@ export async function main(argv = process.argv.slice(2)) {
       })
       : null
 
-    if (appDir && pack) {
-      log.info(`DSH：${appDir}`)
-      log.info(`channel-pack：${pack.profile} profile`)
+    // 渠道包已拆（2026-11-02），这里只说清「能用什么」，
+    // 不暗示用户去装别的东西。
+    if (appDir) log.info(`DSH：${appDir}`)
+    log.info('LLM：使用内置 DeepSeek 账户凭证 + 自定义供应商')
+    if (allChannels.length > 0) {
+      const parts = []
+      if (selfChannels.length > 0) parts.push(`手填 ${selfChannels.length} 个（${selfChannels.map((c) => c.id).join(', ')}）`)
+      if (autoChannels.length > 0) parts.push(`DSH 自动发现 ${autoChannels.length} 个（${autoChannels.map((c) => c.id).join(', ')}）`)
+      if (officialChannels.length > 0) parts.push(`内置官方 ${officialChannels.length} 个（${officialChannels.map((c) => c.id).join(', ')}）`)
+      log.warn(`可用渠道：${parts.join(' + ')}`)
     } else {
-      // 找不到宿主渠道包不是错误 —— WhalePod 自己就能跑，只要用户配了供应商。
-      // 这里只说清楚「能用什么」，不暗示用户去装别的东西。
-      log.info('LLM：使用内置 DeepSeek 账户凭证 + 自定义供应商')
-      if (allChannels.length > 0) {
-        const parts = []
-        if (selfChannels.length > 0) parts.push(`手填 ${selfChannels.length} 个（${selfChannels.map((c) => c.id).join(', ')}）`)
-        if (autoChannels.length > 0) parts.push(`DSH 自动发现 ${autoChannels.length} 个（${autoChannels.map((c) => c.id).join(', ')}）`)
-        log.warn(`可用渠道：${parts.join(' + ')}`)
-      } else {
-        log.warn('还没有配置供应商 → 请在「配置」页填入 DeepSeek API Key，或添加一个 OpenAI 兼容端点。')
-      }
+      log.warn(
+        '还没有可用的渠道。两种方式任选其一：\n'
+        + '  1. 在「配置」页填入 DeepSeek 官方 API Key（会自动挂成 deepseek-official）\n'
+        + '  2. 在「模型」页添加一个渠道 —— 任何 OpenAI 兼容端点都行，'
+        + '本地模型选 Ollama 预置（http://127.0.0.1:11434/v1，不用 key）',
+      )
     }
 
     let llm
@@ -385,36 +381,40 @@ export async function main(argv = process.argv.slice(2)) {
     // 活跃天数：数「真正有消息往来的日子」，关机那几天不算。
     // 和 usage.startedAt（首次启动至今）是两回事。
     const activity = new ActivityTracker({ home: store.home })
-    if (appDir && pack) {
-      linkDshModules(appDir, projectRoot)
-      const core = await createLlmGateway({ appDir, packFile: pack.file, credentials: creds, log })
-      // 有自备渠道时叠加进去：让 router 能同时看到 DSH 渠道与自备渠道
-      llm = fallbackLlm ? mergeLlm(core, fallbackLlm, log) : core
-      // 账号池挂在 cordis ctx 上（channel-pack 用 ctx.provide('accountPool')）。
-      // 存进 state 供 Web 层查「某渠道有几个账号」—— 侧栏用它隐藏未接入渠道。
-      // 不放在 llm 上是因为 mergeLlm 只搬运 llm 相关字段，ctx 会被丢掉。
-      state.accountPool = core.ctx?.accountPool ?? null
-      // 后台刷新一次模型目录（不阻塞启动；失败不影响核心功能）
-      core.refreshCatalog().then((cat) => {
-        log.info(`模型目录：${cat.length} 个`)
-      }).catch((e) => log.warn(`模型目录刷新失败：${String(e?.message ?? e)}`))
-    } else {
-      if (!fallbackLlm) {
-        throw new Error(
-          '没有可用的 LLM 渠道。两种方式任选其一：\n' +
-          '  1. 使用内置的 DeepSeek 账户凭证（在「配置」页填入你自己的 DeepSeek API Key）\n' +
-          '  2. 添加自定义供应商（任何 OpenAI 兼容端点，如 Ollama / DeepSeek / 自建服务）',
-        )
-      }
-      llm = fallbackLlm
-      log.info(`LLM：仅用自备渠道（${selfChannels.map((c) => c.id).join(', ')}）`)
+    /*
+     * ★ **只有一条路了：自备渠道**（2026-11-02 拆掉 channel-pack）。
+     *
+     * 原来这里是个 `if (appDir && pack)` 分支：
+     *   · 装了 DSH 渠道包 → `createLlmGateway()`（那 14 个免费渠道）
+     *   · 没装 → 自备渠道
+     *
+     * 用户的决定：「**不用了，现在就用 magpie，算是自备渠道**」
+     * （那 14 个渠道本身也是基于外部东西堆起来的）。
+     *
+     * 所以 pack 分支整个删掉。现在渠道只有三种来源，全在 `allChannels` 里：
+     *   手填 `gateway.channels` / DSH 设置自动发现 / 内置官方凭证
+     *
+     * ⚠️ 被删掉的还有 `mergeLlm(core, fallbackLlm)` —— 那是"DSH 渠道 +
+     *    自备渠道"两条路都要，现在只剩一条，不需要合并。
+     */
+    if (!fallbackLlm) {
+      throw new Error(
+        '没有可用的 LLM 渠道。两种方式任选其一：\n' +
+        '  1. 在「配置」页填入你自己的 DeepSeek API Key（会自动挂成 deepseek-official）\n' +
+        '  2. 在「模型」页添加一个渠道 —— 任何 OpenAI 兼容端点都行，'
+        + '本地模型选 Ollama 预置（http://127.0.0.1:11434/v1，不用 key）',
+      )
+    }
+    llm = fallbackLlm
+    log.info(`LLM：仅用自备渠道（${selfChannels.map((c) => c.id).join(', ')}）`)
 
-      // ── 多模态：给自备渠道也挂上 attachment ──────────────────────
+    {
+      // ── 多模态：给自备渠道挂上 attachment ──────────────────────
       //
       // ⚠️ 2026-10-25 修。原来 makeImageBlock 只在 createLlmGateway()
       //    里定义，而那个函数只有**找到 channel-pack** 时才调用
-      //    （上面的 if (appDir && pack)）。于是走自备渠道的人
-      //    （比如 magpie）完全用不了图片，日志只说
+      //    （原来的 if (appDir && pack) 分支，2026-11-02 已删）。
+      //    于是走自备渠道的人（比如 magpie）完全用不了图片，日志只说
       //    「attachment 服务不可用，图片降级为文字」—— 看着像 DSH 装坏了。
       //
       //    实际上 attachmentStore 只依赖 appDir + dshHome，
@@ -454,27 +454,22 @@ export async function main(argv = process.argv.slice(2)) {
     // "DSH 免费渠道"—— 必须用快照而不是当前配置，否则配置改动后
     // （要重启才生效）会把已删的渠道误判成 DSH 渠道。
     state.selfChannelIds = selfChannels.map((c) => c.id)
+    /*
+     * ★ **「4b. 免费渠道优先顺序」整段删了**（2026-11-02）。
+     *
+     * 原来这里在首次启动时把 `DEFAULT_FREE_ORDER` 那 14 个渠道
+     * **写进 config.json 的 `freeProviders`**（理由：不填的话顺序就等于
+     * channel-pack 的注册顺序，前面十几个没配 model 的渠道会白转）。
+     *
+     * 渠道包一拆，这段就成了**纯污染源**：
+     *   · 它往配置里塞 14 个本机根本不存在的渠道
+     *   · 实测后果：`tests/.test-home/config.json` 里一直留着那 14 个
+     *     （很久以前某次跑测试时写进去的），于是"用当前默认值"的假设失效，
+     *     check-boot 的 `/v1/models` 返回 0 个、那条断言常年红
+     *
+     * 现在 `freeProviders` 保持空数组，没人再往里写东西。
+     */
     shutdown.push(() => llm.close?.())
-
-    // ── 4b. 免费渠道优先顺序 ──────────────────────────────────
-    //
-    // 首次运行时配置里是空数组。如果不填，顺序就等于 channel-pack 的
-    // **注册顺序**（codearts 打头，验证过最稳的 gemini 排到第 12）——
-    // 实测这样会让前面十几个没配 model hint 的渠道白白空转。
-    //
-    // 所以首次启动把 DEFAULT_FREE_ORDER 落成显式配置：
-    //   · 用户下次打开「模型」页就能看到真实顺序，可自行调整
-    //   · 之后启动都按这份配置走，不会每次重算
-    // 已有配置的用户不受影响（只在为空时写一次）。
-    if (!cfg.gateway.freeProviders?.length) {
-      const all = llm.providers ?? []
-      const wanted = DEFAULT_FREE_ORDER.filter((p) => all.includes(p))
-      if (wanted.length > 0) {
-        store.update({ gateway: { freeProviders: wanted } })
-        cfg.gateway.freeProviders = wanted
-        log.info(`免费渠道优先级已初始化为默认顺序：${wanted.slice(0, 4).join(' → ')} …`)
-      }
-    }
 
     // ── 5. 决策层 ─────────────────────────────────────────────
     /*
@@ -919,6 +914,15 @@ export async function main(argv = process.argv.slice(2)) {
           proactive: cfg.proactive,
           beg: cfg.beg,
           fallback: cfg.gateway?.fallback,
+          /*
+           * ★ **路由策略**（2026-11-02 补）。
+           *
+           * 这个值以前**从来没传到这里** —— 面板上那个「路由策略」下拉
+           * 写进配置就没人读了，点了什么都不会变（详见 gateway/strategy.js 的说明）。
+           * 现在传进来，由 `deriveRouting()` 翻译成两个真开关：
+           * fallback 开不开、哪些渠道排除。
+           */
+          strategy: cfg.gateway?.strategy,
           // 免费渠道优先级与开关：bridge 的 auto 模式靠它们决定"先试哪个"
           freeOrder: cfg.gateway?.freeProviders ?? [],
           disabledProviders: cfg.gateway?.disabledProviders ?? [],
@@ -1111,7 +1115,25 @@ export async function main(argv = process.argv.slice(2)) {
         try { await fn() } catch { /* ignore */ }
       }
       logger.close()
-      process.exit(0)
+      /*
+       * ⚠️ **别硬编码 0**（2026-11-02 修正）。
+       *
+       * 原来写的是 `process.exit(0)` —— 于是**任何人都没法让正常关闭
+       * 带一个非零退出码**，哪怕他自己显式设了 `process.exitCode = 1`。
+       *
+       * 实测后果：`tests/check-boot.mjs` 的收尾是
+       * ```js
+       * await r.shutdown('测试结束')          // ← 这里直接 exit(0)
+       * console.log(`通过 ${pass} / 失败 ${fail}`)  // ← 执行不到
+       * process.exit(fail === 0 ? 0 : 1)      // ← 执行不到
+       * ```
+       * 它**打印了 2 个 ❌ 却永远退出 0** —— 全量跑显示"80/80 全过"，
+       * 那两条失败其实一直在，只是从来没传出来过。
+       *
+       * 改成尊重只读的 `process.exitCode`：正常运行时它是 undefined → 0，
+       * 行为和以前一样；调用方显式设过就用它的值。
+       */
+      process.exit(process.exitCode ?? 0)
     }
 
     process.on('SIGINT', () => doShutdown('SIGINT'))

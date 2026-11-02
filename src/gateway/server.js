@@ -13,6 +13,7 @@
 import http from 'node:http'
 import crypto from 'node:crypto'
 import { resolveCandidates, openFirstAvailable } from './router.js'
+import { deriveRouting } from './strategy.js'
 import { toDshRequest, toOpenAiSse, toOpenAiResponse } from './openai.js'
 import { needsFreshInfo, webSearch, formatSearchContext } from './search.js'
 
@@ -208,16 +209,26 @@ async function handleChat(req, res, ctx) {
   }
 
   // 组装候选
+  /*
+   * ★ 先按**路由策略**把两个真开关算出来（2026-11-02 接上）。
+   * 面板上那个下拉以前是纯装饰 —— 点了什么都不会变，因为没人读它。
+   * 现在它真的影响这里的候选组装：fallback 开不开、要额外排除谁。
+   */
+  const routing = deriveRouting(gateway.strategy, {
+    fallbackEnabled: gateway.fallback?.enabled,
+    disabled: gateway.disabledProviders ?? [],
+    providers: llm.providers ?? [],
+  })
   const candidates = resolveCandidates(requestedModel, {
     freeProviders: llm.providers ?? [],
     // 用户配置的优先顺序（没有它这段配置就完全不生效）
     freeOrder: gateway.freeProviders ?? [],
-    // 被禁用的渠道不参与
-    disabledProviders: gateway.disabledProviders ?? [],
+    // 被禁用的渠道不参与（含策略临时排除的）
+    disabledProviders: routing.disabled,
     catalog: llm.catalog ?? [],
     // 自备渠道的默认模型（没有它，auto 会跳过所有非 DSH 渠道）
     selfModels: llm.defaultModels?.() ?? {},
-    fallback: gateway.fallback,
+    fallback: { ...(gateway.fallback ?? {}), enabled: routing.fallbackEnabled },
   })
 
   if (candidates.length === 0) {
@@ -266,6 +277,44 @@ async function handleChat(req, res, ctx) {
         })
         if (r.ok) {
           const ctx = formatSearchContext(r)
+          /*
+           * ★ **补记一笔搜索用量**（2026-11-02）。
+           *
+           * ## 原来这里不记账
+           * 上面那段注释解释了为什么**不加每日上限**（这条路径被认为是
+           * "人在 DSH 里主动搜"，给限额只会碍事）—— 那个判断本身没问题。
+           *
+           * 但"不限次"被顺手写成了"**不记账**"：钱花了，`search-usage.json`
+           * 和侧栏的"折合费用"都看不见。
+           *
+           * 实测就是被这个坑到的（2026-11-02）：一个自动化探针打这个网关，
+           * 前缀里带了「最新」→ 触发联网 → **连搜 9 次**，
+           * 而台账上计数纹丝不动。查"搜索怎么又调用了"时，
+           * 差点因为台账没动而排错方向。
+           *
+           * 所以：**可以不限额，但必须记账。** 两者是两件事。
+           */
+          try {
+            const u = r.usage ?? {}
+            if ((u.in ?? 0) + (u.out ?? 0) > 0 || (u.searches ?? 0) > 0) {
+              usage?.record?.({
+                provider: 'deepseek-official',
+                model: r.model ?? 'deepseek-flash',
+                source: 'search',
+                tokensIn: u.in ?? 0,
+                tokensOut: u.out ?? 0,
+                // ⚠️ 必须传 —— Search 按**次**收费（¥0.005/次），
+                //    不传只算 token 会低估一半以上。
+                searches: u.searches ?? 0,
+                ok: true,
+                ms: r.ms,
+              })
+              log.info?.(
+                `gateway: 搜索用量已记录（in=${u.in} out=${u.out}，搜了 ${u.searches} 次；`
+                + '这条不占 QQ 侧的每日配额）',
+              )
+            }
+          } catch { /* 统计失败不影响请求 */ }
           // 插在**最前面**的 system 位置：作为"参考资料"，优先级高于模型记忆
           dshRequest.messages = [
             { role: 'system', content: [{ type: 'text', text: ctx }] },

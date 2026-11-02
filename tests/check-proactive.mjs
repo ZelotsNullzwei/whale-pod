@@ -98,7 +98,7 @@ const mkScheduler = (over = {}) => {
    * 不再是 `cfg` / `begCfg`。这里必须跟着改成函数，否则传进去的配置
    * 被**静默忽略**、全部走默认值 —— 测试会「通过」但什么也没测到。
    */
-  const cfg = { enabled: false, idleMinutes: 45, cooldownMinutes: 180, maxPerDay: 3, hours: [0, 24], ...(over.cfg ?? {}) }
+  const cfg = { enabled: false, idleMinutes: 45, speakChance: 1, cooldownMinutes: 180, maxPerDay: 3, hours: [0, 24], ...(over.cfg ?? {}) }
   const begCfg = { enabled: false, checkIntervalMinutes: 60, maxPerDay: 3, ...(over.begCfg ?? {}) }
   const s = new ProactiveScheduler({
     cfgSource: () => cfg,
@@ -129,7 +129,7 @@ await ok('只开讨钱 → 只讨钱，不发言', async () => {
 })
 
 await ok('只开发言 → 只发言，不讨钱', async () => {
-  const { s, calls } = mkScheduler({ cfg: { enabled: true, idleMinutes: 45, cooldownMinutes: 180, maxPerDay: 3, hours: [0, 24] } })
+  const { s, calls } = mkScheduler({ cfg: { enabled: true, idleMinutes: 45, speakChance: 1, cooldownMinutes: 180, maxPerDay: 3, hours: [0, 24] } })
   await s.tick(at(10))
   assert.equal(calls.beg, 0, '讨钱没开，不该讨')
   assert.equal(calls.speak, 1, '该发言')
@@ -145,7 +145,7 @@ await ok('只开发言 → 只发言，不讨钱', async () => {
  */
 const speakOn = (over = {}) => mkScheduler({
   ...over,
-  cfg: { enabled: true, idleMinutes: 45, cooldownMinutes: 180, maxPerDay: 3, hours: [0, 24], ...(over.cfg ?? {}) },
+  cfg: { enabled: true, idleMinutes: 45, speakChance: 1, cooldownMinutes: 180, maxPerDay: 3, hours: [0, 24], ...(over.cfg ?? {}) },
 })
 
 await ok('静默不够久 → 不发言', async () => {
@@ -155,18 +155,25 @@ await ok('静默不够久 → 不发言', async () => {
 })
 
 await ok('每日上限用完 → 不发言', async () => {
-  const { s, state, calls } = speakOn({ cfg: { enabled: true, idleMinutes: 45, cooldownMinutes: 0, maxPerDay: 2, hours: [0, 24] } })
+  const { s, state, calls } = speakOn({ cfg: { enabled: true, idleMinutes: 45, speakChance: 1, cooldownMinutes: 0, maxPerDay: 2, hours: [0, 24] } })
   state.speakCountGroup = 2
   await s.tick(at(10))
   assert.equal(calls.speak, 0, '已经 2 次了（上限 2）')
 })
 
-await ok('冷却期内 → 不发言', async () => {
+await ok('★ 没有冷却：刚说过也照样掷骰子（冷却器已拆）', async () => {
   const { s, state, calls } = speakOn()
-  // 冷却按**类别**各算各的（2026-10-28）：speakOn 默认是 group:1，所以动群的时间戳
-  state.lastSpeakAtGroup = at(9).getTime()   // 1 小时前说过（冷却 180 分钟）
+  state.lastSpeakAtGroup = at(9).getTime()   // 1 小时前刚说过
   await s.tick(at(10))
-  assert.equal(calls.speak, 0, '冷却还没过')
+  /*
+   * 旧行为是「180 分钟内不许再说」—— 那条已经拆了
+   * （用户原话：「之前不是说取消冷却器吗」「改成全随机发言」）。
+   *
+   * 现在 `lastSpeakAt*` **只是记录**（观察窗/统计用），不再拦人。
+   * 闸门只剩四道：额度 / 时段 / 静默够久 / 骰子。
+   * 所以"刚说过"不该再挡住 —— 挡住了就说明冷却器又长回来了。
+   */
+  assert.equal(calls.speak, 1, '刚说过不该拦着（没有冷却了）')
 })
 
 await ok('没有可发言的会话 → 不发言', async () => {
@@ -177,7 +184,7 @@ await ok('没有可发言的会话 → 不发言', async () => {
 
 await ok('半夜 → 两个都不做', async () => {
   const { s, calls } = mkScheduler({
-    cfg: { enabled: true, idleMinutes: 45, cooldownMinutes: 0, maxPerDay: 3, hours: [8, 23] },
+    cfg: { enabled: true, idleMinutes: 45, speakChance: 1, cooldownMinutes: 0, maxPerDay: 3, hours: [8, 23] },
     begCfg: { enabled: true, checkIntervalMinutes: 60, maxPerDay: 3 },
   })
   s.plan = s.plan.bind(s)
@@ -231,7 +238,7 @@ await ok('讨钱失败 → 同一轮里发言顶上', async () => {
   const state = new ProactiveState()
   const calls = { beg: 0, speak: 0 }
   const s = new ProactiveScheduler({
-    cfg: { enabled: true, idleMinutes: 45, cooldownMinutes: 180, maxPerDay: 3, hours: [0, 24] },
+    cfg: { enabled: true, idleMinutes: 45, speakChance: 1, cooldownMinutes: 180, maxPerDay: 3, hours: [0, 24] },
     begCfg: { enabled: true, checkIntervalMinutes: 60, maxPerDay: 3 },
     state,
     now: () => at(10).getTime(),
@@ -250,7 +257,7 @@ await ok('讨钱真的发出去了 → 同一轮不再发言', async () => {
   const state = new ProactiveState()
   const calls = { beg: 0, speak: 0 }
   const s = new ProactiveScheduler({
-    cfg: { enabled: true, idleMinutes: 45, cooldownMinutes: 180, maxPerDay: 3, hours: [0, 24] },
+    cfg: { enabled: true, idleMinutes: 45, speakChance: 1, cooldownMinutes: 180, maxPerDay: 3, hours: [0, 24] },
     begCfg: { enabled: true, checkIntervalMinutes: 60, maxPerDay: 3 },
     state,
     now: () => at(10).getTime(),
@@ -268,7 +275,7 @@ await ok('讨钱真的发出去了 → 同一轮不再发言', async () => {
 await ok('planSpeak 单独判断可用', () => {
   const state = new ProactiveState()
   const s = new ProactiveScheduler({
-    cfg: { enabled: true, idleMinutes: 45, cooldownMinutes: 180, maxPerDay: 3, hours: [0, 24] },
+    cfg: { enabled: true, idleMinutes: 45, speakChance: 1, cooldownMinutes: 180, maxPerDay: 3, hours: [0, 24] },
     begCfg: { enabled: false },
     state,
     onSpeak: async () => true,
@@ -292,7 +299,7 @@ function mkSched(kinds, cfgOver = {}) {
    */
   const scopeList = kinds.map((k, i) => (k === 'private' ? `private:1000${i}` : `group:2000${i}`))
   const sched = new ProactiveScheduler({
-    cfg: { enabled: true, maxPerDay: 3, idleMinutes: 1, cooldownMinutes: 0, hours: [0, 24], ...cfgOver },
+    cfg: { enabled: true, maxPerDay: 3, idleMinutes: 1, speakChance: 1, cooldownMinutes: 0, hours: [0, 24], ...cfgOver },
     begCfg: { enabled: false },
     state,
     scopes: () => scopeList,
@@ -364,26 +371,28 @@ await ok('kindOf 能解析字符串 scope', () => {
   assert.equal(sched.kindOf(undefined), 'group', '兜底当群，不能崩')
 })
 
-await ok('私聊刚说过 → 群不受影响（分类冷却）', () => {
-  const { state, sched } = mkSched(['group', 'private'], { cooldownMinutes: 180 })
+await ok('★ 没有冷却：lastSpeakAt 只是记录，两个类别都不拦', () => {
+  const { state, sched } = mkSched(['group', 'private'], { speakChance: 1 })
   const now = new Date('2026-10-27T10:00:00+08:00').getTime()
   state.lastSpeakAtPrivate = now          // 刚在私聊主动说过
   const usable = sched.usableScopes(now)
-  assert.ok(usable.some((s) => String(s).startsWith('group:')), '群应该还能说')
-  assert.ok(!usable.some((s) => String(s).startsWith('private:')), '私聊应该还在冷却')
-})
-
-await ok('群里刚说过 → 私聊不受影响', () => {
-  const { state, sched } = mkSched(['group', 'private'], { cooldownMinutes: 180 })
-  const now = new Date('2026-10-27T10:00:00+08:00').getTime()
-  state.lastSpeakAtGroup = now
-  const usable = sched.usableScopes(now)
-  assert.ok(usable.some((s) => String(s).startsWith('private:')), '私聊应该还能说')
-  assert.ok(!usable.some((s) => String(s).startsWith('group:')), '群应该还在冷却')
+  /*
+   * 旧断言是「私聊还在冷却、群不受影响」—— 冷却拆了（2026-11-02）。
+   * `lastSpeakAt*` 现在只是**记录**（观察窗结算 / 统计用），不是闸门。
+   * 所以两边都该能用。
+   *
+   * ⚠️ 真正要守的"分类各算各的"是**额度**，不是冷却 ——
+   *    那条在下面「群满但私聊还有额度」的用例里。
+   */
+  assert.ok(usable.some((s) => String(s).startsWith('group:')), '群该能用')
+  assert.ok(
+    usable.some((s) => String(s).startsWith('private:')),
+    '私聊也不该被 lastSpeakAt 拦住（那不是冷却，只是记录）',
+  )
 })
 
 await ok('私聊发言 → 记进 speakCountPrivate（不是 group）', async () => {
-  const { state, sched } = mkSched(['private'], { cooldownMinutes: 0 })
+  const { state, sched } = mkSched(['private'], { speakChance: 1, cooldownMinutes: 0 })
   await sched._doSpeak(new Date('2026-10-27T10:00:00+08:00'))
   assert.equal(state.speakCountPrivate, 1, '应该记进私聊')
   assert.equal(state.speakCountGroup, 0, '不能记到群头上（这就是原 bug）')
@@ -392,7 +401,7 @@ await ok('私聊发言 → 记进 speakCountPrivate（不是 group）', async ()
 })
 
 await ok('群满但私聊还有额度 → 私聊仍可用（不被误过滤）', () => {
-  const { state, sched } = mkSched(['group', 'private'], { cooldownMinutes: 0 })
+  const { state, sched } = mkSched(['group', 'private'], { speakChance: 1, cooldownMinutes: 0 })
   state.speakCountGroup = 3               // 群说满
   const usable = sched.usableScopes(Date.now())
   assert.equal(usable.length, 1, '应该只剩私聊')
@@ -413,7 +422,7 @@ await ok('群满但私聊还有额度 → 私聊仍可用（不被误过滤）',
  */
 const mkAckSched = (state, idleMinFn) =>
   new ProactiveScheduler({
-    cfg: { enabled: true, idleMinutes: 45, cooldownMinutes: 180, maxPerDay: 3, hours: [8, 23], inGroups: true, inPrivate: false },
+    cfg: { enabled: true, idleMinutes: 45, speakChance: 1, cooldownMinutes: 180, maxPerDay: 3, hours: [8, 23], inGroups: true, inPrivate: false },
     state,
     idleMs: idleMinFn,
     scopes: () => ['group:1'],
@@ -535,70 +544,115 @@ ok('⚠️ 源码锁：speakHint 不能再命令它「按『今天我』的状�
   assert.match(seg, /别因为/, '要写明"别因为该说话了就硬凑"')
 })
 
-// ── 随机冷却（2026-10-31）─────────────────────────────────────
+// ── 全随机发言（2026-11-02，取代冷却器）────────────────────────
 /*
- * 用户原话：「定时发言就不要了，改成随机发言？群里和私聊都是」。
+ * 用户原话：「之前不是说取消冷却器吗」「改成全随机发言」。
  *
- * 固定 `cooldownMinutes: 180` = 每天差不多同一时刻冒泡，很机械。
- * 现在实际间隔 = `cooldownMinutes ~ cooldownMinutes + cooldownJitterMinutes`
- * （默认 180~300 分钟），**每次发言掷一次**并存进 `nextSpeakAt*`。
+ * ## 冷却器为什么被换掉
+ * 它是"发言后掷一次间隔（180~300 分钟）存进 nextSpeakAt，到点才允许说"。
+ * 但那仍然是**定时器** —— 攒够时间必然说，只是周期随机。
+ * 实测症状：日志整天 `群：剩 2 冷却中 / 私聊：剩 2 冷却中`，
+ * 她几乎冒不出来。
  *
- * ⚠️ 关键是"只掷一次"：如果每 tick 重掷，累积概率会暴涨，又变回"到点必说"。
+ * ## 现在
+ * `maySpeakNow()`：每 60 秒的 tick **独立掷一次**，概率 `speakChance`。
+ *
+ * ⚠️ **同一 tick 内只掷一次**是这条的不变量（下面单独测）：
+ *    `usableScopes()` 一轮里被调用多次，每次重掷会让实际概率
+ *    变成 `1-(1-p)^n` —— 累积暴涨，又变回"到点必说"。
  */
-const mkCoolSched = (state, t0) =>
+const mkRollSched = (over = {}) =>
   new ProactiveScheduler({
-    cfg: { enabled: true, idleMinutes: 45, cooldownMinutes: 180, cooldownJitterMinutes: 120, maxPerDay: 3, hours: [8, 23], inGroups: true, inPrivate: false },
-    state,
+    cfg: {
+      enabled: true, speakChance: 0.6, maxPerDay: 3, hours: [8, 23],
+      inGroups: true, inPrivate: false, idleMinutes: 45, ...over.cfg,
+    },
+    state: over.state ?? new ProactiveState({}),
     idleMs: () => 99 * 60_000,
     scopes: () => ['group:1'],
     onSpeak: async () => true,
     log: {},
-    random: () => 0.5,
+    random: over.random ?? (() => 0.5),
   })
 
-await ok('★ 随机冷却：发言后掷一次，间隔落在 180~300 分钟', () => {
-  const T0 = new Date('2026-10-31T10:00:00+08:00').getTime()
-  const sched = mkCoolSched(new ProactiveState({}))
-  // random=0.5 → 180 + 0.5*120 = 240 分钟
-  const base = 180 * 60_000
-  const jit = 120 * 60_000
-  sched.state.nextSpeakAtGroup = T0 + base + Math.round(0.5 * jit)
-  assert.equal(sched.isCooled('group', T0 + 200 * 60_000), false, '200 分钟还没到 240，冷却中')
-  assert.equal(sched.isCooled('group', T0 + 240 * 60_000), true, '240 分钟到了')
+const T0 = new Date('2026-11-02T10:00:00+08:00').getTime()
+
+await ok('★ 全随机发言：掷中概率就是 speakChance', () => {
+  // random 固定 0.5 → 0.5 < 0.6 命中；0.5 < 0.4 不命中
+  assert.equal(mkRollSched({ cfg: { speakChance: 0.6 } }).maySpeakNow(T0), true, '0.5<0.6 该掷中')
+  assert.equal(mkRollSched({ cfg: { speakChance: 0.4 } }).maySpeakNow(T0), false, '0.5<0.4 不该掷中')
+  assert.equal(mkRollSched({ cfg: { speakChance: 0 } }).maySpeakNow(T0), false, '0 = 永不')
+  assert.equal(mkRollSched({ cfg: { speakChance: 1 } }).maySpeakNow(T0), true, '1 = 必说')
 })
 
-await ok('随机冷却：jitter=0 时退回固定 180（老行为）', () => {
-  const T0 = new Date('2026-10-31T10:00:00+08:00').getTime()
-  const state = new ProactiveState({})
-  const sched = new ProactiveScheduler({
-    cfg: { enabled: true, cooldownMinutes: 180, cooldownJitterMinutes: 0, maxPerDay: 3, hours: [8, 23], inGroups: true, inPrivate: false },
-    state, idleMs: () => 99 * 60_000, scopes: () => ['group:1'], onSpeak: async () => true, log: {},
-  })
-  state.lastSpeakAtGroup = T0
-  state.nextSpeakAtGroup = 0 // 没掷过 → 退回 lastSpeakAt + base
-  assert.equal(sched.isCooled('group', T0 + 179 * 60_000), false)
-  assert.equal(sched.isCooled('group', T0 + 181 * 60_000), true)
+await ok('★★ 同一 tick 内只掷一次（否则概率会累积暴涨）', () => {
+  let calls = 0
+  const sched = mkRollSched({ random: () => { calls++; return 0.5 } })
+  const r1 = sched.maySpeakNow(T0)
+  const r2 = sched.maySpeakNow(T0)
+  const r3 = sched.maySpeakNow(T0 + 999)   // 同一个 60 秒桶
+  assert.equal(calls, 1, `同一个 tick 只能掷 1 次，实际掷了 ${calls} 次`)
+  assert.equal(r1, r2, '同 tick 结果必须一致')
+  assert.equal(r2, r3, '同 tick 内（哪怕差 999ms）也要一致')
 })
 
-ok('⚠️ 源码锁：_doSpeak 的随机冷却必须走可注入的随机源', () => {
+await ok('★ 换一个 tick 会重新掷', () => {
+  let calls = 0
+  const sched = mkRollSched({ random: () => { calls++; return 0.5 } })
+  sched.maySpeakNow(T0)
+  sched.maySpeakNow(T0 + 60_000)   // 下一个桶
+  assert.equal(calls, 2, '跨 tick 必须重掷')
+})
+
+await ok('★ usableScopes 看骰子，不看冷却', () => {
+  // 掷中 → 会话可用
+  const hit = mkRollSched({ cfg: { speakChance: 0.6 } })
+  assert.deepEqual(hit.usableScopes(T0), ['group:1'], '掷中就该可用')
+  // 没掷中 → 不可用（哪怕额度还有、也没有"冷却"这回事）
+  const miss = mkRollSched({ cfg: { speakChance: 0.4 } })
+  assert.deepEqual(miss.usableScopes(T0), [], '没掷中就该不可用')
+  /*
+   * 额度用满 → 掷中也没用。
+   *
+   * ⚠️ `ProactiveState` 的构造函数**不吃任意字段**（只认 opts.fs / opts.file），
+   *    传 `{ speakCountGroup: 3 }` 是**静默无效**的 —— 第一版就这么写错了，
+   *    用例红得莫名其妙。要在构造之后**直接赋字段**。
+   */
+  const st = new ProactiveState({})
+  st.speakCountGroup = 3
+  const full = mkRollSched({ cfg: { speakChance: 0.6 }, state: st })
+  assert.deepEqual(full.usableScopes(T0), [], '额度满了就算掷中也不发')
+})
+
+ok('⚠️ 源码锁：冷却器真的拆了，别又长回来', () => {
   const raw = fs.readFileSync(new URL('../src/qq/proactive.js', import.meta.url), 'utf8')
   const code = raw.split('\n').filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l)).join('\n')
+  assert.ok(!/isCooled\s*\(/.test(code), '不该再有 isCooled 调用')
+  assert.match(code, /maySpeakNow\s*\(/, '要有 maySpeakNow')
+  /*
+   * ⚠️ **只锁 `_doSpeak` 里不再"掷间隔"**，不锁全文件。
+   *
+   * `nextSpeakAtGroup = 0` 在 `resetDaily()` 里还有 —— 那是**合法的**：
+   * state 里字段保留着（老存档有值），每天重置一下免得越积越脏。
+   * 第一版断言"全文件不许出现 nextSpeakAtGroup =" 把这条也禁了，是**测试写太宽**。
+   *
+   * 真正要守的是：`_doSpeak` **发言后不再算下次时间** ——
+   * 一旦又算了，就等于冷却器悄悄长回来了。
+   */
   const at = code.indexOf('async _doSpeak(')
   assert.ok(at > 0, '要有 _doSpeak')
-  const seg = code.slice(at, at + 2400)
-  assert.match(seg, /cooldownJitterMinutes/, '要用抖动配置')
-  assert.match(seg, /nextSpeakAtGroup|nextSpeakAtPrivate/, '要存下次可发言时间')
+  const seg = code.slice(at, at + 2000)
+  assert.ok(!/nextSpeakAt(Group|Private)\s*=/.test(seg), '_doSpeak 不该再掷"下次可发言时间"')
+  assert.ok(!/cooldownJitterMinutes/.test(seg), '_doSpeak 不该再用冷却抖动')
   /*
-   * ⚠️ 只锁**冷却那行**用注入的随机源。
-   * `_doSpeak` 里还有一处合法的裸 `Math.random()` ——
-   * `list[Math.floor(Math.random() * list.length)]`（随机挑一个会话）。
-   * 第一版断言"整段不许出现 Math.random()"把这条也禁了，是**测试写太宽**。
+   * 骰子必须走 `this._random` —— 否则测试没法固定，只能靠统计碰运气。
+   * 顺带：`_doSpeak` 里另有一处合法的裸 `Math.random()`（随机挑一个会话），
+   * 所以只锁 `maySpeakNow` 那一段。
    */
-  assert.match(
-    seg,
-    /const rnd = \(this\._random \?\? Math\.random\)\(\)/,
-    '随机冷却要走 this._random（否则测试没法固定）',
-  )
+  const atRoll = code.indexOf('maySpeakNow(')
+  assert.ok(atRoll > 0, '要有 maySpeakNow')
+  const rollSeg = code.slice(atRoll, atRoll + 900)
+  assert.match(rollSeg, /this\._random \?\? Math\.random/, '骰子要走 this._random')
 })
 
 console.log(`\n通过 ${pass} / 失败 ${fail}`)

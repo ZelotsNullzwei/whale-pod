@@ -47,9 +47,16 @@ console.log('=== 1. 优先级重排 ===')
 console.log('\n=== 2. auto 模式按配置顺序出候选 ===')
 {
   const ctx = {
-    freeProviders: ['codearts', 'buddy', 'gemini'],
+    /*
+     * ⚠️ 2026-11-02 改：原来是 `['codearts', 'buddy', 'gemini']`，
+     * 注释写「codearts/buddy 没有模型提示（和真实情况一样）」。
+     * 后来 `PROVIDER_MODEL_HINTS.buddy` 被填成 `['hy4-preview']` ——
+     * 前提没了，buddy 也会产出候选，于是"只产出 1 个"这条一直红。
+     * 现在只留 codearts（**表里唯一还是空数组的**）。
+     */
+    freeProviders: ['codearts', 'gemini'],
     freeOrder: ['gemini', 'codearts'],
-    // codearts/buddy 没有模型提示（和真实情况一样）
+    // codearts 没有模型提示（下面有条守卫专门盯这个前提）
     catalog: [],
     selfModels: {},
   }
@@ -91,6 +98,24 @@ console.log('\n=== 3. 内置渠道的模型提示 ===')
   const unknown = DEFAULT_FREE_ORDER.filter((p) => !(p in PROVIDER_MODEL_HINTS))
   check('DEFAULT_FREE_ORDER 里的渠道都在 hint 表里',
     unknown.length === 0, unknown.join(','))
+
+  /*
+   * ★ **守卫**：至少留一个"空 hint"的渠道（2026-11-02 加）。
+   *
+   * 下面「auto 候选：hint 为空时要回退到模型目录」那个用例**依赖**
+   * 某家渠道的 hint 是空数组。2026-11-02 就因为这翻过车：
+   * 那个用例原本拿 `buddy` 当"空 hint"的例子，后来表里给 buddy
+   * 填了 `['hy4-preview']` —— **前提没了**，三条断言静默变红，
+   * 而红的原因（"表被填满了"）跟测试名字毫无关系，看日志根本猜不出来。
+   *
+   * 所以这里显式盯住这个前提：**一旦表里全填满，这条先红**，
+   * 直接告诉你"前提变了，去改那个用例"。
+   */
+  const emptyHint = Object.entries(PROVIDER_MODEL_HINTS).filter(([, v]) => (v ?? []).length === 0)
+  check('★ 至少留一个渠道的模型提示是空数组（下面的回退用例依赖它）',
+    emptyHint.length > 0,
+    'PROVIDER_MODEL_HINTS 全填满了 —— 请把「hint 为空时回退到模型目录」'
+    + '那个用例改成不依赖空 hint 的写法')
 }
 
 // ── 4. 显式指定模型名 ─────────────────────────────────────────
@@ -204,30 +229,35 @@ console.log('\n=== 6. 模型名含斜杠 ===')
 // ── 6. bridge 的 auto 候选解析（不能只看第一个渠道的 hint）─────
 console.log('\n=== 6. auto 候选：hint 为空时要回退到模型目录 ===')
 {
-  // 复现真实 bug：buddy 排第一，但 PROVIDER_MODEL_HINTS.buddy 是空数组
+  // 复现真实 bug：排第一的渠道在 PROVIDER_MODEL_HINTS 里是**空数组**
   // （空数组是刻意的，表示"没有内置偏好，去目录现查"）。
   // 旧代码只取 ordered[0] 的 hint，为空就直接返回 [] ——
   // 于是日志出现「已附图 1 张」紧跟「生成失败 — 没有可用的 LLM 渠道」。
+  //
+  // ⚠️ 2026-11-02 改：原来用 buddy 当"空 hint"的例子，但后来表里给
+  //    buddy 填了 `['hy4-preview']` —— 前提没了，这两条断言一直红。
+  //    改成用 **codearts**（当前表里唯一还是空数组的），
+  //    并在下面加一条守卫盯住这个前提。
   const { QQBridge } = await import('../src/qq/bridge.js')
 
   const catalog = [
-    { provider: 'buddy', id: 'deepseek-v4.1-flash' },
+    { provider: 'codearts', id: 'codearts-flash' },
     { provider: 'workbuddy', id: 'gpt-6-luna' },
   ]
   const fakeGateway = {
-    providers: ['buddy', 'workbuddy', 'lobsterai'],
+    providers: ['codearts', 'workbuddy', 'lobsterai'],
     catalog,
     defaultModels: () => ({}),
   }
   const br = new QQBridge({
-    cfg: { model: 'auto', freeOrder: ['buddy', 'workbuddy', 'lobsterai'], disabledProviders: [] },
+    cfg: { model: 'auto', freeOrder: ['codearts', 'workbuddy', 'lobsterai'], disabledProviders: [] },
     onebot: {}, gateway: fakeGateway, decision: {}, memory: {}, persona: {}, log: {},
   })
 
   const c = br._candidates()
   check('hint 为空时回退到模型目录（不再返回空）', c.length === 1, JSON.stringify(c))
-  check('选中的是排第一的渠道', c[0]?.provider === 'buddy', JSON.stringify(c))
-  check('模型来自目录', c[0]?.model === 'deepseek-v4.1-flash', JSON.stringify(c))
+  check('选中的是排第一的渠道', c[0]?.provider === 'codearts', JSON.stringify(c))
+  check('模型来自目录', c[0]?.model === 'codearts-flash', JSON.stringify(c))
 
   // 第一个渠道在目录里也没有 → 继续往后找，不能直接放弃
   const br2 = new QQBridge({

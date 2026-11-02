@@ -278,17 +278,40 @@ export function createWebServer(opts) {
         return json(res, 200, await runtime.uvStatus(store.home))
       }
 
-      // ── 自备渠道（不依赖 DSH 的 LLM 来源）────────────────────
+      // ── 渠道（三类平铺成一张表）────────────────────────────────
+      //
+      // ★ 2026-11-02：原来**只返回手填的**（`gateway.channels`），
+      //   DSH 自动发现的（magpie）和内置官方（deepseek-official）只在
+      //   `providers` 里露个 id —— 界面上看不见、也改不了。
+      //
+      //   用户原话：「magpie 其实算自定义渠道吧」—— 对，它就是一条
+      //   OpenAI 兼容渠道，只是**来源**不同。所以这里统一成一张表，
+      //   每行带 `source`，界面按来源决定"能不能编辑/删"：
+      //
+      //     manual  手填      → 可编辑、可删
+      //     dsh     DSH 发现  → 只读（下次启动又会被发现回来），可用开关禁用
+      //     builtin 内置官方  → 只读（key 还在，删了没意义），可用开关禁用
       if (p === '/api/channels' && req.method === 'GET') {
         const chans = store.get().gateway?.channels ?? []
         const providers = llm?.providers ?? []
+        const disabled = new Set(store.get().gateway?.disabledProviders ?? [])
+        const shape = (c, source) => ({
+          ...c,
+          apiKey: redactKey(c.apiKey),
+          hasKey: Boolean(c.apiKey),
+          active: providers.includes(c.id),
+          enabled: !disabled.has(c.id),
+          source,
+          // 界面据此决定显不显示「删除」按钮
+          removable: source === 'manual',
+          editable: source !== 'builtin',
+        })
         return json(res, 200, {
-          channels: chans.map((c) => ({
-            ...c,
-            apiKey: redactKey(c.apiKey),
-            hasKey: Boolean(c.apiKey),
-            active: providers.includes(c.id),
-          })),
+          channels: [
+            ...chans.map((c) => shape(c, 'manual')),
+            ...(state.autoChannelList ?? []).map((c) => shape(c, 'dsh')),
+            ...(state.officialChannelList ?? []).map((c) => shape(c, 'builtin')),
+          ],
           presets: fallbackMod.PRESET_ENDPOINTS,
           dshAvailable: Boolean(state.dshAppDir),
           providers,
@@ -371,7 +394,11 @@ export function createWebServer(opts) {
             appDir: state.dshAppDir ?? null,
             profile: state.profile ?? null,
             available: Boolean(state.dshAppDir),
-            channelPack: state.dshPack?.profile ?? null,
+            /*
+             * ⚠️ `channelPack` 字段删了（2026-11-02）—— DSH 的渠道包
+             * （那 14 个免费渠道）已经整个拆掉，`state.dshPack` 不再写。
+             * 留着一个恒为 null 的字段只会让界面/调试的人以为"没检测到包"。
+             */
           },
           providers,
           dshProviders,
@@ -682,7 +709,7 @@ export function createWebServer(opts) {
           providers,
           // 当前生效的设置
           settings: {
-            strategy: cfg.gateway?.strategy ?? 'free-first',
+            strategy: cfg.gateway?.strategy ?? 'self-first',
             freeOrder: configured,
             disabledProviders: disabled,
             qqModel: cfg.qq?.model ?? 'auto',
@@ -2142,7 +2169,7 @@ async function whalePodCompat(o) {  const { sub, method, url, req, res, json, re
         },
         gateway: {
           enabled: cfg.gateway?.enabled !== false,
-          strategy: cfg.gateway?.strategy ?? 'free-first',
+          strategy: cfg.gateway?.strategy ?? 'self-first',
           host: cfg.gateway?.host ?? '127.0.0.1',
           port: cfg.gateway?.port ?? 18899,
         },
@@ -2619,9 +2646,16 @@ async function whalePodCompat(o) {  const { sub, method, url, req, res, json, re
       //    不能让它去打十几个上游。
       const accountCount = {}
       try {
-        // accountPool 由 channel-pack 用 ctx.provide('accountPool') 挂上，
-        // 不是 state 的字段 —— 从 llm.ctx 取（llm-core 返回的 llm 带 ctx 引用时）
-        // 或退回 state（若将来改成挂 state）。
+        // ⚠️ **这段现在恒不执行**（2026-11-02）：`accountPool` 原来是
+        //    channel-pack 用 `ctx.provide('accountPool')` 挂上的，而渠道包
+        //    已经整个拆掉 —— `state.accountPool` 不再写、`llm` 是自备渠道
+        //    对象（没有 ctx），所以 `pool` 恒为 undefined，整块被 `if` 挡掉。
+        //
+        //    保留是因为它的**行为正好是现在想要的**：`accountCount` 保持空对象
+        //    → 前端不做"只显示有账号的渠道"过滤 → 所有渠道都显示。
+        //    （自备渠道没有"账号池"这个概念，本来就不该按账号数过滤。）
+        //
+        //    真删掉也行，但那样要同时改前端的过滤逻辑；留着零风险。
         const pool = state.accountPool ?? llm?.accountPool ?? llm?.ctx?.accountPool
         if (pool?.listAccounts) {
           for (const p of effectiveOrder) {
@@ -2723,7 +2757,7 @@ async function whalePodCompat(o) {  const { sub, method, url, req, res, json, re
       return json(res, 200, {
         ok: true,
         settings: {
-          strategy: cfg.gateway?.strategy ?? 'free-first',
+          strategy: cfg.gateway?.strategy ?? 'self-first',
           freeOrder: configured,
           disabledProviders: disabled,
           qqModel: cfg.qq?.model ?? 'auto',

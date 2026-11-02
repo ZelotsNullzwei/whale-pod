@@ -678,7 +678,19 @@ export class PersonaStore {
     let biliTail = ''
     for (const e of extras) {
       if (!e) continue
-      if (typeof e === 'string' && e.includes('对方分享的 B 站视频')) biliTail = e
+      /*
+       * ⚠️ **用形状匹配，不要用标题原文**（2026-11-02 实测踩到）。
+       *
+       * 原来这里是 `e.includes('对方分享的 B 站视频')` —— 把那句**文案**
+       * 当成了识别标记。于是我只是把标题改成「他发给你的 B 站视频」，
+       * **这段就再也识别不到了**：它留在中间而不是挪到末尾，
+       * 位置纪律（"约束力靠后更强"）全失效 ——
+       * 而且**没有任何报错**，是 `check-prompt-order` 把它抓出来的。
+       *
+       * 现在匹配 `## ... B 站视频` 这个**结构**：文案随便改，只要还是
+       * 「二级标题 + 提到 B 站视频」，就照样能识别。
+       */
+      if (typeof e === 'string' && /^##\s[^\n]*B\s*站视频/m.test(e)) biliTail = e
       else parts.push(e)
     }
     // 「大肥鱼」这个称呼的反应只对带该人格的角色说，普通群友不需要

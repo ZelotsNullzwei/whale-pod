@@ -23,6 +23,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { makeMessage } from '../memory/short.js'
 import { resolveCandidates, openFirstAvailable, applyFreeOrder, PROVIDER_MODEL_HINTS } from '../gateway/router.js'
+import { deriveRouting } from '../gateway/strategy.js'
 import { needsFreshInfo, webSearch, formatSearchContext, pickCoverImage, checkBalance } from '../gateway/search.js'
 import FACE_TABLE from './faces.json' with { type: 'json' }
 import { InteractionTracker, BegState, decideBeg } from './beg.js'
@@ -4603,16 +4604,34 @@ export class QQBridge {
   /** 决定用哪些候选渠道（复用路由策略）。 */
   _candidates() {
     const free = this.gateway.providers ?? []
+    /*
+     * ★ **把「路由策略」翻译成真开关**（2026-11-02 接上）。
+     *
+     * 面板上那个下拉以前是**纯装饰** —— 写进配置后没有任何人读它
+     * （`resolveCandidates` 和这里读的都是 freeProviders / freeOrder /
+     *  selfModels / catalog / fallback / disabledProviders）。
+     * 详见 `../gateway/strategy.js` 里的说明。
+     *
+     * 现在：策略 → { fallback 开不开, 要额外排除谁 }。
+     * ⚠️ 排除名单是**算出来的临时值**，不写回配置 ——
+     *    否则用户切回别的策略时那份名单还留着，渠道会莫名其妙消失。
+     */
+    const routing = deriveRouting(this.cfg.strategy, {
+      fallbackEnabled: this.cfg.fallback?.enabled,
+      disabled: this.cfg.disabledProviders ?? [],
+      providers: free,
+    })
     // bridge 默认固定用一个"聊天模型"，避免每次决策都变幻
     const prefer = this.cfg.model ?? 'auto'
     if (prefer && prefer !== 'auto') {
       return resolveCandidates(prefer, {
         freeProviders: free,
         freeOrder: this.cfg.freeOrder ?? [],
-        disabledProviders: this.cfg.disabledProviders ?? [],
+        disabledProviders: routing.disabled,
         catalog: this.gateway.catalog,
         selfModels: this.gateway.defaultModels?.() ?? {},
-        fallback: this.cfg.fallback,
+        // 策略说关官方兜底，就在这里把 enabled 覆盖掉
+        fallback: { ...(this.cfg.fallback ?? {}), enabled: routing.fallbackEnabled },
       })
     }
     // auto：按**用户配置的优先级**取第一个可用渠道。
@@ -4621,7 +4640,7 @@ export class QQBridge {
     // ⚠️ 也不能写死模型名（如 'gemini-3.8-flash-medium'）—— 自备渠道
     //    （ollama 等）没有这个名字，会得到 400。统一从 defaultModels 取。
     const selfModels = this.gateway.defaultModels?.() ?? {}
-    const disabled = this.cfg.disabledProviders ?? []
+    const disabled = routing.disabled
     const ordered = applyFreeOrder(free, this.cfg.freeOrder).filter((p) => !disabled.includes(p))
 
     // ⚠️ 逐个渠道找"能用的模型"，不能只看第一个。
@@ -4774,15 +4793,65 @@ export class QQBridge {
         payload = seg.text
       }
 
+      /*
+       * ⚠️ **整条消息只有一个 face 段 → NapCat 拒收**（2026-11-02 实测复现）。
+       *
+       * ## 现场
+       * B 站长视频的补发：她生成了正文、后台也听完了，但那条消息**以表情开头**，
+       * 于是第一段就是"单独一个 face" → NapCat 回
+       * `消息体无法解析, 请检查是否发送了不支持的消息类型` →
+       * `_send` 按段抛错 → **后面的正文一个字都没发出去**。
+       * 用户看到的是「她没读视频」，日志里只有一句「补发失败」。
+       *
+       * ## 逐形态试出来的（对着 NapCat 实测）
+       * ```
+       * 只有 face（数组 / id 数字 / CQ 字符串）  → ❌ 全拒
+       * 空文字 + face                          → ✅ 通
+       * face + 空格                            → ✅ 通
+       * 文字 + face                            → ✅ 通
+       * 只有 image                             → ✅ 通（图不受影响）
+       * ```
+       * **规律：单独一个 face 不行，只要旁边有别的段就行。**
+       *
+       * 所以这里给它前面挂一个**空文字段** —— 不显示任何内容，但让消息
+       * 不再是"只有一个 face"。这是实测唯一不改变语义的过法。
+       */
+      if (Array.isArray(payload) && payload.length === 1 && payload[0]?.type === 'face') {
+        payload = [{ type: 'text', data: { text: '' } }, payload[0]]
+      }
+
       const res = msg.kind === 'group'
         ? await this.onebot.sendGroup(msg.groupId, payload)
         : await this.onebot.sendPrivate(msg.userId, payload)
 
       if (res?.status === 'failed' || (typeof res?.retcode === 'number' && res.retcode !== 0)) {
         // 图片发失败（外链失效、被反盗链拦）不影响文字回复已经发出的事实，
-        // 记一条 warn 就够 —— 否则整条回复会被当成失败重试。
-        if (seg.kind === 'image') {
-          this.log.warn?.(`bridge：封面图发送失败（跳过）— ${JSON.stringify(res).slice(0, 120)}`)
+        /*
+         * ⚠️ **一个附件段发失败，不该把整条回复判成失败**（2026-11-02 实测事故）。
+         *
+         * ## 现场
+         * B 站长视频的补发：她生成了内容、后台也听完了（1030 字），
+         * 但那条消息**开头带了个表情段**，NapCat 回了
+         * 「消息体无法解析, 请检查是否发送了不支持的消息类型」。
+         * 而 `_send` 是按段顺序发的 —— **表情是第一段**，它一失败就 `throw`，
+         * **后面的正文根本没发出去**。
+         *
+         * 用户看到的是「她没读视频」／「她答了但没发出来」，
+         * 日志里却只有一句「补发失败」—— 两边的认知完全对不上。
+         *
+         * ## 原来的规则（只保了图片）
+         * ```
+         * seg.kind === 'image' → warn + continue      （跳过，继续发后面）
+         * 其他（face / mface）  → throw                ← 整条中断
+         * ```
+         * **face 和 image 在这里没有区别** —— 都是"这条消息的装饰"，
+         * 正文才是内容。所以三类附件一律跳过继续。
+         *
+         * ⚠️ 只有**正文段**失败才算真失败（那种抛错是对的：一个字都没发出去，
+         *    调用方应该知道）。
+         */
+        if (seg.kind === 'image' || seg.kind === 'face' || seg.kind === 'mface') {
+          this.log.warn?.(`bridge：${seg.kind} 段发送失败（跳过，继续发正文）— ${JSON.stringify(res).slice(0, 120)}`)
           continue
         }
         throw new Error(`OneBot 返回失败：${JSON.stringify(res).slice(0, 200)}`)
@@ -5403,7 +5472,52 @@ export class QQBridge {
       if (hit) return [{ type: 'image', data: { file: String(hit) } }]
     }
 
-    // 2) QQ 内置表情表按名字查（"本地搜索"）
+    /*
+     * ★ **先按标签从她的收藏库里挑**（2026-11-02 提到内置表之前）。
+     *
+     * ## 原来为什么在内置表后面 —— 以及为什么错了
+     * 原来是：配置映射 → **QQ 内置表情表按名字查** → 收藏表情。
+     * 问题是「无语」「震惊」「疑惑」这类词**既在 QQ 内置表的别名里**
+     * （无语→擦汗 id40、震惊→惊恐 id26），**也是收藏表情的标签**。
+     * 第 2 步先跑就永远轮不到收藏库。
+     *
+     * 实测现场（群里，2026-11-02）：
+     * ```
+     * 07:44:14  群友「有收藏表情怎么又在用qq表情」
+     * 07:44:25  表情「无语」→ 精确匹配「无语」(face 40)   ← 又发了个 QQ 内置
+     * 07:47:30  表情「疑惑」→ 按标签命中 …               ← 这次才是她收藏的
+     * ```
+     * 用户的诉求就是这个：**她收了一堆收藏表情，结果发出来的还是 QQ 那套。**
+     * 而且提示词里给她的清单就是**她库里的标签** —— `[表情包:哭]` 的语义
+     * 本来就是"从我的库里挑一张像'哭'的"，不是"找一个叫'哭'的 QQ 表情"。
+     *
+     * ## 所以顺序反过来
+     *   ① 配置映射（用户显式指定，最高）
+     *   ② **收藏表情按标签**
+     *   ③ QQ 内置表情表（她的库里没有像的，才退回内置）
+     *   ④ 收藏表情随机（有名字但没标签命中时）
+     *
+     * `[表情:N]`（按**编号**指定 QQ 表情）是另一条路，不受影响。
+     */
+    const faces = await this._customFaces()
+    if (faces.length > 0 && key) {
+      /*
+       * ★ **先按标签找**（2026-10-31）—— 这才是"按意思挑"。
+       *
+       * 以前是 `hashStr(key) % faces.length`：同一个名字固定挑同一张，
+       * 看着"稳定"，但**那张和「哭/笑/无语」毫无关系** —— 等于闭眼。
+       * 实测：对方发表情包，它回了个"流泪"，人家问「哭啥」。
+       *
+       * 标签由 `_tagStickerBatch()` 用视觉模型打（攒够几张打一批）。
+       */
+      const byTag = this.stickerTags?.findByTag?.(faces, key) ?? null
+      if (byTag) {
+        this.log.info?.(`bridge：表情「${key}」→ 按标签命中 ${stickerKey(byTag).slice(-16)}`)
+        return [{ type: 'image', data: { file: byTag } }]
+      }
+    }
+
+    // ② QQ 内置表情表按名字查（"本地搜索"）—— 收藏库里没有像的才走这里
     if (key) {
       const hit = lookupFace(key)
       if (hit) {
@@ -5414,11 +5528,11 @@ export class QQBridge {
       }
     }
 
-    // 3) 账号的收藏表情。
-    //    收藏表情不带名字，所以按名字做**确定性挑选**：
-    //    同一个名字每次挑到同一张，看起来比较稳定；
-    //    没给名字就随机 —— "随手发个表情"本来就该随机。
-    const faces = await this._customFaces()
+    /*
+     * ③ 收藏表情（前面已经取过 `faces` 了，这里继续用它）。
+     *    收藏表情不带名字，所以按名字做**确定性挑选**；
+     *    没给名字就随机 —— "随手发个表情"本来就该随机。
+     */
     if (faces.length > 0) {
       /*
        * ★ **先按标签找**（2026-10-31）—— 这才是"按意思挑"。

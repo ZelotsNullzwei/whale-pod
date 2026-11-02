@@ -271,9 +271,9 @@ window.__ModuleLoader__.load({
         'forums.empty': '还没订。填几个吧名，比如「明日方舟」',
         'forums.pending': '还没订 —— 点「＋ 添加一个吧」写个吧名试试',
         'model.strategy': '路由策略',
-        'model.freeFirst': '免费优先 → 付费兜底',
-        'model.freeOnly': '只用免费',
+        'model.selfFirst': '自备优先 → 官方兜底',
         'model.selfOnly': '只用自备',
+        'model.officialOnly': '只用官方',
         'model.order': '渠道优先级',
         'model.empty': '还没有发现可用渠道',
         'model.off': '已关闭',
@@ -287,7 +287,18 @@ window.__ModuleLoader__.load({
         'model.group.lane': '免费车道',
         'model.group.account': '账号型渠道',
         'model.group.accountHint': '吃单账号额度，可能整天冷却',
-        'model.group.other': '其它渠道',
+        /*
+         * ⚠️ 2026-11-02：这几个分组名现在**基本不会显示**了。
+         *
+         * `groupOf()` 靠 `LANE` / `ACCOUNT` 两张表分类，而那两张表是
+         * **渠道包**的 provider 名单 —— 渠道包已拆掉，两张表都空 →
+         * 所有渠道都落到 `other` → 组数恒为 1 → 上面那段逻辑**不出组标题**。
+         *
+         * 留着是因为"多组"的情况还可能回来（比如以后按 自备/内置 分组），
+         * 那时这些字才有辨析价值。`other` 也顺手改准确 ——
+         * 原来是「其它渠道」，而"其它"相对于什么都不成立。
+         */
+        'model.group.other': '渠道',
         'model.group.off': '已关闭',
         // 模型分类标签（与渠道界面同名）
         'model.group.channel': '白嫖接入',
@@ -547,9 +558,9 @@ window.__ModuleLoader__.load({
         'forums.empty': 'Nothing subscribed yet. Try a name like 明日方舟',
         'forums.pending': 'Nothing subscribed yet — click "+ Add a forum"',
         'model.strategy': 'Routing strategy',
-        'model.freeFirst': 'Free first → paid fallback',
-        'model.freeOnly': 'Free only',
+        'model.selfFirst': 'Self-hosted first → official fallback',
         'model.selfOnly': 'Self-hosted only',
+        'model.officialOnly': 'Official only',
         'model.order': 'Channel priority',
         'model.empty': 'No channel discovered yet',
         'model.off': 'Disabled',
@@ -563,7 +574,7 @@ window.__ModuleLoader__.load({
         'model.group.lane': 'Free lanes',
         'model.group.account': 'Account channels',
         'model.group.accountHint': 'Burns one account quota; may cool down all day',
-        'model.group.other': 'Other channels',
+        'model.group.other': 'Channels',
         'model.group.off': 'Disabled',
         // Model category tabs (same names as the channel UI)
         'model.group.channel': 'Channels',
@@ -935,8 +946,25 @@ window.__ModuleLoader__.load({
 .gd_foldhead:focus-visible{outline:2px solid var(--dsw-alias-state-business-primary);outline-offset:1px}
 .gd_chevron{display:inline-block;font-size:9px;line-height:1;color:var(--dsw-alias-label-tertiary);transition:transform .15s;transform-origin:center}
 .gd_chevron.open{transform:rotate(90deg)}
-.gd_group{display:flex;flex-direction:column;gap:4px}
-.gd_grouptitle{display:flex;align-items:baseline;gap:6px;font-size:10.5px;font-weight:600;letter-spacing:.02em;color:var(--dsw-alias-label-tertiary);padding:2px 2px 0}
+/*
+ * ★ 2026-11-02：`.gd_group` 从「竖向 flex」改成「两列网格」。
+ *
+ * ## 原来为什么竖排
+ * 外层 `.gd_chcards` 已经是两列网格了，但**分组 container 是竖向 flex** ——
+ * 于是每个「组」占外层网格的一格，**组内的卡片竖着排**。
+ * 渠道包（14 个免费渠道）在的时候，分组是「免费车道 / 账号型 / 其它」，
+ * 每组好几张卡、占一格竖排还算合理。
+ *
+ * ## 现在为什么必须改
+ * 渠道包已经拆掉 → 分组机制失去意义 → **永远只剩一组**（model.group.other）。
+ * 一组占一格、卡竖排 = 用户看到的"就两个还上下摞着，浪费格子"。
+ *
+ * ## 改法
+ * 组**占满整行**（grid-column:1/-1），组内的卡片自己走两列。
+ * 这样 1 组还是 N 组都好看，而且卡片真的并排了。
+ */
+.gd_group{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;grid-column:1/-1;align-items:start}
+.gd_grouptitle{grid-column:1/-1;display:flex;align-items:baseline;gap:6px;font-size:10.5px;font-weight:600;letter-spacing:.02em;color:var(--dsw-alias-label-tertiary);padding:2px 2px 0}
 .gd_grouphint{font-weight:400;opacity:.8;font-size:9.5px}
 .gd_chrow{display:flex;align-items:center;gap:7px;padding:5px 8px;border-radius:9px;border:1px solid var(--dsw-alias-border-l1);background:color-mix(in srgb,var(--dsw-alias-bg-layer-1) 55%,transparent);min-width:0;transition:border-color .12s,opacity .12s}
 .gd_chrow[draggable="true"]{cursor:grab}
@@ -1922,6 +1950,21 @@ window.__ModuleLoader__.load({
         //
         // 为什么不用"标签页 + 扁平列表"（之前那版）：用户是按**渠道**思考的
         // （"我要用 buddy 的模型"），不是按分类。分类只作为分组小标题。
+        /*
+         * ★ 2026-11-02：把分组标题**去掉**（只剩一组时它没有意义）。
+         *
+         * 分组（免费车道 / 账号型 / 其它）本来就是给**渠道包**用的分类。
+         * 渠道包拆掉之后，`groupOf()` 对所有渠道都返回 `other` ——
+         * 于是永远显示一个「其它渠道」的标题，而"其它"相对于什么都不成立。
+         *
+         * 所以：**只有一组时不出标题**（那一组的名字就是"渠道"本身）；
+         * 真有多组时才显示，那时分类才有辨析价值。
+         */
+        /*
+         * ⚠️ 这里**只能写成表达式**（它在上面那个 h() 的子元素数组里），
+         *    所以"有几组"得在 map 里面算，不能在前面用 const 提出来。
+         *    组数很少（最多 4），重复算一次无所谓。
+         */
         usable.length === 0
           ? h('p', { className: 'gd_note' }, t('model.empty'))
           : h('div', { className: 'gd_chcards' },
@@ -1931,10 +1974,16 @@ window.__ModuleLoader__.load({
                 ? disabled
                 : enabled.filter((x) => groupOf(x.provider) === g)
               if (items.length === 0) return null
+              // 只有一组时不显示组标题（分组是渠道包留下的分类，包拆了只剩 other）
+              const groupCount = ['lane', 'account', 'other', 'off'].filter((k) => (k === 'off'
+                ? disabled
+                : enabled.filter((x) => groupOf(x.provider) === k)).length > 0).length
               return h('div', { className: 'gd_group', key: g },
-                h('div', { className: 'gd_grouptitle' },
-                  t(`model.group.${g}`),
-                  g === 'account' ? h('span', { className: 'gd_grouphint' }, t('model.group.accountHint')) : null),
+                groupCount > 1
+                  ? h('div', { className: 'gd_grouptitle' },
+                    t(`model.group.${g}`),
+                    g === 'account' ? h('span', { className: 'gd_grouphint' }, t('model.group.accountHint')) : null)
+                  : null,
                 items.map((item) => {
                   const list = modelsForProvider(item.provider)
                   const open = expanded === item.provider
@@ -2036,17 +2085,29 @@ window.__ModuleLoader__.load({
             })),
 
         // ── 策略 ───────────────────────────────────────────────────
+        /*
+         * ★ 2026-11-02 换语义。
+         *
+         * 老取值 free-first / free-only / self-only 的前提是
+         * 「免费渠道 vs 付费渠道」，而 DSH 渠道包（那 14 个免费渠道）
+         * 已经整个拆掉了 —— 「免费渠道」这个类别不存在了。
+         *
+         * 而且更要紧的是：那个下拉**以前根本没接线**（写进配置没人读）。
+         * 现在由 gateway/strategy.js 翻译成路由真正用的两个开关。
+         *
+         * ⚠️ 老配置里的老取值会被自动归一，所以这里不用管迁移。
+         */
         h('label', { className: 'gd_field' },
           h('span', { className: 'gd_fieldlabel' }, t('model.strategy')),
           h('select', {
             className: 'gd_select',
-            value: settings.strategy ?? 'free-first',
+            value: settings.strategy ?? 'self-first',
             disabled: busy,
             onChange: (event) => apply({ strategy: event.target.value }),
           },
-            h('option', { value: 'free-first' }, t('model.freeFirst')),
-            h('option', { value: 'free-only' }, t('model.freeOnly')),
-            h('option', { value: 'self-only' }, t('model.selfOnly')))))
+            h('option', { value: 'self-first' }, t('model.selfFirst')),
+            h('option', { value: 'self-only' }, t('model.selfOnly')),
+            h('option', { value: 'official-only' }, t('model.officialOnly')))))
     }
 
 

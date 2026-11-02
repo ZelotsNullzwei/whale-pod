@@ -289,7 +289,7 @@ export function formatVideoContext(info, descLimit = 160) {
   if (!isJunkDesc(desc)) {
     parts.push(`简介：${desc.slice(0, descLimit)}${desc.length > descLimit ? '…' : ''}`)
   }
-  let body = `## 对方分享的 B 站视频（**他刚发来的，你以前没看过**）\n${parts.join('\n')}`
+  let body = `## 他发给你的 B 站视频（**不是你找的，你以前没看过**）\n${parts.join('\n')}`
 
   /*
    * ★ **长视频：还在后台听**（2026-11-01）—— 见 `_biliContext`。

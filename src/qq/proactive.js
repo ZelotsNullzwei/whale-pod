@@ -516,27 +516,49 @@ export class ProactiveScheduler {
   }
 
   /**
-   * 某类是否已经过了冷却（按类别各算各的）。
+   * 「这一 tick 要不要冒泡」—— **掷骰子，不看冷却**。
    *
-   * ## 2026-10-31：固定冷却 → **随机冷却**
-   * 用户原话：「定时发言就不要了，改成随机发言？群里和私聊都是」。
+   * ## 2026-11-02：随机**间隔** → 全随机
    *
-   * 固定 180 分钟意味着"每天差不多同一时刻冒泡"，很机械。
-   * 现在：发言时**掷一次** `cooldownMinutes ~ cooldownMinutes + cooldownJitterMinutes`
-   * （默认 180~300 分钟），存进 `nextSpeakAt*`。
+   * 用户原话：「之前不是说取消冷却器吗」「改成全随机发言」。
    *
-   * ⚠️ 掷一次就存下来，**不是每 tick 重掷** —— 否则累积概率会暴涨，
-   *    又变回"到点必说"。老 state 没有 `nextSpeakAt` 时退回旧公式（兼容）。
+   * 之前是**发言后掷一次间隔**（180~300 分钟）存进 `nextSpeakAt*`，
+   * 到点才允许说。但那仍然是"到点必说"的**定时器**，只是把固定周期
+   * 换成了随机周期 —— 观感还是机械，日志里整天刷「冷却中」，
+   * 实测她自己几乎冒不出来（一直卡在群剩 2 / 私聊剩 2 冷却中）。
+   *
+   * 现在：**每一 tick 独立掷一次**，概率 `speakChance`。
+   * 默认 0.004、tick 60 秒 → 期望约每 4 小时一次；
+   * 白天窗口 15 小时 ≈ 3.6 次/天（还有 maxPerDay 兜底）。
+   * 嫌少就调大（0.01 ≈ 每 100 分钟期望一次）。
+   *
+   * ## ⚠️ 同一 tick 内**只掷一次**（这是关键，不是优化）
+   *
+   * `usableScopes()` 在一轮里会被调用好几次（`planSpeak` 一次、
+   * `_doSpeak` 再一次、日志文案里还有）。如果每次调用都重掷，
+   * 一轮的实际概率就是 `1-(1-p)^n` —— **累积暴涨，又变回"到点必说"**。
+   * 旧的冷却写法正是为了躲这个才"掷一次存下来"。
+   *
+   * 所以这里按 **60 秒桶**缓存结果：同一个 tick 内怎么问都是同一个答案。
+   *
+   * @param {number} [t] 当前时间戳
+   * @returns {boolean}
    */
-  isCooled(kind, t) {
-    const base = Math.max(1, Number(this.cfg.cooldownMinutes ?? 180)) * 60_000
-    const nextAt = this.nextSpeakAtOf(kind)
-    const due = nextAt > 0 ? nextAt : this.lastSpeakAtOf(kind) + base
-    return t >= due
+  maySpeakNow(t = Date.now()) {
+    const p = Number(this.cfg.speakChance ?? 0.004)
+    if (!(p > 0)) return false
+    if (p >= 1) return true
+    // 同一 tick（60 秒桶）只掷一次
+    const bucket = Math.floor(t / 60_000)
+    if (this._rollBucket === bucket) return this._rollResult === true
+    const rnd = (this._random ?? Math.random)()
+    this._rollBucket = bucket
+    this._rollResult = rnd < p
+    return this._rollResult
   }
 
   /**
-   * 现在真的能说话的会话（**额度 + 冷却都满足**）。
+   * 现在真的能说话的会话（**额度 + 这一 tick 掷中**）。
    *
    * ⚠️ 必须按**具体会话**判断，不能只看「还有没有额度」——
    *    否则会出现「群额度用完了、说没有会话可发」但它其实还能找你。
@@ -547,7 +569,7 @@ export class ProactiveScheduler {
   usableScopes(t = Date.now()) {
     return this.scopes().filter((s) => {
       const k = this.kindOf(s)
-      return this.speakLeft(k) > 0 && this.isCooled(k, t)
+      return this.speakLeft(k) > 0 && this.maySpeakNow(t)
     })
   }
 
@@ -581,8 +603,16 @@ export class ProactiveScheduler {
        */
       const g = this.speakLeft('group')
       const p2 = this.speakLeft('private')
-      const gTxt = g > 0 ? (this.isCooled('group', t) ? '可发' : '冷却中') : '已满'
-      const pTxt = p2 > 0 ? (this.isCooled('private', t) ? '可发' : '冷却中') : '已满'
+      /*
+       * ⚠️ 分开报两件事：**额度**（说满了）和**这一 tick 掷没掷中**。
+       *
+       * 以前这里印「冷却中」—— 现在是概率制，**掷不中是绝大多数情况**
+       * （默认 0.004，即 250 tick 里约 249 次不中）。
+       * 印「冷却中」会让人以为"还要等某个时间"，其实下一秒就有机会。
+       * 所以印「等骰子」，并把概率带出来，免得看日志的人以为坏了。
+       */
+      const gTxt = g > 0 ? `等骰子(${Number(this.cfg.speakChance ?? 0.004)})` : '已满'
+      const pTxt = p2 > 0 ? `等骰子(${Number(this.cfg.speakChance ?? 0.004)})` : '已满'
       return { ok: false, reason: `没有可用会话（群：剩 ${g} ${gTxt} / 私聊：剩 ${p2} ${pTxt}）` }
     }
     const idle = this.idleMs()
@@ -642,32 +672,30 @@ export class ProactiveScheduler {
     const ok = await this.onSpeak(scope)
     if (ok) {
       /*
-       * ★ 掷一次**随机冷却**（2026-10-31）——
-       * `cooldownMinutes ~ cooldownMinutes + cooldownJitterMinutes`（默认 180~300 分钟）。
-       * 存进 `nextSpeakAt*`，之后 `isCooled()` 就看它。
-       * **每次发言只掷一次**，不是每 tick 重掷。
+       * ⚠️ **这里原来会掷一次"下次最早可发言时间"**（cooldownMinutes ~ +jitter）。
+       *
+       * 2026-11-02 去掉了 —— 改成「每 tick 独立掷骰子」（见 `maySpeakNow`）。
+       * 冷却器的问题是它仍然是"攒够时间必然说"，只是周期随机；
+       * 而现在没有"必然说"这回事，也就不需要记 nextSpeakAt 了。
+       *
+       * `nextSpeakAtGroup/Private` 这两个 state 字段**保留不写**：
+       * 老 state 文件里还有值，读出来也没人看了（`nextSpeakAtOf` 还在，
+       * 但只给老数据/日志用），不迁移、不清空 —— 免得动到用户的存档。
        */
-      const baseMs = Math.max(1, Number(this.cfg.cooldownMinutes ?? 180)) * 60_000
-      const jitterMs = Math.max(0, Number(this.cfg.cooldownJitterMinutes ?? 120)) * 60_000
-      const rnd = (this._random ?? Math.random)()
-      const gapMs = baseMs + Math.round(rnd * jitterMs)
-      const nextAt = t + gapMs
       // 按**实际**发到哪一类来计数（scope 是字符串，必须用 kindOf 解析）
       if (kind === 'private') {
         this.state.speakCountPrivate += 1
         this.state.lastSpeakAtPrivate = t
         // ★ 开观察窗：30 分钟后结算"有没有人接"
         this.state.pendingAckPrivate = true
-        this.state.nextSpeakAtPrivate = nextAt
       } else {
         this.state.speakCountGroup += 1
         this.state.lastSpeakAtGroup = t
         this.state.pendingAckGroup = true
-        this.state.nextSpeakAtGroup = nextAt
       }
       this.log.info?.(
-        `proactive：下次${kind === 'private' ? '私聊' : '群'}最早 ${Math.round(gapMs / 60_000)} 分钟后`
-        + `（${Math.round(baseMs / 60_000)}~${Math.round((baseMs + jitterMs) / 60_000)} 随机）`,
+        `proactive：说了（${kind === 'private' ? '私聊' : '群'}）`
+        + `—— 下一 tick 重新掷（概率 ${Number(this.cfg.speakChance ?? 0.004)}）`,
       )
       this.state.speakCount = this.state.speakCountGroup + this.state.speakCountPrivate
       this.state.lastSpeakAt = Math.max(this.state.lastSpeakAtGroup, this.state.lastSpeakAtPrivate)

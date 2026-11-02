@@ -2481,7 +2481,12 @@ export const CLIENT_JS = `
         // 却看不出是"模型不支持"还是"图没取到"。
         var vlmCount = usable.filter(function(m){ return m.vision === 'yes' }).length
         var usableCount = (r.orderDetail || []).filter(function(d){ return d.usable && !disabled[d.provider] }).length
-        var autoUsable = (s.strategy || '') !== 'self-only' ? usableCount : selfCount
+        // 策略影响"auto 可用渠道"的口径。
+        // ⚠️ 2026-11-02：老取值 free-first / free-only 归一到新名字，
+        //    否则老配置的用户看到的口径会跟实际策略对不上。
+        var stratKey0 = ({ 'free-first': 'self-first', 'free-only': 'self-only' })[s.strategy] ||
+          (s.strategy || 'self-first')
+        var autoUsable = stratKey0 === 'self-only' ? selfCount : usableCount
         var enabledCount = enabledProviders.length
         metricsBox.innerHTML = ''
         metricsBox.appendChild(el(metrics([
@@ -2521,7 +2526,11 @@ export const CLIENT_JS = `
         var usableNow = (r.orderDetail || [])
           .filter(function(d){ return d.usable && !disabled[d.provider] }).length
         var strictRatio = enabledCount > 0 && usableNow < enabledCount * 0.6
-        if (!strictRatio || (s.strategy || 'free-first') === 'self-only') return
+        // 只有「自备优先」策略下才提示"渠道可用率偏低" ——
+      // 另外两个策略是有意只走某一类的，提示会误导（老取值也归一）。
+      var stratKey1 = ({ 'free-first': 'self-first', 'free-only': 'self-only' })[s.strategy] ||
+        (s.strategy || 'self-first')
+      if (!strictRatio || stratKey1 !== 'self-first') return
         bannerBox.appendChild(el('<div class="banner">' +
           '<b>' + enabledCount + ' 个渠道里只有 ' + usableNow + ' 个能用于 auto 模式</b><br>' +
           '其余渠道没有已知的模型名，auto 会自动跳过它们（不报错但也不会被使用）。<br>' +
@@ -2536,21 +2545,49 @@ export const CLIENT_JS = `
       wrap.appendChild(bannerBox)
 
       // ── 1. 路由策略 ─────────────────────────────────────────
+      /*
+       * ★ 2026-11-02 重写。
+       *
+       * ## 原来这三个是**装饰**
+       * free-first / free-only / self-only 写进配置后
+       * **没有任何人读它** —— resolveCandidates 读的是 freeProviders /
+       * freeOrder / selfModels / catalog / fallback / disabledProviders。
+       * 点这三个按钮**什么都不会变**（除了按钮高亮和一条横幅）。
+       *
+       * ⚠️ 本文件顶上有「模板字符串陷阱」的警告：**注释里不要写反引号**，
+       *    那会把外面的模板字符串截断、整页变黑。上面那几个策略名不加引号就是这个原因。
+       *
+       * ## 而且前提也没了
+       * DSH 渠道包（那 14 个免费渠道）已整个拆掉 →「免费渠道」这个**类别**
+       * 不存在了。现在只有两类：**自备渠道**（手填/DSH发现/本地）
+       * 和**内置官方**（凭据里的 key，是付费的）。
+       *
+       * ## 现在
+       * 三个策略**真的接到**路由用的两个开关上（见 gateway/strategy.js）：
+       *   fallback.enabled（官方兜底开不开）+ 排除哪些渠道
+       */
       var stratDesc = {
-        'free-first': '免费渠道优先，全失败才走付费兜底 —— 最省钱',
-        'free-only': '只用免费渠道，失败就直接报错 —— 完全不花钱',
-        'self-only': '只用自备渠道 —— 想固定用某个自建端点时选',
+        'self-first': '自备渠道优先，全失败才走官方兜底 —— 最省钱',
+        'self-only': '只用自备渠道 —— 完全不碰官方额度，全挂了就报错',
+        'official-only': '只用内置官方 —— 想固定用 DeepSeek 官方时选',
       }
-      var stratBtns = ['free-first', 'free-only', 'self-only'].map(function(k){
-        return '<span class="chip click ' + (s.strategy === k ? 'accent' : '') +
-          '" data-strat="' + k + '">' + esc(k) + '</span>'
+      var stratLabel = {
+        'self-first': '自备优先 → 官方兜底',
+        'self-only': '只用自备',
+        'official-only': '只用官方',
+      }
+      // 老配置里可能还是 free-first / free-only —— 显示时归一到新名字
+      var stratNow = ({ 'free-first': 'self-first', 'free-only': 'self-only' })[s.strategy] || s.strategy
+      var stratBtns = ['self-first', 'self-only', 'official-only'].map(function(k){
+        return '<span class="chip click ' + (stratNow === k ? 'accent' : '') +
+          '" data-strat="' + k + '">' + esc(stratLabel[k]) + '</span>'
       }).join('')
       // 左栏第一张卡（它是"总纲"：先定策略，再谈优先级与模型）
       var stratCard = collapsibleCard({
         icon: 'route', title: '路由策略', key: 'md-strategy', open: true,
-        sub: s.strategy,
+        sub: stratLabel[stratNow] || s.strategy,
         body: '<div class="chips">' + stratBtns + '</div>' +
-          '<div class="note mt-sm" id="stratdesc">' + esc(stratDesc[s.strategy] || '') + '</div>' +
+          '<div class="note mt-sm" id="stratdesc">' + esc(stratDesc[stratNow] || '') + '</div>' +
           '<div class="note">决定"一次请求按什么顺序挑渠道"。改完立即生效。</div>',
       })
 
@@ -2898,17 +2935,29 @@ export const CLIENT_JS = `
       //
       // 用户自备的 OpenAI 兼容端点在启动时装载，改完要重启才生效。
       var selfCard = collapsibleCard({
-        icon: 'plug', title: '自备渠道', key: 'md-self',
-        sub: (h.channels || []).length + ' 个 · 不依赖 DSH',
+        icon: 'plug', title: '渠道', key: 'md-self',
+        /*
+         * ★ 2026-11-02：这张卡从「自备渠道」改成「渠道」。
+         *
+         * 原来只列手填的，DSH 自动发现的（magpie）和内置官方
+         * （deepseek-official）都看不见。但用户说得对：
+         * 「magpie 其实算自定义渠道吧」—— 它们**是同一种东西**，
+         * 只是一条是手填的、一条是自动发现的、一条是内置的。
+         * 所以合成一张表，用来源标签区分。
+         */
+        sub: (h.channels || []).length + ' 个（官方内置 + 自定义）',
         body:
-          // ① 已有渠道列表
+          // ① 已有渠道列表（三类平铺）
           '<div id="chlist">' + ((h.channels || []).length
             ? (h.channels || []).map(function(x){ return channelRow(x) }).join('')
-            : '<div class="empty">' + svgIcon('plug', 26) + '<br>还没有自备渠道<br>' +
-              '<span class="note">在下面填一个 OpenAI 兼容端点即可（Ollama / DeepSeek 等）</span></div>') +
+            : '<div class="empty">' + svgIcon('plug', 26) + '<br>还没有渠道<br>' +
+              '<span class="note">在下面填一个 OpenAI 兼容端点即可（Ollama / DeepSeek 等）；' +
+              '在「配置」页填 DeepSeek 官方 API Key 会自动出现一条「内置」渠道</span></div>') +
           '</div>' +
-          '<div class="note mt-sm">自备渠道不依赖 DSH，是本机没装渠道包时的唯一来源；' +
-            '有 DSH 时它叠加在免费渠道之后（免费优先，省钱）。</div>' +
+          '<div class="note mt-sm">三来源，同一个东西：<b>内置</b>（凭据里的 DeepSeek 官方 key，' +
+            '自动挂载）、<b>DSH 发现</b>（读 DSH 设置里的提供商，免手抄）、<b>手填</b>（任何 ' +
+            'OpenAI 兼容端点，本地模型填 Ollama 那条预置）。<br>' +
+            '优先级：手填 → DSH 发现 → 内置；内置是<b>付费兜底</b>，排最后。</div>' +
           // ② 添加 / 编辑表单（就在同一张卡里）
           '<div class="chform mt">' +
             '<div class="chform-hd">' +
@@ -3627,24 +3676,45 @@ export const CLIENT_JS = `
    * 这里只保留 channelRow()（行渲染），页面逻辑见 renderModels()。
    */
 
-  /** 一行渠道展示。 */
+  /**
+   * 一行渠道展示。
+   *
+   * ★ 2026-11-02：**三类渠道平铺成一张表**（用户原话：「magpie 其实算
+   * 自定义渠道吧」—— 对，它就是一条 OpenAI 兼容渠道，只是来源不同）。
+   *
+   *   manual  手填      → 可编辑、可删
+   *   dsh     DSH 发现  → 只读。**删不掉**：下次启动又会被发现回来，
+   *                       给个删除按钮是骗人的。要停它用下面的开关。
+   *   builtin 内置官方  → 只读。key 还在凭据里，删了也会重新挂上。
+   */
   function channelRow(x){
     var tone = x.active ? 'on' : 'off'
     var label = x.active ? '已装载' : '未装载'
+    var SOURCE = { manual: '手填', dsh: 'DSH 发现', builtin: '内置' }
+    var src = SOURCE[x.source] || '手填'
     return '<div style="padding:11px 0;border-bottom:1px solid var(--hairline);display:flex;gap:10px;align-items:flex-start;flex-wrap:wrap">' +
       '<div style="flex:1;min-width:220px">' +
         '<div style="display:flex;gap:8px;align-items:baseline;flex-wrap:wrap">' +
           '<b>' + esc(x.label || x.id) + '</b>' +
+          '<span class="chip">' + src + '</span>' +
           '<span class="chip ' + tone + '">' + label + '</span>' +
           (x.hasKey ? '<span class="chip">有密钥</span>' : '<span class="chip warn">无密钥</span>') +
         '</div>' +
         '<div class="note mono" style="margin-top:3px">' + esc(x.baseUrl) + '</div>' +
         '<div class="note">默认模型：' + esc(x.model || '（未设）') +
-        (x.models && x.models.length ? '　可用 ' + x.models.length + ' 个' : '') + '</div>' +
+        (x.models && x.models.length ? '　可用 ' + x.models.length + ' 个' : '') +
+        (x.source === 'dsh'
+          ? '<br>来自 DSH 设置，每次启动自动发现 —— 删除会被重新发现回来。'
+            + '「编辑」会存成一条**手填**渠道；手填的同 id 会盖住自动发现的这条。'
+          : '') +
+        (x.source === 'builtin'
+          ? '<br>用凭据里的 DEEPSEEK_API_KEY 自动挂载 —— 删不掉，去掉 key 它就消失。'
+          : '') +
+        '</div>' +
       '</div>' +
       '<div style="display:flex;gap:6px">' +
-        '<button class="act ghost sm" data-edit="' + esc(x.id) + '">编辑</button>' +
-        '<button class="act ghost sm" data-del="' + esc(x.id) + '">删除</button>' +
+        (x.editable === false ? '' : '<button class="act ghost sm" data-edit="' + esc(x.id) + '">编辑</button>') +
+        (x.removable === false ? '' : '<button class="act ghost sm" data-del="' + esc(x.id) + '">删除</button>') +
       '</div>' +
     '</div>'
   }

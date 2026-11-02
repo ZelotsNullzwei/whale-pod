@@ -47,7 +47,18 @@ ok('人格输出要求：允许 [SILENT]，不再强制"必须说"', () => {
   const src = read('src/persona/store.js')
   const at = src.indexOf('## 输出要求')
   assert.ok(at > 0, '应能找到「输出要求」段')
-  const block = src.slice(at, at + 1200)
+  /*
+   * ⚠️ **按结构切，不要按字数切**（2026-11-02 翻车）。
+   *
+   * 原来是 `src.slice(at, at + 1200)` —— 固定 1200 字窗口。
+   * 后来在 store.js 上面加了一段注释，`[SILENT]` 被挤出窗口，
+   * **代码一个字没动，这条测试却红了**。
+   * 固定窗口会把"注释写长了"误报成"功能坏了"。
+   *
+   * 现在切到**下一个二级标题**为止；找不到下一节（它是最后一节）才退回大窗口。
+   */
+  const nextHead = src.indexOf('\n## ', at + 1)
+  const block = src.slice(at, nextHead > at ? nextHead : at + 4000)
   assert.match(block, /\[SILENT\]/, '要提到 [SILENT]')
   assert.ok(
     !/不要输出 \[SILENT\]/.test(block),
