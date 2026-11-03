@@ -965,6 +965,48 @@ export function splitFaceMarkers(text) {
   return out
 }
 
+/**
+ * 抽出「约定时间」标记 `[等:N]`（分钟）并从正文里**剥掉**（2026-11-03 加）。
+ *
+ * ## 用途（用户确认的设计）
+ * 「太安静了到时间不会催促人，只会在那里安静的等待」
+ * 「前面时间是**只对话里面约定的时间**」—— 于是：
+ * ```
+ * 他说「我洗漱五分钟」/「等我一下」
+ *   → 她在回复末尾写 [等:5]
+ *   → `_send` 剥掉它（绝不发给群友）+ 记一条待催（`_scheduleNudge`）
+ *   → 到点且他仍然一句话没说 → 催一句（`_tickNudges` → `_speakUp`）
+ *   → 他中途说话了 → 立刻作废（`_cancelNudge`，挂在 onEvent 上）
+ * ```
+ *
+ * ⚠️ **必须剥干净再发** —— 理由和 `[表情:]` 那一族一模一样：
+ *    漏一个方括号出去，群里看到的就是字面量「[等:5]」
+ *    （2026-11-03 刚从 `[表情]` 上踩过一模一样的坑）。
+ *
+ * ⚠️ 认三种写法：`[等:5]` / 全角冒号 `[等：5]` / 冒号后带空格；
+ *    末尾**残缺**的（`[等` / `[等:` / `[等:5`）整段丢掉，不许发出去。
+ *
+ * @param {string} text
+ * @returns {{text:string, waits:number[]}} 剥掉标记后的正文 + 抽到的分钟数
+ */
+export function stripWaitMarkers(text) {
+  const waits = []
+  let s = String(text ?? '')
+  /*
+   * ⚠️ 括号里**什么都剥**，不只是纯数字：
+   *    `[等:abc]` / `[等]` 也是模型想表达"约定"（只是写坏了）——
+   *    留着它就是把字面量发给群友。纯数字的才记进 waits。
+   */
+  s = s.replace(/\[等[:：]?\s*([^\[\]]*?)\s*\]/g, (_all, inner) => {
+    const min = Number(String(inner ?? '').trim())
+    if (Number.isInteger(min) && min >= 1) waits.push(min)
+    return ''
+  })
+  // 末尾残缺的约定标记 → 删掉（口径同 repairTruncatedMarkers）
+  s = s.replace(/\[等[:：]?\s*\d{0,3}\s*$/, '')
+  return { text: s, waits }
+}
+
 export class QQBridge {
   /**
    * @param {object} opts
@@ -1303,6 +1345,12 @@ export class QQBridge {
     this._proactiveScopes = () => this._proactive.scopes()
     this._proactive.start()
     /*
+     * ★ 「约定时间到了就催一句」的定时器（2026-11-03）。
+     * 30 秒扫一次待催表；**它和主动发言的骰子/静默/额度完全无关** ——
+     * 到点就该催，不该再掷一次骰子看运气（用户要的就是这个区别）。
+     */
+    this._startNudgeTimer()
+    /*
      * ★ 启动时顺手给**已有收藏**打一批标签（2026-10-31）。
      * 用户原话：「现在已有的表情打标签分类，以后的等积累到一定程度再次打标签」。
      * 后台跑，失败了不影响任何东西（NapCat 没起来时会自己跳过）。
@@ -1512,7 +1560,7 @@ export class QQBridge {
    * 搜索判断也失效。这里补成一条「空消息」：text 为空表示「没有新内容，
    * 你自己找话说」。
    */
-  async _speakUp(msg, mem) {
+  async _speakUp(msg, mem, extraHint = '') {
     try {
       /*
        * ★ 主动发言前先确保热点是**新鲜**的（2026-10-31）。
@@ -1687,7 +1735,7 @@ export class QQBridge {
   （标题是「16强开打,谁是最靓表情包」→ 你说「最近那个表情包大赛你们看了没」）
 - **一条都不感兴趣 / 都不合适 → [SILENT]**。这不是失败，是正常。`
         : ''
-      const hintWithHot = [speakHint, hotHint, forumHint, sceneHint, hotRule].filter(Boolean).join('\n\n')
+      const hintWithHot = [extraHint, speakHint, hotHint, forumHint, sceneHint, hotRule].filter(Boolean).join('\n\n')
 
       // 私聊时 sender 就是对方；群里没有具体发言人，留空。
       const full = {
@@ -1993,6 +2041,15 @@ export class QQBridge {
       this.log.debug?.(`bridge：忽略 ${msg.scope}（不在白名单）`)
       return
     }
+
+    /*
+     * ★ 他说话了 → 「约定到点催一句」作废（2026-11-03）。
+     *
+     * 只在对方**一直没动静**时才该催 —— 人回来了还催就是骚扰。
+     * 放在白名单判断之后：被忽略的会话不该因为噪音把约定取消掉。
+     * 她自己发的（`isMe`）不算「他回来了」，不作废。
+     */
+    if (!msg.isMe) this._cancelNudge(msg.scope, '他说话了')
 
     // 活跃天数：白名单内的消息进来就记一天。
     //
@@ -5308,11 +5365,144 @@ export class QQBridge {
     }
   }
 
+  /**
+   * ★★ 「**约定时间到了就催一句**」（2026-11-03 加，用户确认的设计）
+   *
+   * ## 用户原话
+   * · 「太安静了到时间不会催促人，只会在那里安静的等待」
+   * · 「前面时间是**只对话里面约定的时间**」
+   * · 「约定时间就是这个意思」「你理解的是对的」
+   *
+   * ## 全链路
+   * ```
+   * 他说「我洗漱五分钟」→ 她在回复末尾写 [等:5]
+   *   → `_send` 剥掉标记（绝不发给群友）+ `_scheduleNudge` 记一条待催
+   *   → 到点、且他仍然一句话没说 → `_tickNudges` 走 `_speakUp` 催一句
+   *   → 他中途说话了 → onEvent 里 `_cancelNudge` 立刻作废
+   * ```
+   *
+   * ## 「频率不要太多」（用户原话）—— 三道闸
+   * · `nudge.maxPerDay`（默认 4）
+   * · `nudge.minGapMinutes`（默认 5）—— 两次催之间至少隔这么久
+   * · `nudge.maxMinutes`（默认 240）—— 太远的约定不接
+   *   （他不是在跟你约 6 小时后；那是"改天"不是"等我一下"）
+   *
+   * ⚠️ **同一会话只留最近一次约定**：他改口「再等十分钟」= 改约，不是排两个。
+   * ⚠️ 待催表是**内存态**，重启会丢。约定都是几分钟到几小时的东西，
+   *    为此加一个落盘文件的复杂度不划算（真丢了也就是"这一次没催"）。
+   */
+  _scheduleNudge(msg, waits) {
+    const cfg = this.cfg.nudge ?? {}
+    if (cfg.enabled === false) return
+    const scope = msg?.scope
+    if (!scope) return
+    const maxMin = Number(cfg.maxMinutes ?? 240)
+    const min = waits
+      .map(Number)
+      .filter((n) => n >= 1 && n <= maxMin)
+      .sort((a, b) => a - b)[0]
+    if (!min) {
+      this.log.info?.(`bridge：约定「${waits.join('/')}」分钟不在 1~${maxMin} 内，不排催`)
+      return
+    }
+    if (!this._nudges) this._nudges = new Map()
+    this._nudges.set(scope, {
+      scope,
+      kind: msg.kind,
+      groupId: msg.groupId,
+      userId: msg.userId,
+      minutes: min,
+      dueAt: Date.now() + min * 60_000,
+    })
+    this.log.info?.(`bridge：记下约定 —— ${scope}，${min} 分钟后他还没动静就催一句`)
+  }
+
+  /** 他说话了 / 会话翻篇了 → 作废（只在对方**一直没动静**时才该催）。 */
+  _cancelNudge(scope, why = '') {
+    if (!this._nudges?.has(scope)) return false
+    const rec = this._nudges.get(scope)
+    this._nudges.delete(scope)
+    this.log.info?.(`bridge：约定作废（${why || '取消'}）—— 原定 ${rec.minutes} 分钟后催`)
+    return true
+  }
+
+  /** 「频率不要太多」那道闸：每天几次 + 两次之间至少隔多久。 */
+  _nudgeAllowed(now = Date.now()) {
+    const cfg = this.cfg.nudge ?? {}
+    const st = (this._nudgeStat ??= { day: '', count: 0, lastAt: 0 })
+    const day = new Date(now).toDateString()
+    if (st.day !== day) {
+      st.day = day
+      st.count = 0
+    }
+    const max = Number(cfg.maxPerDay ?? 4)
+    if (st.count >= max) return { ok: false, why: `今天已经催过 ${st.count} 次（上限 ${max}）` }
+    const gap = Number(cfg.minGapMinutes ?? 5) * 60_000
+    if (gap > 0 && st.lastAt && now - st.lastAt < gap) {
+      return { ok: false, why: `距上次催还不到 ${Math.round(gap / 60_000)} 分钟` }
+    }
+    return { ok: true }
+  }
+
+  /**
+   * 扫一遍到点的约定，催一句。由 `_startNudgeTimer` 每 30 秒调一次。
+   *
+   * 催话**复用主动发言那条生成链**（`_speakUp`）—— 不另写一条，
+   * 好处是提示词拼装、`[SILENT]` 处理、分段发送、记账全都现成。
+   */
+  async _tickNudges(now = Date.now()) {
+    if (!this._nudges?.size) return
+    for (const [scope, rec] of [...this._nudges]) {
+      if (now < rec.dueAt) continue
+      this._nudges.delete(scope)
+      const allow = this._nudgeAllowed(now)
+      if (!allow.ok) {
+        this.log.info?.(`bridge：约定到点了，但这次不催（${allow.why}）`)
+        continue
+      }
+      const over = Math.max(1, Math.round((now - (rec.dueAt - rec.minutes * 60_000)) / 60_000))
+      /*
+       * 提示词：**要短**、要就事论事。她这个人格爱长篇，所以这里明说
+       * 「一句话就够」，并且给回 `[SILENT]` 的出口（不想催也是正常选择）。
+       */
+      const hint = '## 你跟他说好的时间到了\n'
+        + `你上一条说好「${rec.minutes} 分钟后」，现在已经过去 ${over} 分钟，他一句话都没说。\n`
+        + '〔提示：催一句。短、就事论事（「人呢」「五分钟到了啊」这种），别撒娇别长篇。\n'
+        + ' 真觉得没必要催，就回 [SILENT]。〕'
+      const st = (this._nudgeStat ??= { day: '', count: 0, lastAt: 0 })
+      st.count += 1
+      st.lastAt = now
+      this.log.info?.(`bridge：约定到点 —— 催一句（今天第 ${st.count} 次）`)
+      try {
+        await this._speakUp({ ...rec }, null, hint)
+      } catch (e) {
+        this.log.warn?.(`bridge：催话失败（忽略）— ${String(e?.message ?? e)}`)
+      }
+    }
+  }
+
+  _startNudgeTimer() {
+    if (this._nudgeTimer) return
+    this._nudgeTimer = setInterval(() => { void this._tickNudges() }, 30_000)
+    this._nudgeTimer.unref?.()
+  }
+
   async _send(msg, text, cover = null) {
     const reply = this.cfg.reply ?? {}
     const maxChars = reply.maxChars ?? 500
     /** @type {string[]} */
     const sentIds = []
+
+    /*
+     * ★ 先摘出「约定时间」标记 `[等:N]`（2026-11-03）。
+     *
+     * 放在**发送漏斗**这里，是因为每条出站路径都走它 ——
+     * 正常回复、主动发言（`_speakUp`）、B 站补发 ——
+     * 一处剥干净，就不会有哪条路漏出「[等:5]」这种字面量。
+     */
+    const wait = stripWaitMarkers(text)
+    text = wait.text
+    if (wait.waits.length) this._scheduleNudge(msg, wait.waits)
 
     // 先按表情标记切分，再做整体分句，最后接上配图。
     // 逻辑抽到 `buildOutgoingSegments()` 是为了能单测（见 tests/check-segments.mjs）。

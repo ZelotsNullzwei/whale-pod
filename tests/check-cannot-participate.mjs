@@ -34,6 +34,11 @@ const ok = (name, fn) => {
   try { fn(); console.log(`  ✅ ${name}`); pass++ }
   catch (e) { console.log(`  ❌ ${name}\n     ${e.message}`); fail++ }
 }
+/** 异步版（动态 import 只能用异步）。 */
+const okAsync = async (name, fn) => {
+  try { await fn(); console.log(`  ✅ ${name}`); pass++ }
+  catch (e) { console.log(`  ❌ ${name}\n     ${e.message}`); fail++ }
+}
 
 /** 按章节结构切出一整节（切到下一个 `## ` 为止，不用字数窗口）。 */
 function section(title) {
@@ -86,7 +91,24 @@ ok('留下用户原话当依据（这仓库的规矩：护栏要能追到现场�
  *
  * 这条测试是**按文本读文件**的，所以即使模块已经语法炸了它也能报出真正的原因。
  */
-ok('⚠️ 人格正文里不许出现代码围栏（反引号会截断模板字符串）', () => {
+await okAsync('⚠️⚠️ 人格模块必须能被 JS **解析**（反引号会把模板字符串截断）', async () => {
+  /*
+   * ## 为什么这条必须存在（我自己一天之内踩了两次）
+   * 人格正文（`buildSystemPrompt` 里 `parts.push(\`…\`)` 那一段）是**一个 JS 模板
+   * 字符串**。往里面写反引号 —— 不管是 ``` 还是单个 `…` —— 都会把字符串截断：
+   * `store.js` 变语法错误、**守护进程起不来**，`check-boot` / `check-persona-*` /
+   * `check-prompt-order` 连带挂掉 8 个测试，而报错只有一句
+   * 「missing ) after argument list」，完全看不出是文案的锅。
+   *
+   * 第一次我只加了"不许出现 ```" —— **不够**：第二次我用单个反引号写
+   * 「`[等:N]`」，照样炸。**真正的判据是"它能被解析"**，所以这里直接 import：
+   * 语法坏掉就抛，报错也就直指原因（而不是让 8 个不相干的测试泛红）。
+   */
+  const m = await import('../src/persona/store.js')
+  assert.ok(typeof m.DEFAULT_PERSONA === 'string' && m.DEFAULT_PERSONA.length > 500, '要能载入内置人格')
+})
+
+ok('⚠️ 人格正文里不许出现代码围栏（实测块请用缩进写）', () => {
   // 注释里的围栏（` * ```` 那种）是安全的 —— 只找**不在注释里**的围栏
   const bad = src.split('\n')
     .map((line, i) => ({ line, n: i + 1 }))
