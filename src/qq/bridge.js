@@ -980,6 +980,11 @@ export class QQBridge {
    */
   constructor(opts) {
     this.cfg = opts.cfg ?? {}
+    /*
+     * 随机源（可注入）。目前只有「等不及了插话」用（`_shouldCutIn`）——
+     * 测试要固定它才能断"插话 / 不插话"，不然只能靠碰运气。
+     */
+    this._rand = typeof opts.random === 'function' ? opts.random : Math.random
     this.onebot = opts.onebot
     this.gateway = opts.gateway ?? opts.llm
     this.decision = opts.decision
@@ -2135,6 +2140,43 @@ export class QQBridge {
   }
 
   /**
+   * 「**等不及了就插话**」的判定（2026-11-03 加）。
+   *
+   * ## 用户原话
+   * 「用户打字的时候她等不及了可以插话，但是频率不要太多」
+   * （前面还说：「太安静了到时间不会催促人，只会在那里安静的等待」）
+   *
+   * ## 语义
+   * 他一直在打字（`input_status` 还活着），但已经等够 `typingCutInAfterMs`
+   * —— 这时**掷一次骰子**，中了就按现有缓冲**先回一句**，不再等他停手。
+   *
+   * ## 「频率不要太多」怎么兜
+   * `typingCutInMinGapMs`：**同一会话**两次插话之间的最小间隔（默认 6 分钟）。
+   * 刚插过话就老实等 —— 否则每 700ms 一次判定、每次 25%，
+   * 会变成"他一打字她就插"，那就不是"等不及"，是抢话。
+   *
+   * ⚠️ 随机源走 `this._rand`（构造时可由 `opts.random` 注入）——
+   *    不然测试只能靠碰运气，写不出"必插 / 必不插"两边的用例。
+   *
+   * @param {string} key   会话+人（`_pending` 的键）
+   * @param {number} waited 已经等了多久（毫秒）
+   * @returns {boolean} true = 这次就插话（并把"插过话"的时间记下）
+   */
+  _shouldCutIn(key, waited) {
+    const after = Number(this.cfg.reply?.typingCutInAfterMs ?? 3000)
+    if (!(after > 0) || waited < after) return false
+    if (!this._cutInAt) this._cutInAt = new Map()
+    const now = Date.now()
+    const gap = Number(this.cfg.reply?.typingCutInMinGapMs ?? 360_000)
+    if (gap > 0 && now - (this._cutInAt.get(key) ?? 0) < gap) return false
+    const p = Number(this.cfg.reply?.typingCutInChance ?? 0.25)
+    if (!(p > 0)) return false
+    if (this._rand() >= p) return false
+    this._cutInAt.set(key, now)
+    return true
+  }
+
+  /**
    * 「对方连发几条短句 = 一个意思」的合并窗口（2026-10-30）。
    *
    * ## 用户的原话
@@ -2196,6 +2238,31 @@ export class QQBridge {
     }
     buf.msgs.push(msg)
     buf.lastSeq = seq
+    /*
+     * ★★ **他"发出这条消息"本身就说明那一次输入结束了**（2026-11-03）。
+     *
+     * ## 修的是什么（用户报「私聊我觉得她有点慢了」）
+     * `typingHoldMs` 是个 TTL（默认 4000ms）：协议端推一次 `input_status`
+     * 就记下时间戳，此后 4 秒内都算"他还在打字"。可他**发消息**的那一刻，
+     * 最后一次 input_status 往往才过去一两秒 —— 于是 TTL 还没到期，
+     * `_flushCoalesce` 判成"还在打字"，就一路**等到 TTL 自然过期**。
+     *
+     * 实测代价（2026-11-03 一整天）：
+     * ```
+     * 「还在打字 —— 继续等」 766 次；等待分布集中在 2~6 秒
+     * ```
+     * 而这 2~6 秒等的是一个**永远不会到来的"停止输入"事件** ——
+     * 他已经把消息发出来了，这次输入当然结束了。
+     *
+     * ## 为什么清掉是对的、不会破坏"连发合并"
+     * 他要是接着写下一句，协议端会**再推一次 input_status** ——
+     * 那才是"他正在写下一句"的**真信号**，那时再等也不迟。
+     * 所以这里清的只是"残留的旧 TTL"，不是合并窗口本身。
+     *
+     * ⚠️ 键必须和 `_onNotice` 存进去的那个一致（`String(userId)`，见 `_isTyping`）。
+     *    `who` 在上面已经规范化成字符串了。
+     */
+    if (this._typing?.size) this._typing.delete(who)
 
     const maxCount = Number(this.cfg.reply?.mergeMaxCount ?? 6)
     const maxWaitMs = Number(this.cfg.reply?.mergeMaxWaitMs ?? 4500)
@@ -2291,7 +2358,21 @@ export class QQBridge {
     if (holdMs > 0 && buf.who && this._isTyping(buf.who, holdMs)) {
       const waited = Date.now() - buf.firstAt
       const cap = Number(this.cfg.reply?.typingMaxWaitMs ?? 20000)
-      if (waited < cap) {
+      /*
+       * ★★ 「**等不及了就插话**」（2026-11-03 加）。
+       *
+       * 用户原话：「用户打字的时候她等不及了可以插话，但是频率不要太多」。
+       *
+       * 以前这里只有"继续等"一条路：他一直在打字，她就一路等到
+       * `typingMaxWaitMs`（默认 20 秒）为止 —— 用户看到的就是
+       * 「太安静了…只会在那里安静的等待」。
+       *
+       * 现在：等够 `typingCutInAfterMs` 之后**掷一次骰子**，中了就按现有缓冲
+       * 先回一句（不再等他停手）。「频率不要太多」由 `typingCutInMinGapMs`
+       * 兜底 —— 同一会话刚插过话就老实等，不许连着插（判定在 `_shouldCutIn`）。
+       */
+      const cutIn = waited < cap && this._shouldCutIn(key, waited)
+      if (waited < cap && !cutIn) {
         const t = this._pendingTimers.get(key)
         if (t) clearTimeout(t)
         this._pendingTimers.set(key, setTimeout(() => this._flushCoalesce(key), 700))
@@ -2300,7 +2381,15 @@ export class QQBridge {
         )
         return
       }
-      this.log.info?.(`bridge：${buf.who} 打字超过 ${Math.round(cap / 1000)}s，不再等`)
+      if (cutIn) {
+        const gapMin = Math.round(Number(this.cfg.reply?.typingCutInMinGapMs ?? 360_000) / 60_000)
+        this.log.info?.(
+          `bridge：${buf.who} 还在打字，但已等 ${Math.round(waited / 1000)}s —— **插话**`
+          + `（同一会话最快 ${gapMin} 分钟才允许再插一次）`,
+        )
+      } else {
+        this.log.info?.(`bridge：${buf.who} 打字超过 ${Math.round(cap / 1000)}s，不再等`)
+      }
     }
 
     // ⚠️ 到这里才**真的**把缓冲取走 —— 上面"继续等"的分支必须保留它，

@@ -29,10 +29,12 @@ async function okAsync(name, fn) {
 }
 
 /** 造一个只用来测合并的 bridge：_handle 被替成记录器，不走真实流程。 */
-function mkBridge(replyCfg = {}, handled = []) {
+function mkBridge(replyCfg = {}, handled = [], random) {
   const br = new QQBridge({
     cfg: { reply: replyCfg },
     onebot: {}, gateway: {}, decision: {}, memory: {}, persona: {}, log: {},
+    // 插话要掷骰子 —— 测试得能固定它（`_shouldCutIn` 走 `this._rand`）
+    ...(random ? { random } : {}),
   })
   br._handle = async (m) => { handled.push(m) }
   br._queues = new Map()
@@ -386,6 +388,93 @@ await okAsync('★ 实测：隔 5 秒来的第二条不会被"上限"立刻吃�
   await new Promise((r) => setTimeout(r, 80))
   assert.equal(handled.length, 0, '★ 5 秒时不该被"上限"吃掉，要按 8 秒窗口继续等')
   assert.equal(br._pending.size, 1, '还在缓冲里')
+})
+
+// ── ⑨ 「他发消息＝这次输入结束」+ 等不及就插话（2026-11-03）──────
+/*
+ * ## 用户报的两件事
+ * 「回消息平均都可以快一秒」「现在是私聊我觉得她有点慢了」
+ * 「太安静了到时间不会催促人，只会在那里安静的等待」
+ * 「或者说用户打字的时候她等不及了可以插话，但是频率不要太多」
+ *
+ * ## 实测代价（2026-11-03 一整天）
+ * ```
+ * 「还在打字 —— 继续等」 766 次；等待分布集中在 2~6 秒
+ * ```
+ * 全都花在**等一个永远不会到来的"停止输入"**上 —— 因为
+ * `typingHoldMs`（TTL 4s）在他把消息发出来之后仍然有效。
+ */
+const KEY222 = 'private:222::222'
+const inputStatus = () => ({ notice_type: 'notify', sub_type: 'input_status', user_id: '222' })
+/** 把缓冲的起始时间往回拨，模拟"已经等了 N 毫秒"。 */
+const backdate = (br, ms) => { br._pending.get(KEY222).firstAt = Date.now() - ms }
+
+await okAsync('★★ 他发了消息 → 这次 input_status 立即作废（不再死等 TTL）', async () => {
+  const handled = []
+  const br = mkBridge({ mergeWindowMs: 1500, typingHoldMs: 60000 }, handled)
+  await br._onNotice(inputStatus())
+  assert.equal(br._isTyping('222', 60000), true, '前提：标记记上了')
+  br._coalesceInbound(msg('在吗'), 1)      // 他把消息发出来了
+  assert.equal(br._isTyping('222', 60000), false, '发了消息就不该还算"在打字"')
+  await br._flushCoalesce(KEY222)
+  assert.equal(handled.length, 1, '不该再等到 TTL 过期 —— 这 2~4 秒是白等的')
+})
+
+await okAsync('★ 他紧接着打下一句（新的 input_status）→ 仍然等（连发合并靠它）', async () => {
+  const handled = []
+  const br = mkBridge({ mergeWindowMs: 1500, typingHoldMs: 60000 }, handled)
+  br._coalesceInbound(msg('第一句'), 1)
+  await br._onNotice(inputStatus())        // 他又开始打了
+  await br._flushCoalesce(KEY222)
+  assert.equal(handled.length, 0, '他真在打字就该等')
+  assert.equal(br._pending.get(KEY222).msgs.length, 1, '缓冲要留着，不然消息会被丢掉')
+})
+
+await okAsync('★★ 等够 typingCutInAfterMs + 掷中 → 插话（按现有缓冲先回）', async () => {
+  const handled = []
+  const br = mkBridge({ mergeWindowMs: 1500, typingHoldMs: 60000, typingCutInAfterMs: 1000, typingCutInChance: 1 }, handled, () => 0)
+  br._coalesceInbound(msg('他打了一半'), 1)
+  await br._onNotice(inputStatus())
+  backdate(br, 2000)                        // 已经等了 2 秒
+  await br._flushCoalesce(KEY222)
+  assert.equal(handled.length, 1, '等够了 + 掷中 → 插话')
+  assert.equal(handled[0].text, '他打了一半', '按现有缓冲先回，内容不能丢')
+})
+
+await okAsync('★★ 「频率不要太多」：刚插过话 → 同一会话不再插（继续等）', async () => {
+  const handled = []
+  const br = mkBridge(
+    { mergeWindowMs: 1500, typingHoldMs: 60000, typingCutInAfterMs: 1000, typingCutInChance: 1, typingCutInMinGapMs: 600_000 },
+    handled, () => 0,
+  )
+  br._coalesceInbound(msg('一'), 1)
+  await br._onNotice(inputStatus())
+  backdate(br, 2000)
+  await br._flushCoalesce(KEY222)
+  assert.equal(handled.length, 1, '第一次：插话')
+  br._coalesceInbound(msg('二'), 2)
+  await br._onNotice(inputStatus())
+  backdate(br, 2000)
+  await br._flushCoalesce(KEY222)
+  assert.equal(handled.length, 1, '第二次：间隔没到，不许再插（否则就成了抢话）')
+})
+
+await okAsync('typingCutInAfterMs = 0 → 关掉插话（回到"一直等到硬上限"）', async () => {
+  const handled = []
+  const br = mkBridge({ mergeWindowMs: 1500, typingHoldMs: 60000, typingCutInAfterMs: 0, typingCutInChance: 1 }, handled, () => 0)
+  br._coalesceInbound(msg('鱼'), 1)
+  await br._onNotice(inputStatus())
+  backdate(br, 5000)   // 注意：要**小于** typingMaxWaitMs(20000)，否则是"到硬上限"那条路先放行
+  await br._flushCoalesce(KEY222)
+  assert.equal(handled.length, 0, '关掉后不该插话')
+})
+
+ok('★ 配置层要给生产这三个新键（否则线上永远用默认值）', async () => {
+  const { DEFAULTS } = await import('../src/config/store.js')
+  const r = DEFAULTS.qq?.reply ?? {}
+  assert.ok(r.typingCutInAfterMs > 0, '要配上"等到什么时候不耐烦"')
+  assert.ok(r.typingCutInChance > 0 && r.typingCutInChance < 1, '概率要在 (0,1) 之间')
+  assert.ok(r.typingCutInMinGapMs > 0, '要配上"频率不要太多"的那道闸')
 })
 
 console.log(`\n通过 ${pass} / 失败 ${fail}`)
