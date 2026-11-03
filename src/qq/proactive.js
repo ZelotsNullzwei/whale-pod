@@ -304,6 +304,20 @@ export class ProactiveScheduler {
     this.onSpeak = opts.onSpeak ?? null
     this.scopes = opts.scopes ?? (() => [])
     this.idleMs = opts.idleMs ?? (() => 0)
+    /*
+     * ★ **按会话的静默**（2026-11-03 加）。
+     *
+     * 上面那个 `idleMs()` 是**候选会话里最长的静默** —— 于是
+     * 「群安静 3 小时、私聊 2 分钟前还在聊」也算"够安静"，
+     * 而 `_doSpeak` 接着**随机挑一个会话**开口，就可能挑中**刚聊过天的那个**。
+     *
+     * 实测现场（2026-11-03 22:32）：日志写「plan → 群里安静够久了」，
+     * 真正发出去的却是**私聊**（那个会话几分钟前才说过话）——
+     * 用户报「自动发言没生效」，这就是其中一个原因：群里等不到，私聊还被插话。
+     *
+     * 没注入就退回全局值 —— 老调用点/老测试的行为完全不变。
+     */
+    this.idleMsOf = opts.idleMsOf ?? (() => this.idleMs())
     /** 随机源（测试可注入，保证"随机冷却"可复现） */
     this._random = opts.random ?? Math.random
     this._timer = null
@@ -406,18 +420,24 @@ export class ProactiveScheduler {
 
     // ── 主动发言 ──────────────────────────────────────────────
     let wantSpeak = false
+    /** 真要发言时用它解释「是哪儿安静了」—— 按**实际**候选会话算，不写死"群里"。 */
+    let speakWhy = ''
     if (this.cfg.enabled === true && this.onSpeak) {
       // ★ 先结算「上一次主动发言有没有人接」
       this.settleAck(now)
-      const idleNeed = Math.max(1, Number(this.cfg.idleMinutes ?? 45)) * 60_000
       /*
        * ⚠️ 额度和冷却都按**类别**算（群/私聊各 3 次、各 3 小时冷却）。
        *    `usableScopes` 已同时过滤「还有额度」和「不在冷却」，
        *    所以这里不再单独判全局 cooled —— 那正是
        *    「私聊说一次、群里哑三小时」的元凶。
        */
-      const usable = this.usableScopes(t)
-      const quietEnough = this.idleMs() >= idleNeed
+      /*
+       * ⚠️ 2026-11-03：这里从 `usableScopes` 换成 `speakableScopes` ——
+       *    静默必须**按会话**算。原来门槛用全局「最长静默」（群静 3 小时就算过），
+       *    而 `_doSpeak` 随机挑会话，于是会挑中**刚聊过天**的那个去开口；
+       *    群的静默反而不保证轮得到它。详情见 `speakableScopes` 的注释。
+       */
+      const speakable = this.speakableScopes(t)
       /*
        * ★ 「说了没人接，就别再说了」（2026-10-31 加）。
        *
@@ -428,12 +448,25 @@ export class ProactiveScheduler {
        * 只要有人说话了（idleMs 归零过），streak 会自动清掉。
        */
       const muted = this.state.ignoredStreakGroup >= 2
-      if (quietEnough && usable.length > 0 && !muted) wantSpeak = true
+      if (speakable.length > 0 && !muted) {
+        wantSpeak = true
+        /*
+         * 标签要**老实说**是哪个会话安静了。
+         *
+         * 原来这里写死「群里安静够久了」，而真正发到哪是 `_doSpeak` 随机挑的 ——
+         * 2026-11-03 22:32 的日志就是这么骗人的：写着"群里"，发给了私聊。
+         * 看日志的人（包括我）会据此以为群那条链路坏了。
+         */
+        const kinds = new Set(speakable.map((s) => this.kindOf(s)))
+        speakWhy = kinds.size > 1
+          ? '会话都安静够久了'
+          : (kinds.has('group') ? '群里安静够久了' : '私聊安静够久了')
+      }
     }
 
     // 讨钱优先：它是「有实际用处的」；主动发言是锦上添花，让路。
     if (wantBeg) return { beg: true, speak: false, reason: '余额检查到期' }
-    if (wantSpeak) return { beg: false, speak: true, reason: '群里安静够久了' }
+    if (wantSpeak) return { beg: false, speak: true, reason: speakWhy || '安静够久了' }
 
     /*
      * 都不满足时，把每一项的实际值打进 reason ——
@@ -582,6 +615,39 @@ export class ProactiveScheduler {
     return this.scopes().filter((s) => this.speakLeft(this.kindOf(s)) > 0)
   }
 
+  /** 单个会话的静默，写成给日志看的人话（`∞` = 真的不知道多久没说话）。 */
+  idleTextOf(scope) {
+    const i = this.idleMsOf(scope)
+    return i === Infinity ? '∞' : `${Math.round(i / 60_000)}分`
+  }
+
+  /** 这个会话**自己**安静够久了吗（拿它自己的静默比门槛）。 */
+  quietScope(scope, idleNeed) {
+    const idle = this.idleMsOf(scope)
+    return idle === Infinity || idle >= idleNeed
+  }
+
+  /**
+   * 真的能开口的会话：**额度 + 这一 tick 掷中 + 这个会话自己安静够久**。
+   *
+   * ## 为什么静默必须按会话算（2026-11-03）
+   * 事故：22:32 日志写「plan → 群里安静够久了」，实际发到了**私聊**。
+   * 因为门槛用的是全局「最长静默」（群静了 3 小时就算过），而选场是**随机**抽的。
+   * 两个口径不一致，两个方向都出问题：
+   *   · 抽中**刚聊过天的会话** → 打断人家正说着的话（就是用户说的"乱接"）
+   *   · 群明明最安静，却被抽到私聊 → 群里永远等不到她开口
+   *   用户报「自动发言感觉没生效」，这就是其中一半。
+   *
+   * 所以静默也按会话各算各的：**不安静的会话不进候选**。
+   *
+   * @param {number} [t]
+   * @returns {Array<string>}
+   */
+  speakableScopes(t = Date.now()) {
+    const idleNeed = Math.max(1, Number(this.cfg.idleMinutes ?? 45)) * 60_000
+    return this.usableScopes(t).filter((s) => this.quietScope(s, idleNeed))
+  }
+
   /**
    * 单独判断「现在能不能发言」。
    *
@@ -595,38 +661,38 @@ export class ProactiveScheduler {
     if (this.cfg.enabled !== true || !this.onSpeak) return { ok: false, reason: '发言未开启' }
     if (!inActiveHours(this.cfg.hours, now)) return { ok: false, reason: '不在时段' }
     const idleNeed = Math.max(1, Number(this.cfg.idleMinutes ?? 45)) * 60_000
-    const usable = this.usableScopes(t)
-    if (usable.length === 0) {
-      /*
-       * 分开报数 —— 只说「今日已说满」会让人以为两类都用完了。
-       * 同时把「额度」和「冷却」两件事都说清楚，排查才不用猜。
-       */
-      const g = this.speakLeft('group')
-      const p2 = this.speakLeft('private')
-      /*
-       * ⚠️ 分开报两件事：**额度**（说满了）和**这一 tick 掷没掷中**。
-       *
-       * 以前这里印「冷却中」—— 现在是概率制，**掷不中是绝大多数情况**
-       * （默认 0.004，即 250 tick 里约 249 次不中）。
-       * 印「冷却中」会让人以为"还要等某个时间"，其实下一秒就有机会。
-       * 所以印「等骰子」，并把概率带出来，免得看日志的人以为坏了。
-       */
-      const gTxt = g > 0 ? `等骰子(${Number(this.cfg.speakChance ?? 0.004)})` : '已满'
-      const pTxt = p2 > 0 ? `等骰子(${Number(this.cfg.speakChance ?? 0.004)})` : '已满'
-      return { ok: false, reason: `没有可用会话（群：剩 ${g} ${gTxt} / 私聊：剩 ${p2} ${pTxt}）` }
-    }
-    const idle = this.idleMs()
-    const idleMin = idle === Infinity ? '∞' : Math.round(idle / 60_000)
-    if (!(idle >= idleNeed)) {
-      // 「还不够安静」必须带数字 —— 不说数值等于没说，排查只能靠猜。
-      return {
-        ok: false,
-        reason: `还不够安静（静默 ${idleMin} 分钟 / 需要 ${Math.round(idleNeed / 60_000)}）`,
-      }
-    }
+    /*
+     * ★ **三道闸门无条件分开报**（2026-11-03 修）。
+     *
+     * ## 原来为什么看不出来
+     * 老写法是"先判额度+骰子，不中就 return" —— 于是日志里 684 行全是
+     * 同一句「没有可用会话（群：剩 3 等骰子(0.004) / 私聊：剩 3 等骰子(0.004)）」，
+     * **静默状态根本不打印**（静默那一判在它后面，永远走不到）。
+     *
+     * 用户报「自动发言感觉没生效」时，光看日志分不清撞的是哪一道：
+     *   ① 今天说满了（没额度）  ② 这一 tick 没掷中（骰子）  ③ 这个会话还不够安静
+     * 我这次实际排查只能去翻 `proactive.json` + 反推概率 —— 这就是要修的病。
+     * （和这里原来那条 `⚠️ 分开报数 / 不说数值等于没说` 是同一条原则，只是当时没做全。）
+     */
+    const p = Number(this.cfg.speakChance ?? 0.004)
+    const g = this.speakLeft('group')
+    const p2 = this.speakLeft('private')
+    const gTxt = g > 0 ? `剩 ${g} 等骰子(${p})` : '剩 0 已满'
+    const pTxt = p2 > 0 ? `剩 ${p2} 等骰子(${p})` : '剩 0 已满'
+    const all = this.scopes()
+    const hit = this.usableScopes(t)                  // 额度 + 骰子
+    const idleTxt = all.length === 0
+      ? '没有候选会话'
+      : all.map((s) => `${this.kindOf(s) === 'group' ? '群' : '私聊'}=${this.idleTextOf(s)}`).join(' ')
+    const detail = `群：${gTxt} / 私聊：${pTxt}`
+      + `；这一 tick ${hit.length ? `掷中了 ${hit.length} 个` : '没掷中'}`
+      + `；静默 ${idleTxt}（需要 ${Math.round(idleNeed / 60_000)} 分）`
+
+    const speakable = this.speakableScopes(t)         // 再加"它自己安静够久"
+    if (speakable.length === 0) return { ok: false, reason: `发言没到时机（${detail}）` }
     return {
       ok: true,
-      reason: `可以发言（静默 ${idleMin} 分钟，${usable.length} 个会话还有额度）`,
+      reason: `可以发言（${speakable.length} 个会话能开口；${detail}）`,
     }
   }
 
@@ -660,12 +726,17 @@ export class ProactiveScheduler {
   async _doSpeak(now) {
     const t = now.getTime()
     /*
-     * 只从**还有额度**的会话里挑（群/私聊各算各的）。
+     * 只从**这个会话自己安静够久**的候选里挑（2026-11-03 改）。
      *
-     * 随机挑是为了不让第一个群觉得它在盯人；但随机范围要先按额度过滤，
-     * 否则会挑到「这一类今天已经说满」的会话，发出去就超了。
+     * ⚠️ 原来用的是 `usableScopes`（只过滤额度 + 骰子），于是可能挑中
+     * **刚刚还在聊天**的会话去开口 —— 因为门槛判的是全局「最长静默」，
+     * 两处口径不一致。用户报的"乱接"和"群里等不到她开口"都出在这。
+     * 详见 `speakableScopes` 的注释。
+     *
+     * 注意：`speakableScopes` 内部已经把**额度**过滤过了
+     * （群/私聊各算各的，见 `speakLeft`），所以不会超发。
      */
-    const list = this.usableScopes(t)
+    const list = this.speakableScopes(t)
     if (list.length === 0) return
     const scope = list[Math.floor(Math.random() * list.length)]
     const kind = this.kindOf(scope)

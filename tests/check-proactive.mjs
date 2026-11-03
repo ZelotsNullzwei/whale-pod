@@ -306,6 +306,18 @@ function mkSched(kinds, cfgOver = {}) {
     onSpeak: async () => true,
     now: () => new Date('2026-10-27T10:00:00+08:00').getTime(),
     log: {},
+    /*
+     * ⚠️ **必须给静默**（2026-11-03 加）。
+     *
+     * 这些用例直接调 `_doSpeak()`，绕过了 `plan()` 那道闸门；而
+     * 2026-11-03 起 `_doSpeak` **自己**也要按会话判静默
+     * （见 proactive.js 的 `speakableScopes`）——不给就恒为"不够安静"，
+     * 于是「私聊发言记进 speakCountPrivate」那条会假失败。
+     *
+     * 给足静默，让这些用例测的仍是它们原本要测的东西（额度分类 / 记账）。
+     */
+    idleMs: () => 999 * 60_000,
+    idleMsOf: () => 999 * 60_000,
   })
   return { state, sched }
 }
@@ -653,6 +665,76 @@ ok('⚠️ 源码锁：冷却器真的拆了，别又长回来', () => {
   assert.ok(atRoll > 0, '要有 maySpeakNow')
   const rollSeg = code.slice(atRoll, atRoll + 900)
   assert.match(rollSeg, /this\._random \?\? Math\.random/, '骰子要走 this._random')
+})
+
+// ── 静默必须**按会话**算（2026-11-03）──────────────────────────
+/*
+ * ## 事故现场
+ * ```
+ * 22:32:32 proactive：plan → 群里安静够久了
+ * 22:32:37 proactive：[我主动] private:2129024700（私聊，2 条）
+ * ```
+ * 日志说"群里"，实际发到**私聊** —— 而那个私聊几分钟前才说过话。
+ * 根因：门槛用全局「**最长**静默」（群静 3 小时就算过），选场却**随机**抽。
+ * 两个方向都出问题：可能插进刚聊过天的会话（"乱接"），
+ * 也可能让明明最安静的群永远等不到她开口（用户报的"自动发言没生效"）。
+ *
+ * ## 另一件事：日志把三道闸门糊成一句
+ * 老 `planSpeak` 先判「额度 + 骰子」，不中就 return —— 静默状态**根本不打印**。
+ * 一整天的日志全是同一句「没有可用会话（剩 3 等骰子(0.004)）」，
+ * 排查只能靠翻 proactive.json 反推。下面也把它锁住。
+ */
+const mkQuietSched = (groupIdleMin, privIdleMin, cfgOver = {}) => {
+  const state = new ProactiveState({ fs: { writeFileSync() {}, renameSync() {} }, file: '/tmp/none.json' })
+  const sent = []
+  const sched = new ProactiveScheduler({
+    cfg: { enabled: true, maxPerDay: 3, idleMinutes: 45, speakChance: 1, hours: [0, 24], ...cfgOver },
+    begCfg: { enabled: false },
+    state,
+    scopes: () => ['group:20001', 'private:10001'],
+    // 全局值 = 两者取大（就是老代码的口径），按会话的值分开给
+    idleMs: () => Math.max(groupIdleMin, privIdleMin) * 60_000,
+    idleMsOf: (scope) => (String(scope).startsWith('group:') ? groupIdleMin : privIdleMin) * 60_000,
+    onSpeak: async (scope) => { sent.push(scope); return true },
+    now: () => at(10).getTime(),
+    log: {},
+  })
+  return { state, sched, sent }
+}
+
+await ok('★★ 不安静的会话不进候选：群静 3 小时、私聊才 2 分钟 → 只可能是群', () => {
+  const { sched } = mkQuietSched(180, 2)
+  assert.deepEqual(sched.speakableScopes(at(10).getTime()), ['group:20001'],
+    '刚聊过天的私聊不该进候选')
+})
+
+await ok('★★ 反过来：只有私聊安静 → 只可能是私聊', () => {
+  const { sched } = mkQuietSched(2, 180)
+  assert.deepEqual(sched.speakableScopes(at(10).getTime()), ['private:10001'])
+})
+
+await ok('★★ _doSpeak 只能发到"自己安静够久"的会话（旧代码会随机挑中刚聊过的那个）', async () => {
+  const { sched, sent } = mkQuietSched(180, 2)
+  for (let i = 0; i < 20; i++) await sched._doSpeak(at(10))   // 多掷几次，把随机性覆盖掉
+  assert.ok(sent.length > 0, '该发出去了')
+  assert.ok(sent.every((s) => s === 'group:20001'),
+    `一次都不许发进"2 分钟前还在聊"的私聊，实际：${sent.join(',')}`)
+})
+
+await ok('★ plan 的标签按**实际**安静的会话说，不再写死"群里"', () => {
+  assert.match(mkQuietSched(180, 2).sched.plan(at(10)).reason, /群里安静够久了/)
+  assert.match(mkQuietSched(2, 180).sched.plan(at(10)).reason, /私聊安静够久了/)
+})
+
+await ok('★★ planSpeak 要把三道闸门**都**报出来（额度 / 骰子 / 静默）', () => {
+  const { sched } = mkQuietSched(2, 2)          // 掷中（speakChance 1），但两边都不够安静
+  const r = sched.planSpeak(at(10))
+  assert.equal(r.ok, false)
+  assert.ok(/群：剩 3/.test(r.reason), `要报群额度：${r.reason}`)
+  assert.ok(/私聊：剩 3/.test(r.reason), `要报私聊额度：${r.reason}`)
+  assert.ok(/掷中|没掷中/.test(r.reason), `要报这一 tick 掷没掷中：${r.reason}`)
+  assert.ok(/静默/.test(r.reason), `要报静默 —— 老代码这里不打印，排查只能靠猜：${r.reason}`)
+  assert.ok(/群=2分/.test(r.reason), `要带出各会话的静默分钟数：${r.reason}`)
 })
 
 console.log(`\n通过 ${pass} / 失败 ${fail}`)

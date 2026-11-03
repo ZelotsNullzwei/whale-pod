@@ -1276,6 +1276,23 @@ export class QQBridge {
         }
         return max
       },
+      /*
+       * ★ **单个会话的静默**（2026-11-03 加）。
+       *
+       * 上面那个 `idleMs` 取的是"候选里最长的静默"，被当成门槛用；
+       * 而真正发到哪是随机的 —— 于是会出现「群安静 3 小时，她开口时
+       * 却进了 2 分钟前还在聊的私聊」。实测 22:32 那次就是这样。
+       *
+       * 口径和上面**完全一致**：取不到真实时间戳 → 返回 0 = "不算安静"
+       * （重启后短期记忆为空时，绝不能当成"安静了无限久"，
+       *  那条注释就在上面，别在这儿又踩一遍）。
+       */
+      idleMsOf: (scope) => {
+        try {
+          const since = memoryOf(scope)?.sinceLastMessage?.()
+          return Number.isFinite(since) ? since : 0
+        } catch { return 0 }
+      },
     })
 
     this._proactiveScopes = () => this._proactive.scopes()
