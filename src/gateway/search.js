@@ -79,7 +79,34 @@ const SUMMARIZE_MODEL = process.env.DEEPSEEK_SUMMARIZE_MODEL || 'deepseek-flash'
  * @returns {{need:boolean, why:string, query:string}}
  */
 export function needsFreshInfo(text) {
-  const t = String(text ?? '').trim()
+  const raw = String(text ?? '').trim()
+  if (!raw) return { need: false, why: '', query: '' }
+
+  /*
+   * ★★★ 2026-11-03：**先剥"段标记"、并记住"这条带了图"**（用户现场抓到的）。
+   *
+   * 实测（日志原文，用户原话：「那个真好吃吗去联网搜索啦」）：
+   * ```
+   *   bridge：private:2129024700「[表情包] 真好吃吗」 图×1
+   *   bridge：需要联网（在问某个东西好不好）→ 查「真好吃吗」   ✗ 搜了
+   *   bridge：搜索用量已记录（…搜了 1 次）                    ✗ 花了钱
+   * ```
+   * **三重代价**：慢 1.85 秒 ✗ / 一天 12 次的预算占掉 1 次 ✗ / 搜回来 148 字毫无用处 ✗
+   * —— 那是**接表情包的梗** ✓，不是求知 ✗。
+   *
+   * **为什么没被挡住**：`bareAsk` 是 `^…$` **锚定整句**的 —— 而收到的文本前面挂着
+   * 段标记 `[表情包]`，锚定直接失效 ✗；而且它是「**真**好吃吗」，名单里也没这个形态 ✗。
+   * 于是 `shortAsk` 那层放行 → 掉到"在问某个东西好不好" ✗✗
+   *
+   * ⚠️ 这个坑**注释里早写着**（见下面 `bareAsk` 那段："`bareAsk` 盖不着，
+   *    于是被判成『在问某个东西好不好』搜了一次"）—— 今天只是**换个触发词**又撞一次。
+   */
+  const SEG = /\[(?:表情包|图片|视频|语音|文件|动画表情|表情[:：]\d*)\]/
+  /** 这条消息带了图/表情包 —— 见下面 `notLookup` 里怎么用它 ✓ */
+  const hadSeg = SEG.test(raw)
+
+  // ⚠️ 判据一律跑在**剥掉段标记之后**的文本上（锚定正则才有效 ✓）
+  const t = raw.replace(new RegExp(SEG.source, 'g'), ' ').replace(/\s+/g, ' ').trim()
   if (!t) return { need: false, why: '', query: '' }
 
   // ① 明确要求联网 / 搜索
@@ -262,7 +289,7 @@ export function needsFreshInfo(text) {
    * 只认**整句就是「形容词 + 吗」**（`^…$`），所以「这图好看吗」这种
    * **带主语的仍然会走 `shortAsk` 去搜** —— 不误杀。
    */
-  const bareAsk = /^(好看|好玩|好吃|好喝|好听|好香|好棒|好厉害|舒服|厉害|牛|强|弱|行|可以|能|会|是|有|在|懂|知道|正常|真的|假的|看得见|看得到|能看到|能看见|看得清|能看清|看不见|看不到|看不见|听得见|听得到|能听到|听得清|闻得到)(吗|么|不|吧)[？?]?$/
+  const bareAsk = /^(?:真|挺|好|蛮|超|太|很|特别|贼|怪)?(好看|好玩|好吃|好喝|好听|好香|好棒|好厉害|舒服|厉害|牛|强|弱|行|可以|能|会|是|有|在|懂|知道|正常|真的|假的|看得见|看得到|能看到|能看见|看得清|能看清|看不见|看不到|看不见|听得见|听得到|能听到|听得清|闻得到)(吗|么|不|吧)[？?]?$/
 
   /**
    * 「**这根本不是在查资料**」的总判据 —— 两条路都要用它挡（2026-11-01）。
@@ -270,7 +297,8 @@ export function needsFreshInfo(text) {
    * ⚠️ 原来只有 `shortAsk` 那条路挡这些，`fresh && question` 那条**盖不着** ——
    * 所以「今天做饭了吗」这类只要撞上时效词就会漏出去搜。
    */
-  const notLookup = () => chitchat.test(t) || retort.test(t) || stateAsk.test(t)
+  const notLookup = () => hadSeg   // ★ 带了图/表情包 → 社交行为，不是在查资料（2026-11-03 加）
+    || chitchat.test(t) || retort.test(t) || stateAsk.test(t)
     || complaint.test(t) || metaAsk.test(t) || bareAsk.test(t) || rhetorical.test(t)
 
   if (shortAsk && !notLookup()) {

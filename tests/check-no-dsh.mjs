@@ -80,7 +80,14 @@ const env = {
   HTTP_PROXY: '', HTTPS_PROXY: '',
   DSH_APP_DIR: path.join(HOME, 'no-such-dsh'),
   DSH_HOME: path.join(HOME, 'no-such-dsh-home'),
-  GUARDIAN_HOME: HOME,
+  /*
+   * ⚠️ 这行以前写的是 `GUARDIAN_HOME`（改名前的老名字）——
+   *    而 `src/config/store.js` / `credentials.js` 读的是 **`WHALE_POD_HOME`**，
+   *    所以那行**从来没生效过**（设了个没人读的变量）。
+   *    照理说 home 是由下面的 `--home` 参数给的，这行只是**双保险**；
+   *    但既然是双保险，就得连到**真的那个名字**上，否则出事时它救不了。
+   */
+  WHALE_POD_HOME: HOME,
   USERPROFILE: process.env.USERPROFILE,
 }
 delete env.HTTP_PROXY

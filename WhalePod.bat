@@ -13,9 +13,18 @@ setlocal EnableExtensions
 chcp 65001 >nul 2>nul
 
 set "HERE=%~dp0"
-set "GUARDIAN_HOME=%HERE%"
+REM ⚠️ This used to be named GUARDIAN_HOME (the project's old name).
+REM    NOTHING reads GUARDIAN_HOME -- src/config/store.js and
+REM    src/config/credentials.js both read WHALE_POD_HOME, with the
+REM    default being %USERPROFILE%\.whale-pod.
+REM    So the old line silently did nothing: launching via this .bat
+REM    kept the data dir at the default instead of %HERE%.
+REM    Fixed 2026-11-03.
+set "WHALE_POD_HOME=%HERE%"
 
-REM ── 找运行时：优先系统 node，其次 DSH 自带的 Electron ──────
+REM ── Find a runtime: system node first, then DSH's bundled Electron ──
+REM DSH renamed Desktop -> "DSH Next" (new install dir + "DSH NEXT.exe").
+REM Old paths are kept as fallbacks so older installs still work.
 set "NODE_EXE="
 set "DSH_EXE="
 
@@ -23,10 +32,19 @@ where node >nul 2>nul
 if %ERRORLEVEL%==0 for /f "delims=" %%i in ('where node') do if not defined NODE_EXE set "NODE_EXE=%%i"
 
 if not defined NODE_EXE (
+  if exist "D:\DSH Next\DSH NEXT.exe" set "DSH_EXE=D:\DSH Next\DSH NEXT.exe"
+)
+if not defined DSH_EXE if not defined NODE_EXE (
   if exist "D:\DSH Desktop\DSH Desktop.exe" set "DSH_EXE=D:\DSH Desktop\DSH Desktop.exe"
 )
 if not defined DSH_EXE if not defined NODE_EXE (
+  if exist "C:\Program Files\DSH Next\DSH NEXT.exe" set "DSH_EXE=C:\Program Files\DSH Next\DSH NEXT.exe"
+)
+if not defined DSH_EXE if not defined NODE_EXE (
   if exist "C:\Program Files\DSH Desktop\DSH Desktop.exe" set "DSH_EXE=C:\Program Files\DSH Desktop\DSH Desktop.exe"
+)
+if not defined DSH_EXE if not defined NODE_EXE (
+  if exist "%LOCALAPPDATA%\Programs\DSH Next\DSH NEXT.exe" set "DSH_EXE=%LOCALAPPDATA%\Programs\DSH Next\DSH NEXT.exe"
 )
 if not defined DSH_EXE if not defined NODE_EXE (
   if exist "%LOCALAPPDATA%\Programs\DSH Desktop\DSH Desktop.exe" set "DSH_EXE=%LOCALAPPDATA%\Programs\DSH Desktop\DSH Desktop.exe"
@@ -45,12 +63,15 @@ if not defined NODE_EXE if not defined DSH_EXE (
   exit /b 1
 )
 
-REM ── 环境变量 ────────────────────────────────────────────────
+REM ── Environment variables ─────────────────────────────────────
 set "NO_PROXY=127.0.0.1,localhost"
-REM 若本机有本地代理，可通过 GUARDIAN_PROXY 传入（默认不设，避免误用）
-if defined GUARDIAN_PROXY (
-  set "HTTP_PROXY=%GUARDIAN_PROXY%"
-  set "HTTPS_PROXY=%GUARDIAN_PROXY%"
+REM Optional local proxy. Renamed GUARDIAN_PROXY -> WHALE_POD_PROXY
+REM (2026-11-03, project rename). The old name is still honored so
+REM existing shortcuts keep working.
+if not defined WHALE_POD_PROXY if defined GUARDIAN_PROXY set "WHALE_POD_PROXY=%GUARDIAN_PROXY%"
+if defined WHALE_POD_PROXY (
+  set "HTTP_PROXY=%WHALE_POD_PROXY%"
+  set "HTTPS_PROXY=%WHALE_POD_PROXY%"
 )
 
 REM ── 启动 ────────────────────────────────────────────────────

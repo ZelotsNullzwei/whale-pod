@@ -22,7 +22,8 @@ import { fileURLToPath } from 'node:url'
 import { ConfigStore } from './config/store.js'
 import { Credentials } from './config/credentials.js'
 import { Logger } from './logger.js'
-import { findDshAppDir } from './gateway/dsh-appdir.js'
+import { findDshResources } from './gateway/dsh-appdir.js'
+import { resolveImportableDshDir } from './gateway/dsh-modules.js'
 import { createGatewayServer, mintKey } from './gateway/server.js'
 import { UsageTracker } from './gateway/usage.js'
 import { ActivityTracker } from './gateway/activity.js'
@@ -34,6 +35,8 @@ import { LongTermStore } from './memory/long.js'
 import { DayPlanStore } from './memory/dayPlan.js'
 import { HotTopicStore } from './qq/hot-topics.js'
 import { SearchQuota } from './gateway/search.js'
+// 峰谷节奏：峰期收紧搜索（"峰谷"按 DeepSeek 官网口径算，见该文件头）
+import { SearchPacing } from './gateway/pacing.js'
 import { PeopleStore } from './memory/person.js'
 import { StickerTagStore } from './qq/sticker-tags.js'
 import { PersonaStore } from './persona/store.js'
@@ -192,9 +195,19 @@ export async function main(argv = process.argv.slice(2)) {
     level: cfg.log?.level ?? 'info',
     ringSize: cfg.log?.ringSize ?? 2000,
     file: path.join(store.home, 'whale-pod.log'),
+    // 不给就用 Logger 的默认（5MB / 保留 5 份）。0 = 关掉轮转。
+    maxBytes: cfg.log?.maxBytes,
+    keep: cfg.log?.keep,
   })
   const log = logger.api
-  log.info(`WhalePod 启动（数据目录 ${store.home}）`)
+  /*
+   * ⚠️ 启动行带上 **pid**。
+   *
+   * 那条日志**不轮转**（今天之前）也不按时间排 —— 同一条 `T16:11:42`
+   * 可能是半年前的记录，我为此**误报过一次"有第二个机器人在抢连接"**。
+   * 带上 pid 之后，"这几行是不是同一次运行写的"一眼可辨，不用再靠猜时间戳。
+   */
+  log.info(`WhalePod 启动（pid ${process.pid}，数据目录 ${store.home}）`)
 
   const shutdown = []
   const state = {
@@ -230,14 +243,20 @@ export async function main(argv = process.argv.slice(2)) {
     //       手填 gateway.channels / DSH 设置自动发现 / 内置官方凭证
     //
     // 一个渠道都没有时才报错（那时确实没法回话）。
-    const appDir = findDshAppDir(args.dshApp)
     /*
-     * 记到 state —— Web UI 用它显示"到底有没有 DSH"。
+     * ★ 2026-11-02：改成找 **resources**（两种布局都认）。
      *
-     * ⚠️ `dshPack` / `profile` 两个字段**不再写了**（渠道包已拆）。
-     *    留着只是为兼容老 state 文件；界面那边也一并清掉了。
+     * 旧版只找 `<安装>/resources/app/`（普通目录）。DSH 升级后变成了
+     * `<安装>/resources/app.asar`（一个 190MB 的包）→ 返回 null →
+     * **图片支持整段被跳过、一个字都不打**。
+     *
+     * 现在 `findDshResources()` 同时给出 `appDir`（旧布局）和 `asar`（新布局）。
      */
-    state.dshAppDir = appDir ?? null
+    const dshRes = findDshResources(args.dshApp)
+    const appDir = dshRes.appDir
+    if (dshRes.asar) log.info(`DSH：检测到 asar 布局（${dshRes.asar}）—— 需要 import 的包会按需提取`)
+    state.dshAppDir = appDir ?? dshRes.resources ?? null
+    state.dshAsar = dshRes.asar ?? null
     const selfChannels = (cfg.gateway?.channels ?? []).filter((c) => c && c.enabled !== false && c.baseUrl)
 
     /*
@@ -419,10 +438,36 @@ export async function main(argv = process.argv.slice(2)) {
       //
       //    实际上 attachmentStore 只依赖 appDir + dshHome，
       //    跟 channel-pack 毫无关系。所以这里独立挂一份。
-      if (appDir && typeof llm.makeImageBlock !== 'function') {
+      /*
+       * ★ **拿到一个能 import 的目录**（2026-11-02）。
+       *
+       * 旧布局（`resources/app/` 普通目录）→ 直接用。
+       * 新布局（`app.asar`）→ 按依赖闭包**提取**到 `<home>/dsh-modules/`
+       * 再用（asar 对普通 Node 就是个普通文件，读不了；详见 gateway/asar.js）。
+       *
+       * ⚠️ 闭包是**算出来的**（从三个种子包 BFS），不是写死的清单 ——
+       *    DSH 升级后依赖变了会自动跟上。实测只有 10 个包 / 556 KB。
+       */
+      const importable = resolveImportableDshDir({
+        dshAppDir: appDir,
+        dshAsar: dshRes.asar,
+        cacheRoot: store.home,
+        log: (lv, msg) => log[lv]?.(msg),
+      })
+      if (!importable.dir) {
+        log.warn(
+          'LLM：没找到可 import 的 DSH 模块目录 → **图片会降级成文字**（她看不见图）。\n'
+          + '     找的是 <安装>/resources/app/node_modules/@deepseek-ai/cordis（旧布局）\n'
+          + '     或 <安装>/resources/app.asar（新布局，会按需提取）。\n'
+          + '     都没有的话可以用 --dsh-app <目录> 显式指定。',
+        )
+      }
+      if (importable.dir && typeof llm.makeImageBlock !== 'function') {
         try {
           const att = await createAttachmentSupport({
-            appDir,
+            // ⚠️ 用**能 import 的那个目录**（asar 布局下是提取出来的，
+            //    不是原始的 asar 路径 —— 那个读不了）
+            appDir: importable.dir,
             ctx: { },
             dshHome: process.env.DSH_HOME ?? path.join(process.env.USERPROFILE ?? '', '.dsh'),
             log: (lv, msg) => log[lv]?.(msg),
@@ -436,13 +481,28 @@ export async function main(argv = process.argv.slice(2)) {
           log.warn?.(`LLM：挂载 attachment 失败（图片会降级成文字）：${String(e?.message ?? e)}`)
         }
       }
-      // ⚠️ 无 DSH 时，配置里那条默认付费兜底（deepseek-official）是个幽灵：
-      //    它排在自备渠道后面却被当成有效候选，失败信息还会盖住真正的原因。
-      //    这里在启动时把它关掉，只用用户显式配置的渠道。
+      /*
+       * ⚠️ 无 DSH 时，配置里那条默认付费兜底（deepseek-official）**曾经**是幽灵：
+       *    它排在自备渠道后面却被当成有效候选，失败信息还会盖住真正的原因。
+       *
+       * ## 2026-11-02 改判据：看**凭据**，不看 appDir
+       * 原来的判据是"`appDir` 为空 ⇒ 官方那条不可用"。但那是因为当时
+       * `deepseek-official` 只由 DSH 的渠道包挂载。
+       * 现在它由 **凭据里的 `DEEPSEEK_API_KEY`** 直接挂成一条普通渠道
+       * （实测 `https://api.deepseek.com/v1` 返回 200），跟 appDir 无关 ——
+       * **继续用 appDir 判会把它误判成幽灵、白关一个能用的兜底。**
+       *
+       * ⚠️ 而且这段会**改写用户的配置**（`store.update`）——
+       *    实测 `fallback.enabled` 老是自己变回 false 就是这个干的。
+       *    现在只在**真的没有 key** 时才关，而且日志讲清楚原因。
+       */
       if (cfg.gateway?.fallback?.enabled) {
-        store.update({ gateway: { fallback: { ...cfg.gateway.fallback, enabled: false } } })
-        log.warn('已自动禁用付费兜底（deepseek-official 需要 DSH 凭据，当前不可用）')
-        cfg.gateway.fallback.enabled = false
+        const hasOfficialKey = Boolean(resolveChannelKey({ apiKeyEnv: 'DEEPSEEK_API_KEY' }, creds))
+        if (!hasOfficialKey) {
+          store.update({ gateway: { fallback: { ...cfg.gateway.fallback, enabled: false } } })
+          log.warn('已自动禁用付费兜底：凭据里没有 DEEPSEEK_API_KEY，官方那条用不了')
+          cfg.gateway.fallback.enabled = false
+        }
       }
     }
     state.llm = llm
@@ -721,6 +781,21 @@ export async function main(argv = process.argv.slice(2)) {
     const searchQuota = new SearchQuota({ home: store.home, log })
 
     /*
+     * ★ 峰谷搜索节奏（2026-11-03）。
+     *
+     * 峰期（**照 DeepSeek 官网口径**：北京时间周一~周五 9:00-12:00、14:00-18:00）
+     * 把"这一小时最多搜几次"压到很低；**谷期完全不干预**。
+     *
+     * ⚠️ 省的不是搜索费 —— `Search` 是固定价（¥0.005/次），**不分峰谷**。
+     *    省的是**处理搜索结果的那些 token**（占一次搜索的大头，且分峰谷）。
+     *    详见 `src/gateway/pacing.js` 的文件头。
+     *
+     * ⚠️ 内存态：**不需要落盘**。它是"这一小时"的短期节流，
+     *    重启后从头计 —— 而每日总量由 `searchQuota` 落盘兜着，这里漏不掉。
+     */
+    const searchPacing = new SearchPacing({ log })
+
+    /*
      * 人物档案落盘。
      *
      * `touch()` 只改内存并标脏 —— 每条消息都写文件太浪费
@@ -923,6 +998,22 @@ export async function main(argv = process.argv.slice(2)) {
            * fallback 开不开、哪些渠道排除。
            */
           strategy: cfg.gateway?.strategy,
+          /*
+           * ★ 数据目录（2026-11-02 补）。
+           *
+           * bridge 里要落盘一个小缓存：**禁漫当前可用的域名**
+           * （`jm-host.json`，见 gateway/jm.js）。那个站域名一直换，
+           * 每次启动重新趟一遍死域名是 **6 次超时** —— 用户等的是回复，
+           * 不该浪费在这上面。实测：缓存命中 1124ms，首次趟域名 3991ms。
+           */
+          home: args.home,
+          /*
+           * ★ 车牌内页那套（2026-11-02）。
+           *
+           * `enabled / maxShots / followUpMaxAgeMs` 三个都在这里给到 bridge ——
+           * 别处也踩过"配置写了但没人读"的坑（路由策略那次），所以显式带上。
+           */
+          jmRead: cfg.jmRead,
           // 免费渠道优先级与开关：bridge 的 auto 模式靠它们决定"先试哪个"
           freeOrder: cfg.gateway?.freeProviders ?? [],
           disabledProviders: cfg.gateway?.disabledProviders ?? [],
@@ -938,6 +1029,8 @@ export async function main(argv = process.argv.slice(2)) {
         generateDayPlan,
         hotTopics,
         searchQuota,
+        // 每小时限次（防某个小时连搜）—— 跟 searchQuota 是两个不同层级的闸
+        searchPacing,
         persona,
         people,
     // 收藏表情的标签（让 `[表情包:哭]` 能真的挑到"哭"）

@@ -102,15 +102,36 @@ const full = formatVideoContext({
   transcript: '这是一段正常长度的转写内容，用来对比'.repeat(4),
 })
 
-await ok('长视频等后台时：说清"你还不知道里面讲了什么"，先应一声', () => {
-  assert.match(pending, /刚开始听/, '要明确说它还没听到')
-  assert.match(pending, /先应一声/)
-  assert.match(pending, /别装作看过/)
+/*
+ * ★★★ 2026-11-03 语义变更（用户选的 A）：**等后台时也把评论/弹幕给它**。
+ *
+ * ## 为什么改
+ * 原来 `pendingLong` 那条 `return` **连评论/弹幕一起砍掉**（注释原话"连评论/弹幕都不给"），
+ * 理由是怕模型拿评论凑观后感。但 2026-11-03 把 **">15 秒一律转后台"** 落地之后，
+ * 这条路的触发频率暴涨，于是：
+ * ```
+ *   现场（70 秒《绝区零》演示，群里）：
+ *     评论 5 条 / 弹幕 10 条   ← 都抓到了 ✓
+ *     转出来是空的（这视频真没说话）    ← 永远转不出内容
+ *     她的回复：「点开那个视频了，标题里写着大肥鱼，内容我还没看完」
+ *   → 手里有 5 条评论 + 10 条弹幕，却**只提标题** ✗
+ * ```
+ * **"没说话"的视频永远转不出内容 → 那些评论弹幕被永久浪费。**
+ *
+ * 现在的做法：不 return，改打 `pendingOnly` 标记，评论/弹幕照拼，
+ * 结尾补一句说清性质（"视频本身还没听到，但评论/弹幕是真的"）。
+ * **说清用途比整段砍掉好** —— 这是用户的判断，不是我的。
+ */
+await ok('★ 长视频等后台时：仍说清"你还没听到内容"，而且**不许编**', () => {
+  assert.match(pending, /视频本身你还没听到/, '要明确说它还没听到')
+  assert.match(pending, /别聊里面讲了什么/, '要禁止聊内容')
+  assert.match(pending, /别编/, '★ 连"点开想干嘛"也不许编（2026-11-02 实测事故）')
+  assert.match(pending, /刚开始看/, '有人问就说"刚开始看"')
 })
 
-await ok('等后台时：**不能**出现"你得说点具体的"那套（那会逼它硬凑内容）', () => {
+await ok('★ 等后台时：**不能**出现"你得说点具体的"那套（那会逼它硬凑内容）', () => {
   assert.ok(!pending.includes('你得说点具体的'),
-    '那段是给"已经听到内容"写的，等后台时出现就会逼它拿标题/评论硬凑')
+    '那段是给"已经听到内容"写的，等后台时出现就会逼它拿标题硬凑')
 })
 
 await ok('只听了开头：标题写明"开头"，并说清范围', () => {
@@ -125,15 +146,36 @@ await ok('短片正常转写：照旧叫"视频里说了什么" + 机器听写�
   assert.ok(!full.includes('只听了开头'))
 })
 
-await ok('等后台时**不给**评论/弹幕 —— 给了它就会去念（用户要的是"先应一声"）', () => {
-  assert.ok(!pending.includes('评论区怎么说'), '等后台时不该给评论区')
-  assert.ok(!pending.includes('弹幕在刷什么'), '等后台时不该给弹幕')
-  // 但标题/UP/时长这些元信息要在 —— 不然她连"这是啥视频"都不知道，没法应声
+await ok('★★★ 等后台时**也给**评论/弹幕，而且要说"总结成自己的看法"', () => {
+  assert.match(pending, /评论区怎么说/, '★ 等后台时也要给评论区（否则"没说话"的视频等于什么都没看到）')
+  assert.match(pending, /弹幕在刷什么/, '★ 弹幕同理')
+  // 元信息仍然要在
   assert.match(pending, /谁是最适合当妈妈的AI/, '标题不能少')
   assert.match(pending, /牢大百科/, 'UP 主不能少')
+  /*
+   * ★★ 用户原话：「**别人说的可以总结一下变成自己的**」。
+   *    这条比我第一版写的"可以按大家的反应接话"强 —— 后者等于让她**当传声筒**。
+   *    现在要的是：评论/弹幕是**素材**，消化成**自己的**看法再说。
+   */
+  assert.match(pending, /评论\/弹幕是\*\*真的\*\*/, '要说明评论/弹幕是真的')
+  assert.match(pending, /总结成你自己的看法/, '★ 要能"总结成自己的看法"，不是复述别人的')
+  assert.match(pending, /别当传声筒/, '★ 明确禁止"有人说…"这种复述腔')
 })
 
-await ok('听完了（只听开头）之后才给评论/弹幕', () => {
+await ok('★★ 等后台时**不能**出现"真人看完一个视频"那套（她还没看完）', () => {
+  /*
+   * 2026-11-03 踩的：`pendingOnly` 时那段"怎么用"是**无条件**拼的，
+   * 里面写着「真人**看完**一个视频，说的是…」—— 她还在后台听，自相矛盾 ✗。
+   * 而且它和「这时候别评价」打架（一个让说看法、一个让别评价）。
+   * 现在 pending 时**整段跳过**，只留上面那段括号。
+   */
+  assert.ok(!pending.includes('真人看完一个视频'), '★ 她还没看完，不能说"看完"')
+  assert.ok(!pending.includes('上面这几块怎么用'), '★ 整段"怎么用"在 pending 时不该出现')
+  // 但"别评价"这句要留着（她确实不该评价还没看的东西）
+  assert.match(pending, /别评价/, '仍然不许评价没看完的东西')
+})
+
+await ok('听完了（只听开头 / 短片）之后也给评论/弹幕', () => {
   for (const [n, t] of [['只听开头', prefix], ['短片', full]]) {
     assert.match(t, /评论区怎么说/, `${n} 少了评论区`)
     assert.match(t, /弹幕在刷什么/, `${n} 少了弹幕`)
@@ -165,6 +207,40 @@ await ok('补发必须从 gen.text 取文本（_generate 返回 {text, cover}，
   assert.match(body, /typeof gen\?\.text !== 'string'/, '要有类型闸 —— 不是字符串就不发（别再让 [object Object] 到用户眼前）')
   assert.ok(!/cleanModelText\(String\(text \?\? ''\)\)/.test(body),
     '这句就是当初的错误写法，别再回来')
+})
+
+await ok('★★★ 短视频不能在小预算里同步等转写（固定成本就 25 秒）', () => {
+  const src = fs.readFileSync(new URL('../src/qq/bridge.js', import.meta.url), 'utf8')
+
+  // 那条该死的模糊日志不许回来
+  assert.ok(!/无语音\/没装 ASR\/超时/.test(src),
+    '★ 「无语音/没装 ASR/超时」三个原因糊成一句 —— 就是它把我带偏的，别再回来')
+
+  // 同步那条支路要有**很窄**的时长门槛（长了就一律走后台）
+  assert.match(src, /SHORT_SYNC_MAX_SEC\s*=\s*(\d+)/, '要有"多短才配同步"的显式门槛')
+  const maxSec = Number(/SHORT_SYNC_MAX_SEC\s*=\s*(\d+)/.exec(src)[1])
+  assert.ok(maxSec <= 20, `同步门槛 ${maxSec}s 太宽 —— 转写固定成本就 25 秒，宽了等于故意让它超时`)
+
+  // 同步没成 / 超时，必须**落到后台再试**，不许下"无语音"的结论
+  const at = src.indexOf('SHORT_SYNC_MAX_SEC')
+  const seg = src.slice(at, at + 2600)
+  assert.match(seg, /_startVideoTranscribe\(/, '★ 同步失败要转后台重试（那条路本来就是为"不能等"设计的）')
+  assert.match(seg, /info\.pendingLong\s*=\s*true/, '要让提示词如实说"我刚开始听"')
+})
+
+await ok('★★ ASR 失败必须说清是哪一种（不许只返回空字符串）', () => {
+  const src = fs.readFileSync(new URL('../src/qq/asr.js', import.meta.url), 'utf8')
+  /*
+   * 老 `transcribeVideo` 四种失败全返回 `''`，调用方根本没法知道为什么。
+   */
+  assert.match(src, /export async function transcribeVideoDetailed/, '要有带原因的版本')
+  for (const why of ['no-candidates', 'download-failed', 'asr-empty']) {
+    assert.ok(src.includes(`'${why}'`), `why 里要有 ${why}`)
+  }
+  assert.ok(/why: 'timeout'/.test(src), '超时要单独标')
+  assert.ok(/why: 'script-error'/.test(src), '脚本报错要单独标')
+  assert.ok(!/启动 python 失败[\s\S]{0,60}debug/.test(src),
+    'python 起不来这种事不该只写 debug —— 等于藏起来')
 })
 
 console.log(`\n通过 ${pass} / 失败 ${fail}`)

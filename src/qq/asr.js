@@ -117,7 +117,7 @@ export async function transcribeAudio(audio, opts = {}) {
         done = true
         try { child.kill() } catch { /* 已经退了 */ }
         opts.log?.info?.(`ASR：超时 ${Math.round(timeoutMs / 1000)}s，放弃`)
-        resolve(null)
+        resolve({ ok: false, why: 'timeout' })
       }, timeoutMs)
 
       child.stdout?.on('data', (b) => { stdout += b.toString('utf8') })
@@ -126,8 +126,9 @@ export async function transcribeAudio(audio, opts = {}) {
         if (done) return
         done = true
         clearTimeout(timer)
-        opts.log?.debug?.(`ASR：启动 python 失败 — ${e?.message ?? e}`)
-        resolve(null)
+        // ⚠️ 原来这里是 `debug` —— python 起不来属于**该被人看见**的问题
+        opts.log?.warn?.(`ASR：启动 python 失败 — ${e?.message ?? e}`)
+        resolve({ ok: false, why: 'spawn-failed' })
       })
       child.on('close', () => {
         if (done) return
@@ -136,32 +137,56 @@ export async function transcribeAudio(audio, opts = {}) {
         // 脚本把结果打在一行 JSON 里；stderr 是 whisper 的进度噪音，不看
         const line = stdout.split('\n').reverse().find((l) => l.trim().startsWith('{'))
         if (!line) {
-          opts.log?.debug?.(`ASR：没有 JSON 输出（stderr 尾部：${stderr.slice(-120)}）`)
-          resolve(null)
+          opts.log?.warn?.(`ASR：脚本没有输出 JSON（stderr 尾部：${stderr.slice(-120)}）`)
+          resolve({ ok: false, why: 'no-output' })
           return
         }
         try {
           const j = JSON.parse(line)
           if (!j?.ok) {
-            opts.log?.debug?.(`ASR：${j?.error ?? '未知错误'}`)
-            resolve(null)
+            opts.log?.warn?.(`ASR：脚本报错 — ${j?.error ?? '未知'}`)
+            resolve({ ok: false, why: 'script-error' })
             return
           }
           resolve(j)
         } catch {
-          resolve(null)
+          resolve({ ok: false, why: 'bad-json' })
         }
       })
     })
 
     if (!out) return null
     const text = String(out.text ?? '').trim()
+    /*
+     * ★★★ **"真没语音"和"我这边失败了"必须分开**（2026-11-03 修）。
+     *
+     * 原来两种情况**都返回 `null`**：
+     * ```
+     * 脚本超时 / 报错 / 没输出  → null      ← 我这边的问题
+     * 转出来了但是空的          → null      ← 这视频真没说话
+     * ```
+     * 于是上层只能瞎写一句「**可能没语音：纯音乐 / 无声演示**」——
+     * **它自己也不知道是哪种** ✗。这跟昨天修掉的
+     * 「(37s 短片：无语音/没装 ASR/超时)」是**同一个毛病**，
+     * 我修了那个、漏了这个。
+     *
+     * 现场（2026-11-03，群里那个 70 秒的《绝区零》演示）：
+     * ```
+     * 03:57:20  ASR：转出来是空的（可能没语音：纯音乐 / 无声演示）
+     * 03:57:20  B站：BV1VGxp69EWt 后台没听出内容（只取开头 2MB）
+     * ```
+     * 70 秒的音频**够转**（固定成本才 ~25 秒），所以"空的"要么是真没语音、
+     * 要么是又超时了 —— 而日志把这两种混成一句，**没法判断该修哪儿**。
+     *
+     * 现在：**返回 `{text:'', why:'asr-empty', duration}`**（真没语音），
+     * 而失败仍然 `null`（上层据 `why` 说"我这边没转出来"）。
+     */
     if (!text) {
-      opts.log?.info?.('ASR：转出来是空的（可能没语音：纯音乐 / 无声演示）')
-      return null
+      opts.log?.info?.(`ASR：音频 ${out.duration}s，转出来是空的 —— 这视频**真的没说话**（不是超时）`)
+      return { text: '', why: 'asr-empty', lang: out.lang ?? lang, duration: Number(out.duration ?? 0) }
     }
     opts.log?.info?.(`ASR：转出 ${text.length} 字（${out.duration}s 音频，${out.model}）`)
-    return { text, lang: out.lang ?? lang, duration: Number(out.duration ?? 0) }
+    return { text, why: 'ok', lang: out.lang ?? lang, duration: Number(out.duration ?? 0) }
   } finally {
     try { fs.unlinkSync(tmp) } catch { /* 临时文件清不掉也不影响 */ }
   }
@@ -178,18 +203,75 @@ export async function transcribeAudio(audio, opts = {}) {
  * @param {object} [opts]
  * @returns {Promise<string>} 转写文本（拿不到给空串）
  */
-export async function transcribeVideo(bvid, cid, bili, opts = {}) {
+/**
+ * 「把视频里的语音转成文字」—— **带原因版**。
+ *
+ * ## ★★ 为什么要有这个（2026-11-02 实测）
+ * 老的 `transcribeVideo` **四种完全不同的失败全都返回 `''`**：
+ * ```
+ * 取不到音频地址   → ''
+ * 音频下不下来     → ''
+ * 转写超时         → ''
+ * 抛错             → ''（而且只写 debug 日志，等于静默）
+ * ```
+ * 于是调用方**根本没法知道为什么**，只能在日志里瞎写一句
+ * `（37s 短片：无语音/没装 ASR/超时）` —— **三个原因糊成一句**。
+ *
+ * 实测代价：为了这一句话，我查了半天才排掉"没装 ASR"和"无语音"
+ * （两个都不是），真因是**某次下载卡住 → 撞上 90s 硬超时**。
+ * 同一个视频重跑一次就 26 秒成功 —— **是偶发，不是必然**。
+ *
+ * ⚠️ 这跟"打不开"是同一个毛病：**失败要说清是哪一种**，
+ *    因为不同原因指向完全不同的下一步（换候选 / 调超时 / 换模型 / 就是不说话）。
+ *
+ * @returns {Promise<{text:string, why:string}>}
+ *   why: `ok` | `no-candidates` | `download-failed` | `asr-timeout` | `asr-empty` | `error`
+ */
+export async function transcribeVideoDetailed(bvid, cid, bili, opts = {}) {
+  const log = opts.log ?? {}
   try {
+    const t0 = Date.now()
     const cands = await bili.fetchAudioCandidates(bvid, cid, opts)
-    if (!cands.length) return ''
+    if (!cands?.length) {
+      log.warn?.('ASR：取不到音频地址（B 站没给 playurl？）')
+      return { text: '', why: 'no-candidates' }
+    }
     const dl = await bili.downloadAudio(cands, opts)
-    if (!dl) return ''
+    if (!dl) {
+      log.warn?.(`ASR：音频下不下来（${cands.length} 个候选都失败，${Date.now() - t0}ms）`)
+      return { text: '', why: 'download-failed' }
+    }
     const r = await transcribeAudio(dl.buffer, opts)
-    return r?.text ?? ''
+    /*
+     * ⚠️ 三种情况要分开（它们对用户的意义**完全相反**）：
+     *   · 转写自己失败了（超时/脚本报错…）→ **我这边的问题**，可以重试
+     *   · 转出来了但是空的        → **这视频里真没说话**（音乐/游戏录屏），别再试
+     *   · `null`                  → 兜底，理论上不该出现
+     *
+     * ★ 2026-11-03：`transcribeAudio` 现在**空文本也返回对象**（带 `why:'asr-empty'`），
+     *   只有**失败**才返回 `null` —— 所以下面不能再用 `!r` 一刀切成"失败"，
+     *   否则"这视频真没说话"会被当成"我转写失败"（那正是要修的那个混淆）。
+     */
+    if (!r) return { text: '', why: 'asr-failed' }
+    const text = String(r.text ?? '').trim()
+    if (!text) return { text: '', why: r.why ?? 'asr-empty' }
+    return { text, why: 'ok' }
   } catch (e) {
-    opts.log?.debug?.(`ASR：${e?.message ?? e}`)
-    return ''
+    // ⚠️ 原来这里是 `debug` —— 等于把错误藏起来。改成 warn，别再静默。
+    log.warn?.(`ASR：出错 — ${String(e?.message ?? e).slice(0, 100)}`)
+    return { text: '', why: 'error' }
   }
+}
+
+/**
+ * 老接口：只要文字（**返回空字符串就代表"没转出来"，不区分原因**）。
+ *
+ * ⚠️ 新代码请用 `transcribeVideoDetailed` —— 不然你也会写出
+ *    「无语音/没装 ASR/超时」这种**三个原因糊成一句**的日志。
+ */
+export async function transcribeVideo(bvid, cid, bili, opts = {}) {
+  const r = await transcribeVideoDetailed(bvid, cid, bili, opts)
+  return r.text
 }
 
 /* ────────────────────────────────────────────────────────────

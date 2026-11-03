@@ -124,14 +124,37 @@ ok('文件损坏 / 不存在 / 没传 home 都不抛', () => {
 
 console.log('\n=== ③ 接线锁（防止又出现"传了没人读"）===')
 
-ok('★ bridge 调用搜索前要真的检查限额', () => {
+ok('★★★ bridge 调搜索前要过两道闸，而且**通过后才计数**', () => {
   const src = fs.readFileSync(new URL('../src/qq/bridge.js', import.meta.url), 'utf8')
   assert.match(src, /this\.searchQuota = opts\.searchQuota/, '要接收 searchQuota')
+  assert.match(src, /this\.searchPacing = opts\.searchPacing/, '★ 要接收 searchPacing')
+
   const at = src.indexOf('const quota = this.searchQuota?.check')
-  assert.ok(at > 0, '★ 要有 check() 调用')
-  const seg = src.slice(at, at + 500)
-  assert.match(seg, /if \(!quota\.ok\)/, '超限要拦')
-  assert.match(seg, /this\.searchQuota\?\.take\(\)/, '★ 通过后才计数（被拦下的那次不该算）')
+  assert.ok(at > 0, '要有 check() 调用')
+
+  /*
+   * ⚠️ **不能用固定宽度窗口**（原来是 `slice(at, at + 500)`）。
+   *    2026-11-03 加小时限次那两行 `else if` 之后，`take()` 就被挤出 500 字，
+   *    于是这条断言红了 —— **看着像"通过后才计数"坏了，其实只是窗口太小** ✗。
+   *    这个坑今天栽过三次（check-voice / check-sticker-priority / 这里）。
+   *    改成切到**下一个可识别的锚点**（`webSearch({`），并且断言**顺序**而不是字数。
+   */
+  const end = src.indexOf('webSearch({', at)
+  const seg = src.slice(at, end > at ? end : at + 3000)
+
+  assert.match(seg, /if \(!quota\.ok\)/, '日上限要拦')
+  assert.match(seg, /this\.searchPacing\?\.allow\(/, '★ 还要过"每小时限次"那道闸')
+  assert.match(seg, /else if \(!pace\.ok\)/, '小时上限也要拦')
+
+  // ★ 语义：两处计数都必须落在**两道闸之后**
+  const iTake = seg.indexOf('this.searchQuota?.take()')
+  const iNote = seg.indexOf('this.searchPacing?.note()')
+  const iQuotaGuard = seg.indexOf('if (!quota.ok)')
+  const iPaceGuard = seg.indexOf('if (!pace.ok)')
+  assert.ok(iTake > 0, '要有 take()')
+  assert.ok(iNote > 0, '★ 小时限次也要"真搜了才记"（note）')
+  assert.ok(iTake > iQuotaGuard, '★ take() 在日上限闸之后 —— 被拦下的那次不该计数')
+  assert.ok(iNote > iPaceGuard, '★ note() 在小时闸之后 —— 同理')
 })
 
 ok('★ `maxUses` 这个死参数要彻底消失', () => {
@@ -146,9 +169,29 @@ ok('★ `maxUses` 这个死参数要彻底消失', () => {
   }
 })
 
-ok('配置默认值是 `maxPerDay: 20`', () => {
+ok('★★★ 配置默认值 = `maxPerDay: 12`，而且**必须写明预算依据**', () => {
+  /*
+   * ⚠️ 这条**故意锁魔数** —— 因为它卡的是"钱的上限"。
+   *    2026-11-03 从 20 降到 12，理由是用户的硬预算：
+   * ```
+   *   每次搜索真实成本 = 接口 ¥0.0050 + 处理结果的模型钱 ≈¥0.0024 = ¥0.0074
+   *   ¥5/月 ÷ 30 天 = ¥0.167/天 ÷ ¥0.0074 ≈ 22.6 次/天   ← 刚好用完 ¥5
+   *   20 次/天 ≈ ¥4.44/月（贴着 ¥5，模型钱一波动就超 ✗）
+   *   12 次/天 ≈ ¥2.66/月（留了一倍余量 ✓）
+   * ```
+   * ⚠️ 改这个数**必须同时改线上 `config.json`** —— 默认值不会覆盖已存的键（踩过）。
+   */
   const src = fs.readFileSync(new URL('../src/config/store.js', import.meta.url), 'utf8')
-  assert.match(src, /maxPerDay: 20/)
+  assert.match(src, /maxPerDay: 12/, '★ 默认该是 12 次/天（¥5/月预算）')
+  assert.ok(/¥5|5 块钱|5块/.test(src), '★ 必须留下"为什么是 12"的预算依据 —— 否则下一个人只会看到个数')
+})
+
+ok('★★ 每小时限次也要有默认值（防"某个小时连搜"）', () => {
+  const src = fs.readFileSync(new URL('../src/config/store.js', import.meta.url), 'utf8')
+  assert.match(src, /hourlyMax: 3/, '默认每小时 3 次')
+  assert.match(src, /pacing: \{/, '要有 pacing 段')
+  // ⚠️ 峰谷那套已撤 —— 别让它悄悄回来（它省不到钱，见 pacing.js 文件头）
+  assert.ok(!/peakMaxPerHour/.test(src), '★ 峰谷已撤，不该再有 peakMaxPerHour')
 })
 
 ok('面板文案说的是"每天"而不是"每次"（原来那句是错的）', () => {

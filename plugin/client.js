@@ -260,12 +260,56 @@ window.__ModuleLoader__.load({
         'search.imagesHint': '聊到具体作品时会附一张图',
         'search.maxPerDay': '每天最多搜几次',
         'search.maxPerDayHint': '超过就不搜了，等到第二天。填 0 = 不限',
+        /*
+         * ★ 2026-11-03：搜索预算那两项。
+         *
+         * 「一次搜索到底多少钱」不好记 —— 它是**两笔**加起来的：
+         * Search 接口费 ¥0.005（固定）+ 处理结果的模型钱 ≈¥0.0024 ≈ **¥0.0074**。
+         * 所以面板直接把「每天几次」翻译成「一个月多少钱」，
+         * 免得每次调都得掏计算器。
+         */
+        'search.hourlyMax': '每小时最多搜几次',
+        'search.hourlyMaxHint': '防一个小时里连着搜。填 0 = 不限。跟"每天"是两个层级的闸，都要过',
+        'search.budget': '按这个频率，大约花多少',
+        'search.budgetHint': '一次搜索约 ¥0.0074（接口费 ¥0.005 + 处理结果的模型钱）。只是估算，供你对着预算调',
+        'search.budgetValue': '约 ¥{per}/天 ≈ ¥{month}/月',
+        'search.budgetUnlimited': '不限次数 —— 账单也没有上限，留意点',
         'search.lowBalance': '余额提醒阈值',
         'search.lowBalanceHint': '低于这个数（元）会让它念叨一句',
+        /*
+         * ★ 2026-11-03：B 站视频「看画面 / 只听」。
+         * 用户原话：「在设置里面选择可以看和只听，两个类型，用户自己选择」。
+         */
+        'section.bili': 'B 站视频',
+        'section.biliHint': '她怎么"看"别人发来的视频 —— 画面要花钱，声音便宜',
+        'bili.visual': '看视频的方式',
+        'bili.visualHint': '看画面＝把分镜图（10×10 网格）喂给视觉模型，**每张图都花钱**；只听＝转写＋评论＋弹幕，便宜但看不到画面',
+        'bili.audioOpt': '只听（省钱，默认）',
+        'bili.visualOpt': '看画面（能聊画面在发生什么，费 token）',
+        'section.jm': '车牌（漫画）',
+        'section.jmHint': '发「JM 1234567」或作品链接，她会自己去看内页',
+        'jm.enabled': '看内页',
+        'jm.enabledHint': '关掉就只报标题（不碰浏览器、不花钱）。开着时：抽几页 → 拼成一张图 → 看完再补一条评价',
+        'jm.onOpt': '看（会花 token）',
+        'jm.offOpt': '不看（只报标题）',
+        'jm.maxShots': '最多看几页',
+        'jm.maxShotsHint': '跳着抽这么多页，拼成一张网格图。**一张图的 token 是固定的**，所以抽得多不等于线性变贵；但也**别贪多** —— 格子会变小、更容易看不清。默认 6',
         'section.forums': '贴吧订阅',
         'section.forumsHint': '订几个你常混的吧，她说闲话时从这些吧找话题',
+        /*
+         * ★ 2026-11-02：**功能依赖**那一节。
+         *
+         * 用户提的规矩：「在设置页面加功能就要写明需要其他插件」。
+         * 这里把"本机装的东西"也当成一种依赖**明写出来**，并显示实际检测结果。
+         */
+        'section.deps': '功能依赖',
+        'section.depsHint': '有些功能要本机装了东西才能用 —— 这里如实显示检测结果',
+        'deps.browser': '看网页内页',
+        'deps.browserHint': '要在真正的浏览器里打开网页（禁漫内页那种，图是 JS 拼的、还滚动加载）。需要本机装 Edge 或 Chrome',
+        'deps.browserOk': '✅ 已检测到 {name}',
+        'deps.browserMissing': '✗ 没找到 Edge/Chrome —— 这个功能用不了',
         'forums.list': '订阅的吧',
-        'forums.listHint': '写吧名本身（带「吧」字也行）。一个吧一小时最多抓一次',
+        'forums.listHint': '点标签上的 × 单独删掉；下面写吧名回车加上。一个吧一小时最多抓一次',
         'forums.add': '＋ 添加一个吧',
         'forums.remove': '删掉这个吧',
         'forums.empty': '还没订。填几个吧名，比如「明日方舟」',
@@ -547,12 +591,38 @@ window.__ModuleLoader__.load({
         'search.imagesHint': 'Shows a poster when talking about a specific work',
         'search.maxPerDay': 'Max searches per day',
         'search.maxPerDayHint': 'Beyond this it stops searching until tomorrow. 0 = unlimited',
+        'search.hourlyMax': 'Max searches per hour',
+        'search.hourlyMaxHint': 'Stops bursts within one hour. 0 = unlimited. Both this and the daily cap must pass',
+        'search.budget': 'Estimated spend at this rate',
+        'search.budgetHint': 'About ¥0.0074 per search (¥0.005 API fee + the model cost of digesting the results). An estimate only — tune against your budget',
+        'search.budgetValue': 'about ¥{per}/day ≈ ¥{month}/month',
+        'search.budgetUnlimited': 'Unlimited — and so is the bill. Keep an eye on it',
         'search.lowBalance': 'Low-balance threshold',
         'search.lowBalanceHint': 'Below this amount (CNY) it will complain about tokens',
+        'section.bili': 'Bilibili videos',
+        'section.biliHint': 'How it "watches" videos people send — pictures cost money, audio is cheap',
+        'bili.visual': 'How to watch',
+        'bili.visualHint': 'Pictures = feed the storyboard grid (10×10) to the vision model, **every image costs tokens**; Audio only = transcript + comments + danmaku, cheap but no visuals',
+        'bili.audioOpt': 'Audio only (cheaper, default)',
+        'bili.visualOpt': 'Watch visuals (can talk about what is happening on screen, costs tokens)',
+        'section.jm': 'Comic (JM)',
+        'section.jmHint': 'Send "JM 1234567" or a link and she reads the pages herself',
+        'jm.enabled': 'Read pages',
+        'jm.enabledHint': 'Off = title only (no browser, no cost). On = sample a few pages, stitch them into one grid, then follow up with a comment',
+        'jm.onOpt': 'Read (costs tokens)',
+        'jm.offOpt': "Don't read (title only)",
+        'jm.maxShots': 'Pages to sample',
+        'jm.maxShotsHint': 'Sample this many pages, stitched into one grid. **One image costs a fixed number of tokens**, so more pages is not linearly pricier — but do not overdo it (each cell gets smaller and harder to read). Default 6',
         'section.forums': 'Tieba subscriptions',
         'section.forumsHint': 'Subscribe to forums you hang out in; it draws smalltalk topics from them',
+        'section.deps': 'Feature dependencies',
+        'section.depsHint': 'Some features need something installed on this machine; the detected status is shown as-is',
+        'deps.browser': 'Reading page content',
+        'deps.browserHint': 'Opens pages in a real browser (comic inner pages: images are assembled by JS and load on scroll). Requires Edge or Chrome installed',
+        'deps.browserOk': '✅ detected {name}',
+        'deps.browserMissing': '✗ no Edge/Chrome found — this feature is unavailable',
         'forums.list': 'Subscribed forums',
-        'forums.listHint': 'Write the forum name without the 吧 suffix. Refreshed at most once per hour each',
+        'forums.listHint': 'Click × on a chip to remove just that one; type a name below and press Enter to add. Each forum is fetched at most once an hour',
         'forums.add': '+ Add a forum',
         'forums.remove': 'Remove this forum',
         'forums.empty': 'Nothing subscribed yet. Try a name like 明日方舟',
@@ -836,6 +906,23 @@ window.__ModuleLoader__.load({
 .gd_input:focus,.gd_textarea:focus,.gd_select:focus{outline:none;border-color:var(--dsw-alias-state-business-primary)}
 .gd_num{width:104px;flex:none}
 .gd_note{color:var(--dsw-alias-label-tertiary);font-size:11px}
+/* 贴吧订阅：已订阅的做成能单个删掉的标签，下面再放一个输入框加新的。
+   ⚠️ 本段注释**不许出现反引号** —— 整段 CSS 装在模板字符串里，
+      裸反引号会把模板串截断（这个坑踩过 6 次，2026-11-02 还把 DSH 打进过恢复模式）。
+      所以下面写类名时一律不加引号。 */
+.gd_forumwrap{display:flex;flex-direction:column;gap:8px;min-width:0;flex:1}
+.gd_forumchips{display:flex;flex-wrap:wrap;gap:6px}
+.gd_forumchip{display:inline-flex;align-items:center;gap:2px;padding:3px 4px 3px 10px;border-radius:999px;border:1px solid var(--dsw-alias-border-l2);background:color-mix(in srgb,var(--dsw-alias-bg-layer-1) 70%,transparent);font-size:12px;line-height:1.4;max-width:100%}
+.gd_forumchipname{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.gd_forumdel{flex:none;width:18px;height:18px;padding:0;display:inline-flex;align-items:center;justify-content:center;border:none;border-radius:999px;background:transparent;color:var(--dsw-alias-label-tertiary);font-size:13px;line-height:1;cursor:pointer;transition:background .12s,color .12s}
+.gd_forumdel:hover:not(:disabled){background:color-mix(in srgb,var(--dsw-alias-state-error-primary) 18%,transparent);color:var(--dsw-alias-state-error-primary)}
+.gd_forumdel:disabled{opacity:.4;cursor:default}
+.gd_forumnone{color:var(--dsw-alias-label-tertiary);font-size:11.5px}
+/* 功能依赖那一节：检测结果如实显示，缺就是缺，不做美化。
+   ⚠️ 本段也在模板字符串里 —— 注释里不许出现反引号。 */
+.gd_cap{font-size:12px;line-height:1.5;word-break:break-word}
+.gd_cap.ok{color:var(--dsw-alias-state-success-primary,var(--dsw-alias-label-primary))}
+.gd_cap.bad{color:var(--dsw-alias-state-error-primary)}
 .gd_err{color:var(--dsw-alias-state-error-primary);font-size:12px;line-height:1.5;word-break:break-word}
 .gd_logs{margin:0;padding:9px 11px;border-radius:10px;border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1);max-height:280px;overflow:auto;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;line-height:1.65;white-space:pre-wrap;word-break:break-all}
 .gd_logwarn{color:var(--dsw-alias-state-warning-primary)}
@@ -947,10 +1034,24 @@ window.__ModuleLoader__.load({
 .gd_chevron{display:inline-block;font-size:9px;line-height:1;color:var(--dsw-alias-label-tertiary);transition:transform .15s;transform-origin:center}
 .gd_chevron.open{transform:rotate(90deg)}
 /*
- * ★ 2026-11-02：`.gd_group` 从「竖向 flex」改成「两列网格」。
+ * ★ 2026-11-02：分组容器从「竖向 flex」改成「两列网格」。
+ *
+ * ⚠️⚠️ **这个文件里的注释，一个反引号都不能写** ⚠️⚠️
+ *
+ *    本段 CSS 整个装在 line 736 那个 const CSS = 后面开着的**模板字符串**里面
+ *    （就是键盘左上角那个键打出来的字符，这里连描述它都不能直接写）。
+ *    一旦注释里出现它，模板字符串就被**截断**，后面的内容被当成 JS 解析。
+ *
+ *    ⚠️ 最阴的地方：**这个错误语法上是合法的**，node --check 会**放行** ——
+ *       因为那种写法会被解析成「字符串的成员访问」（合法表达式）。
+ *       结果 CSS 被劈成一地碎片、面板样式全废，而所有语法检查一路绿灯。
+ *
+ *    这个坑历史上踩过 4 次；2026-11-02 我改这条规则时踩了第 5 次
+ *    （**甚至写这段警告时又踩了第 6 次**），直接把 DSH 打进恢复模式。
+ *    所以现在有 tests/check-css-template.mjs 专门扫这个。
  *
  * ## 原来为什么竖排
- * 外层 `.gd_chcards` 已经是两列网格了，但**分组 container 是竖向 flex** ——
+ * 外层 gd_chcards 已经是两列网格了，但**分组 container 是竖向 flex** ——
  * 于是每个「组」占外层网格的一格，**组内的卡片竖着排**。
  * 渠道包（14 个免费渠道）在的时候，分组是「免费车道 / 账号型 / 其它」，
  * 每组好几张卡、占一格竖排还算合理。
@@ -2213,6 +2314,22 @@ window.__ModuleLoader__.load({
        */
       const sr = { ...(cfg?.search ?? {}), ...(cfg?.qq?.search ?? {}) }
       /*
+       * ★ B 站视频那一段在 **`qq.bilibili`**（不是 `qq.search.bilibili`）。
+       *   ⚠️ 跟 `sr` 是两层，别混 —— 我第一次就混了，读不到还查了半天。
+       */
+      const bilibiliCfg = cfg?.qq?.bilibili ?? {}
+      /*
+       * ★★ **`jmRead` 是`顶层`字段，不在 `qq` 里**（2026-11-03 现场核过）。
+       *
+       * 证据：`src/config/store.js` 的 DEFAULTS 里 `jmRead:` 跟 `gateway:` / `autoStart:`
+       * 平级 ✓；`bridge` 读的是 `this.cfg.jmRead` ✓（`this.cfg = opts.cfg`，就是整个 cfg ✓）。
+       *
+       * ⚠️ **别想当然写成 `cfg.qq.jmRead`** ✗ —— 那会**静默失效**：
+       *    面板能存下去，后端读的还是默认值，界面上看不出任何异常。
+       *    这跟下面 B 站那节踩过的坑是同一类（配置挂错层 → 界面跟后端对不上）。
+       */
+      const jmCfg = cfg?.jmRead ?? {}
+      /*
        * 订阅的贴吧（2026-11-01）。
        *
        * ⚠️ 它在**顶层** `proactive` 里（不在 `qq` 下）——
@@ -2527,12 +2644,59 @@ window.__ModuleLoader__.load({
             })),
           h(Row, { label: t('search.maxPerDay'), hint: t('search.maxPerDayHint') },
             h(TextField, {
-              value: sr.maxPerDay ?? 20,
+              value: sr.maxPerDay ?? 12,
               numeric: true,
               disabled: busy,
               // ⚠️ 填 0 = 不限（**不是**"一次都不许"）—— 后端也是这么理解的
               onCommit: (v) => apply({ 'search.maxPerDay': Number(v) || 0 }),
             })),
+          /*
+           * ★ 每小时限次（2026-11-03）。
+           *
+           * 跟 `maxPerDay` 是**两个层级的闸**：日上限是总账（省钱主力），
+           * 小时上限防的是"判据发疯时一口气搜掉半天额度"。
+           * 实测有过一小时内连搜 3 次「能看吗」——那种时候日上限拦不住。
+           *
+           * ⚠️⚠️ **必须送整个 pacing 对象**，不能只送 `search.pacing.hourlyMax`。
+           *   服务端把 `search.*` 归位到 `qq.search.*` 时用的是**浅合并**：
+           *     `nested.qq.search = { ...(nested.qq.search ?? {}), ...nested.search }`
+           *   → 只送 `pacing.hourlyMax` 会让 `qq.search.pacing` **被整个替换**，
+           *     **同层的 `enabled` 就丢了**（而 `enabled:false` 会让整套失效）。
+           *   这类"改了、丢了、看不出"最坑 —— 界面上拨了、当时也生效，
+           *   重启后从盘上读就没了。
+           */
+          h(Row, { label: t('search.hourlyMax'), hint: t('search.hourlyMaxHint') },
+            h(TextField, {
+              value: sr.pacing?.hourlyMax ?? 3,
+              numeric: true,
+              disabled: busy,
+              onCommit: (v) => apply({
+                'search.pacing': {
+                  enabled: sr.pacing?.enabled !== false,
+                  hourlyMax: Number(v) || 0,   // 0 = 不限
+                },
+              }),
+            })),
+          /*
+           * 预算换算 —— 把「每天几次」翻译成「一个月多少钱」。
+           *
+           * 这个数不好记：一次搜索的钱是**两笔**加起来的
+           * ```
+           *   Search 接口费        ¥0.0050（固定，不分峰谷）
+           *   处理结果的模型钱      ≈¥0.0024（231 条真实日志样本算出的上界）
+           *   ─────────────────────────
+           *   合计                ≈ ¥0.0074
+           * ```
+           * 用户当初的要求是「**¥5 搜索坚持用一个月**」——把这个预算摆在旁边，
+           * 调 `maxPerDay` 时就不用自己拿计算器了。
+           */
+          h(Row, { label: t('search.budget'), hint: t('search.budgetHint') },
+            h('span', { className: 'gd_cap ok' },
+              (Number(sr.maxPerDay) || 0) > 0
+                ? t('search.budgetValue')
+                  .replace('{per}', (sr.maxPerDay * 0.0074).toFixed(2))
+                  .replace('{month}', (sr.maxPerDay * 0.0074 * 30).toFixed(2))
+                : t('search.budgetUnlimited'))),
           h(Row, { label: t('search.lowBalance'), hint: t('search.lowBalanceHint') },
             h(TextField, {
               value: sr.lowBalanceCny ?? 2,
@@ -2541,32 +2705,167 @@ window.__ModuleLoader__.load({
               onCommit: (v) => apply({ 'search.lowBalanceCny': Number(v) || 2 }),
             }))),
 
+        /*
+         * ★★ **B 站视频：看画面 / 只听**（2026-11-03，用户点名要的）。
+         *
+         * ⚠️ 它**不属于「联网搜索」那一节** —— 配置在 `qq.bilibili`，不是 `qq.search`。
+         *    第一次我插进了 search 节里，那会让 `apply({ 'bilibili.visual': v })`
+         *    落到 `search.bilibili` 上去（因为服务端把 `search.*` 归位到 `qq.search`），
+         *    **跟后端读的 `qq.bilibili` 对不上** ✗。所以单独开一节。
+         *
+         * 看画面 = 把 B 站的分镜图（10×10 网格）喂给视觉模型 —— **每张图都花钱**。
+         * 只听   = 转写 + 评论 + 弹幕，便宜但看不到画面。
+         * **默认"只听"** —— 保持原来的成本，想要画面才切。
+         *
+         * 分镜图是 B 站自己的 `x/player/videoshot` 给的，**不需要装 ffmpeg**。
+         */
+        h(Section, { title: t('section.bili'), hint: t('section.biliHint') },
+          h(Row, { label: t('bili.visual'), hint: t('bili.visualHint') },
+            h(Select, {
+              value: bilibiliCfg?.visual === 'visual' ? 'visual' : 'audio',
+              disabled: busy,
+              options: [
+                { value: 'audio', label: t('bili.audioOpt') },
+                { value: 'visual', label: t('bili.visualOpt') },
+              ],
+              onCommit: (v) => apply({ 'bilibili.visual': v }),
+            }))),
+
+        /*
+         * ★★ **车牌（漫画）：看内页**（2026-11-03，用户要求"继续 UI 设计"）。
+         *
+         * 这是**唯一真花钱的地方**（每张拼图都进视觉模型），所以必须让人在界面上
+         * 看得见、关得掉 —— 之前只能改 `config.json` ✗。
+         *
+         * ## 现在它怎么跑的（2026-11-03 改过，跟老注释不一样了）
+         * ```
+         * ❶ 认到「JM 1234567」或 18comic 链接
+         * ❷ 普通 fetch 作品页 → 取章节号 → 读阅读器 HTML 里的 `page_arr`（**不开那个站** ✓）
+         * ❸ 均匀抽 N 页**直接下图片**（全分辨率、没有广告）
+         * ❹ 借浏览器当 canvas 拼成**一张网格图**（省 token；失败退回多张）
+         * ❺ 回复先说"我看看"，看完再补一条
+         * ```
+         * 实测 **≈7 秒**（旧路开站截图是 27 秒，而且截图里全是网站门面 ✗）。
+         *
+         * ⚠️ **仍要本机有 Edge/Chrome** —— 拼图那步借浏览器当 canvas 用
+         *    （whale-pod 零依赖，没有 sharp）。缺浏览器时整条路降级，
+         *    **界面下面「环境依赖」那节会照实显示** ✓（用户定的规矩：加功能要写明依赖）。
+         *
+         * ⚠️ **配置挂在顶层 `jmRead`**，不是 `qq.jmRead` —— 见上面 `jmCfg` 的注释。
+         */
+        h(Section, { title: t('section.jm'), hint: t('section.jmHint') },
+          h(Row, { label: t('jm.enabled'), hint: t('jm.enabledHint') },
+            h(Select, {
+              value: jmCfg?.enabled === false ? 'off' : 'on',
+              disabled: busy,
+              options: [
+                { value: 'on', label: t('jm.onOpt') },
+                { value: 'off', label: t('jm.offOpt') },
+              ],
+              onCommit: (v) => apply({ 'jmRead.enabled': v === 'on' }),
+            })),
+          h(Row, { label: t('jm.maxShots'), hint: t('jm.maxShotsHint') },
+            h(TextField, {
+              value: jmCfg?.maxShots ?? 6,
+              numeric: true,
+              disabled: busy,
+              onCommit: (v) => apply({ 'jmRead.maxShots': Math.max(1, Number(v) || 6) }),
+            }))),
+
+        // ── 环境依赖（哪些功能要本机装东西）──────────────────────────────
+        //
+        // ★★ 2026-11-02，用户提的规矩：
+        //    **「在设置页面加功能就要写明需要其他插件」**
+        //
+        // 有些功能**依赖本机装的东西**（不是 DSH 插件，是操作系统里的程序）。
+        // 这类依赖必须在界面上写清楚，否则：
+        //   · 用户看不到那个功能为什么不动
+        //   · 也想不到"原来要装个浏览器"
+        //   · 最糟的是**静默失败** —— 功能默默降级，谁都不知道为什么
+        //
+        // 数据来自 `/api/status` 的 `caps`（后端**主动探测**，只 existsSync
+        // 几个路径，不启动浏览器）。这里**照实显示**，不做任何美化：
+        // 缺就是缺，别让人以为"可能只是慢"。
+        /*
+         * ⚠️ 这里**不能写 `const`** —— 这一段在 `h(...)` 的子元素数组里，
+         *    数组元素必须是**表达式**。（今天第二次栽在这上面：
+         *    早上写"分组标题只在多组时显示"时也是 `const groups = ...`，
+         *    语法直接报 Unexpected token 'const'。）
+         *    要用局部变量就得**内联**，或者把逻辑提到组件函数外面。
+         */
+        h(Section, { title: t('section.deps'), hint: t('section.depsHint') },
+          h(Row, { label: t('deps.browser'), hint: t('deps.browserHint') },
+            h('span', {
+              className: `gd_cap ${status?.caps?.browser?.ok ? 'ok' : 'bad'}`,
+            },
+            status?.caps?.browser?.ok
+              ? t('deps.browserOk').replace('{name}', status.caps.browser.name ?? '')
+              : t('deps.browserMissing')))),
+
         // ── 贴吧订阅 ──────────────────────────────────────────────────
         //
-        // ⚠️ 为什么是**一个逗号分隔的输入框**，而不是「列表 + 加号按钮」：
+        // ★ 2026-11-02 改成**标签 + 输入框**。
         //
-        // 这个配置的最终形态就是 `proactive.tiebaForums: ["明日方舟", "显卡"]`。
-        // 用列表要多三步（点加号 → 填 → 回车），还会多出「点了加号但没填」的空条目
-        // 状态；一个输入框改一次写一次盘，**步骤最少、没有中间态、没有半成品**。
+        // ## 原来是什么
+        // 一个逗号分隔的输入框：`value = forums.join('、')`，
+        // 提交时按 、,，;；空格 切开。**加**很方便（改一次写一次盘，
+        // 没有中间态、没有"点了加号但没填"的空条目）。
         //
-        // 分隔符认 顿号 / 逗号 / 分号 / 空格 —— 中文输入法下 `、` 很常见，不认会很难用。
-        // 末尾的「吧」字自动去掉（用户会顺手写成「明日方舟吧」）。
+        // ## 为什么还是得改
+        // 用户的诉求是「**加上已经添加的吧，还有删除已添加的**」——
+        // 那个输入框**确实显示了**已添加的（就是框里那串），
+        // 但**删一个要去改整串文字**：得找到它、连着分隔符一起删干净、
+        // 还不能手滑删到隔壁那个吧的名字。加得越多越难改。
+        //
+        // ## 现在
+        // · 已订阅的 → **一个个标签，每个带 × ，点一下单独删掉**
+        // · 加新的 → 下面一个输入框，回车提交；**仍然支持一次贴多个**
+        //   （顿号/逗号/分号/空格都认，末尾「吧」字自动去掉）
+        // · 空的输入框提交 = 什么都不做（不会写出空条目）
+        //
+        // 这样加还是"一步"，删变成"一步"，而且**看得见现在订了哪些**。
+        //
+        // ⚠️ 用的 `forums.add` / `forums.remove` / `forums.empty` 三个 key
+        //    **本来就存在**（是当初设计成标签列表时留下的、一直没人用）。
+        //    不另造新 key —— 同一个东西两套文案，以后翻译必然漏一套。
         //
         // ⚠️ 写的是 **`proactive.tiebaForums`**（顶层），不是 `qq.proactive...` ——
         //    `proactive` 在顶层，写错层就是前面那个"改了不生效"的老 bug 重演。
+        // ⚠️ `TextField` 的 value 传**空串**：它内部 `useEffect(..., [value])`
+        //    只在 value 变时重置草稿。提交后 `apply()` 会 `data.reload()`
+        //    整页重挂载，草稿自然清空 —— 不用额外塞状态。
         h(Section, { title: t('section.forums'), hint: t('section.forumsHint') },
           h(Row, { label: t('forums.list'), hint: t('forums.listHint') },
-            h(TextField, {
-              value: forums.join('、'),
-              placeholder: t('forums.pending'),
-              disabled: busy,
-              onCommit: (v) => apply({
-                'proactive.tiebaForums': String(v ?? '')
-                  .split(/[、,，;；\s]+/)
-                  .map((x) => x.trim().replace(/吧$/, ''))
-                  .filter(Boolean),
-              }),
-            }))),
+            h('div', { className: 'gd_forumwrap' },
+              forums.length
+                ? h('div', { className: 'gd_forumchips' },
+                  forums.map((f) => h('span', { key: f, className: 'gd_forumchip' },
+                    h('span', { className: 'gd_forumchipname' }, f),
+                    h('button', {
+                      type: 'button',
+                      className: 'gd_forumdel',
+                      disabled: busy,
+                      title: t('forums.remove'),
+                      'aria-label': t('forums.remove'),
+                      onClick: () => apply({
+                        'proactive.tiebaForums': forums.filter((x) => x !== f),
+                      }),
+                    }, '×'))))
+                : h('div', { className: 'gd_forumnone' }, t('forums.empty')),
+              h(TextField, {
+                value: '',
+                placeholder: t('forums.add'),
+                disabled: busy,
+                onCommit: (v) => {
+                  // 一次可以贴多个；已存在的自动跳过，不重复写
+                  const add = String(v ?? '')
+                    .split(/[、,，;；\s]+/)
+                    .map((x) => x.trim().replace(/吧$/, ''))
+                    .filter((x) => x && !forums.includes(x))
+                  if (add.length === 0) return
+                  apply({ 'proactive.tiebaForums': [...forums, ...add] })
+                },
+              })))),
 
         // ── 决策与人格 ──────────────────────────────────────────────────
         h(Section, { title: t('section.decision'), hint: t('section.decisionHint') },

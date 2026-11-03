@@ -190,23 +190,52 @@ ok('★ 面板要写 `proactive.tiebaForums`（键名不能带 qq.）', () => {
   assert.match(s, /'proactive\.tiebaForums':/, '★ 键名是 proactive.tiebaForums')
 })
 
+/*
+ * ★★ 取「贴吧订阅」那一整段 —— **按结构切，不按字数切**。
+ *
+ * ⚠️ 原来这两个断言用的是：
+ *     const at = s.indexOf("'proactive.tiebaForums':")
+ *     const seg = s.slice(at, at + 400)      // ← 固定 400 字
+ *
+ * 2026-11-02 面板改成「标签列表」之后**就报错了**，但**代码是对的**：
+ * 新版里**第一个** `'proactive.tiebaForums':` 出现在**删除**那一支
+ * （点标签上的 × → `forums.filter((x) => x !== f)`），
+ * 而 split / replace 在 400 字**之外** → 断言找不到 → 红。
+ *
+ * 这跟 check-voice、check-sticker-priority 栽的是**同一个坑**：
+ * **固定字数窗口**会被后续插入的注释、新分支挤爆，
+ * 报出来的却是"功能坏了"，比没测还误导。
+ *
+ * 改成切到**下一段注释**为止（那一段的收尾）。
+ */
+const forumsBlock = () => {
+  const s = fs.readFileSync(new URL('../plugin/client.js', import.meta.url), 'utf8')
+  const at = s.indexOf('// ── 贴吧订阅')
+  assert.ok(at > 0, '要有「贴吧订阅」那一段')
+  const end = s.indexOf('// ── 决策与人格', at)
+  return s.slice(at, end > at ? end : at + 5000)
+}
+
 ok('★ 分隔符要认中文顿号（中文输入法下最常见）', () => {
   /*
    * 用户会写成「明日方舟、显卡」。只切英文逗号的话，`、` 不会生效 ——
    * 界面看着接受输入，实际存进去一整个字符串，很难查。
    */
-  const s = fs.readFileSync(new URL('../plugin/client.js', import.meta.url), 'utf8')
-  const at = s.indexOf("'proactive.tiebaForums':")
-  const seg = s.slice(at, at + 400)
-  assert.match(seg, /split\(\/\[、,，;；\\s\]\+\/\)/, '★ 要切 顿号/逗号/分号/空格')
+  assert.match(forumsBlock(), /split\(\/\[、,，;；\\s\]\+\/\)/, '★ 要切 顿号/逗号/分号/空格')
 })
 
 ok('★ 末尾的「吧」字要自动去掉（用户会顺手写「明日方舟吧」）', () => {
-  const s = fs.readFileSync(new URL('../plugin/client.js', import.meta.url), 'utf8')
-  const at = s.indexOf("'proactive.tiebaForums':")
-  const seg = s.slice(at, at + 400)
+  const seg = forumsBlock()
   assert.match(seg, /replace\(\/吧\$\/, ''\)/, '★ 要去掉尾部的「吧」')
-  assert.match(seg, /filter\(Boolean\)/, '空串要滤掉（否则会存进空条目）')
+  /*
+   * 「空串要滤掉（否则会存进空条目）」—— 断言**语义**，别锁字面。
+   * 原版是 `filter(Boolean)`；2026-11-02 改成
+   * `filter((x) => x && !forums.includes(x))`（**顺带去了重**，更好）。
+   * 两个都满足"空串进不去"，所以两种写法都算过 ——
+   * 锁死 `filter(Boolean)` 的话，以后任何改进都会误报成"功能坏了"。
+   */
+  assert.match(seg, /filter\((?:Boolean|\(x\)\s*=>\s*x)/,
+    '★ 空串要滤掉（filter(Boolean) 或等价的真值判断都行）')
 })
 
 ok('面板要有中英文两套文案', () => {

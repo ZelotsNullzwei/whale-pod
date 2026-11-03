@@ -21,6 +21,10 @@ import * as fallbackMod from '../gateway/fallback.js'
 import { resolveCandidates, openFirstAvailable, applyFreeOrder, PROVIDER_MODEL_HINTS } from '../gateway/router.js'
 // 搜索限额（每天最多几次）—— 和 QQ 那侧共用同一份计数文件
 import { SearchQuota } from '../gateway/search.js'
+// 每小时限次（防某个小时连搜）—— 跟 searchQuota 是两个不同层级的闸
+import { SearchPacing } from '../gateway/pacing.js'
+// 「本机有没有能驱动 CDP 的浏览器」—— 界面上要如实写清楚这个依赖（见 browserCapability）
+import { findBrowser } from '../gateway/browser.js'
 // 决策层热更新要用（改 decision.provider 后不必重启）
 import { createDecisionLayer } from '../decision/index.js'
 
@@ -1240,6 +1244,25 @@ function redactKey(k) {
 
 // ── 状态快照 ──────────────────────────────────────────────────
 
+/**
+ * 探测「本机有没有能驱动 CDP 的浏览器」。
+ *
+ * 给 `/api/status` 的 `caps.browser` 用 —— 界面据此**如实显示**
+ * "这个功能要什么、现在有没有"。
+ *
+ * ⚠️ **只 existsSync，不启动**：这个接口调用很频繁。
+ * ⚠️ **找不到不抛**：返回 `{ ok:false }`，界面照常渲染，只是把那行显示成"缺"。
+ */
+function browserCapability() {
+  try {
+    const exe = findBrowser()
+    if (!exe) return { ok: false, name: null, exe: null }
+    return { ok: true, name: path.basename(exe), exe }
+  } catch {
+    return { ok: false, name: null, exe: null }
+  }
+}
+
 function buildStatus(ctx) {
   const { store, llm, decision, credentials, memory, persona, longMemory, bridge, state } = ctx
   const cfg = store.get()
@@ -1279,6 +1302,25 @@ function buildStatus(ctx) {
       disabled: [...disabled],
     },
     catalog: { count: usableModels.length, total: catalog.length, vision: visionModels.length },
+    /*
+     * ★★ **能力上报**（2026-11-02，用户提的规矩）。
+     *
+     * 用户原话：「在设置页面加功能就要写明需要其他插件」——
+     * 有些功能**依赖本机装的东西**（比如"用真浏览器看内页"要求本机有
+     * Edge/Chrome）。这类依赖**必须在界面上写清楚**，否则：
+     *   · 用户看不到那个功能为什么不动
+     *   · 也想不到"原来要装浏览器"
+     *   · 更糟的是**静默失败** —— 功能默默降级，谁都不知道为什么
+     *
+     * 所以这里**主动探测**并报出来，界面照实显示：
+     *   `caps.browser = { ok, name, exe }` —— ok:false 就是"本机没有"。
+     *
+     * ⚠️ 探测只做 `existsSync`（几个固定路径），**绝不启动浏览器** ——
+     *    这个接口会被频繁调用，不能有副作用、不能慢。
+     */
+    caps: {
+      browser: browserCapability(),
+    },
     // 用量：token 与估算费用（QQ + 网关两条路都汇总在这里）。
     // state.usage 缺失时给个零值快照，UI 不用做空判断。
     usage: state.usage?.snapshot?.() ?? null,
@@ -2043,6 +2085,9 @@ async function startQqBridge({ store, state, log, decision, memory, longMemory, 
      *    不会真的并发写。）
      */
     const searchQuota = new SearchQuota({ home: store.home, log })
+    // ⚠️ 内存态、**不落盘** —— 它管的是"一小时内的突发"，重启后从头计没问题；
+    //    总量那条线由上面的 searchQuota 落盘兜着（详见 gateway/pacing.js 文件头）。
+    const searchPacing = new SearchPacing({ log })
     const b = new QQBridge({
       cfg: {
         ...cfg.qq,
@@ -2059,6 +2104,7 @@ async function startQqBridge({ store, state, log, decision, memory, longMemory, 
       persona,
       usage,
       searchQuota,
+      searchPacing,
       searchKey: (() => {
         try { return creds?.get?.('DEEPSEEK_API_KEY') ?? null } catch { return null }
       })(),

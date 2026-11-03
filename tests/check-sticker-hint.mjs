@@ -11,6 +11,7 @@
  */
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
+import { PROMPT_NOTE_TEXTS } from '../src/qq/bridge.js'
 
 const SRC = fs.readFileSync(new URL('../src/qq/bridge.js', import.meta.url), 'utf8')
 
@@ -71,10 +72,23 @@ ok('真图片分支仍保留「像不像你」', () => {
 })
 
 ok('describeMedia 的 tail 区分两类', () => {
-  const seg = SRC.match(/const tail = '([\s\S]{0,220}?)\n\s+return n/)
-  assert.ok(seg, '应存在 tail')
-  assert.ok(/有字的梗图/.test(seg[1]))
-  assert.ok(/只回一个表情/.test(seg[1]))
+  /*
+   * ⚠️ 2026-11-02 改法。
+   *
+   * 原来抠的是**源码形状**：
+   *     SRC.match(/const tail = '([\s\S]{0,220}?)\n\s+return n/)
+   * 而那天把这段原文提成了共享常量（`PROMPT_NOTE_TEXTS`）——
+   * 注入侧和清洗侧都要用它，分成两处写必然走偏。
+   * 一提常量，这个正则就**匹配不到**了 → 报「应存在 tail」，
+   * **看着像功能没了，其实只是代码换了写法**。
+   *
+   * 现在直接断言**那份原文本身**（语义），不再抠形状。
+   */
+  const tail = PROMPT_NOTE_TEXTS[0]
+  assert.ok(tail, '应存在 tail')
+  assert.ok(/有字的梗图/.test(tail), 'A 类：有字的梗图')
+  assert.ok(/只回一个表情/.test(tail), 'B 类：没字的情绪图只回表情')
+  assert.ok(/不要打字/.test(tail), 'B 类：不许打字接')
 })
 
 // ── describeMedia：区分「你 / 对方」+ 表情给名字（2026-10-31）────────

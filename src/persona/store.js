@@ -498,13 +498,40 @@ export class PersonaStore {
     })
   }
 
-  /** 读一个角色的内容。 */
+  /**
+   * 读一个角色的内容。
+   *
+   * ★ 2026-11-02：缓存改成**认文件 mtime**（热生效）。
+   *
+   * ## 原来为什么不行
+   * 原来只按路径缓存：`if (this._cache.has(p)) return this._cache.get(p)`。
+   * `write()` 会清缓存，但**直接改文件**（编辑器里改、脚本改、我按用户要求
+   * 改 `persona/roles/*.md`）**不会** —— 于是跑着的那个进程永远读旧内容，
+   * **必须重启 whale-pod 才生效**。
+   *
+   * 实测（2026-11-02）：直接往 close.md 末尾追加一行，
+   * 再 `read()` 长度 **3087 → 3087 没变** —— 缓存把改动吃掉了。
+   *
+   * 用户的原话是「自动人格编写生效没有」，而症状就是
+   * **"改完看着没生效"** —— 因为要重启，而重启这件事不会被联想到"人格没生效"
+   * （他改的是文件，凭什么要重启程序？）。所以现在改成自动认。
+   *
+   * ## 代价
+   * 每次读多一次 `statSync`。人格文件很小、每条消息读一次，
+   * 而"读的还是上一版人格"这种错**很难被发现**，值得这个代价。
+   */
   read(name = this.active) {
     const p = this.path(name)
-    if (this._cache.has(p)) return this._cache.get(p)
-    if (!fs.existsSync(p)) return ''
+    let st = null
+    try { st = fs.statSync(p) } catch { this._cache.delete(p); return '' }
+
+    const hit = this._cache.get(p)
+    // 指纹用 mtime + size：mtime 精度在某些文件系统上很粗，
+    // 同一毫秒内的两次改动可能看不出来，加上 size 兜一层。
+    if (hit && hit.mtimeMs === st.mtimeMs && hit.size === st.size) return hit.text
+
     const text = fs.readFileSync(p, 'utf8')
-    this._cache.set(p, text)
+    this._cache.set(p, { mtimeMs: st.mtimeMs, size: st.size, text })
     return text
   }
 

@@ -133,8 +133,28 @@ export function parsePatchNarrow(text) {
     const ind = indentOf(line)
     const body = line.trim()
 
-    // 顶层条目：`- id: xxx`
-    if (/^-\s+/.test(body) || ind === 0) {
+    /*
+     * 顶层条目：`- id: xxx` —— **必须在第 0 列**（2026-11-02 修）。
+     *
+     * ## 原来的写法为什么不成立
+     * 原来判的是 `if (/^-\s+/.test(body) || ind === 0)` —— 而 `body` 是
+     * **去掉缩进后**的行，于是 `models:` 里深缩进的
+     * `          - id: auto/deepseek-v4.1-flash` 也满足 `/^-\s+/`，
+     * 被当成了**顶层补丁条目**。
+     *
+     * 后果（实测）：新版 DSH 重写过配置之后，`parsePatchNarrow()` 解析出
+     * 29 条，其中 **17 条是模型 id**；`magpie` 那个块在第一个模型 id 处被
+     * 截断 → `models` 空 → `patchesToChannels()` 以「没有模型」把整条渠道跳过。
+     * 最终 whale-pod 只剩**内置官方那条（付费）**，而用户根本不知道。
+     *
+     * 而且下面那个 `- id: <modelId>` 分支（开新模型）**本来是够不到的** ——
+     * 所有 `- id:` 都被这里先截走了。
+     *
+     * ## 判据
+     * DSH 的补丁文件里，**顶层条目一律在第 0 列**；
+     * `models:` 里的条目在第 10 列左右。所以只认 `ind === 0`。
+     */
+    if (ind === 0) {
       const m = body.match(/^-\s+id:\s*(.+)$/) || body.match(/^id:\s*(.+)$/)
       if (m) {
         curEntry = { id: m[1].trim().replace(/^["']|["']$/g, ''), config: { providers: {} } }

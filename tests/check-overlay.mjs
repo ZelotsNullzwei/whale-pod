@@ -32,7 +32,7 @@ if (!targetRef) {
   console.log('  使用 ref:', targetRef)
   const original = creds.getRepaired(targetRef)
   const parsed = JSON.parse(original)
-  parsed.access_token = 'TEST_TOKEN_WRITTEN_BY_GUARDIAN'
+  parsed.access_token = 'TEST_TOKEN_WRITTEN_BY_WHALE_POD'
   parsed.expiry = new Date(Date.now() + 3600_000).toISOString()
 
   await creds.set(targetRef, JSON.stringify(parsed))
@@ -47,7 +47,7 @@ if (!targetRef) {
   const v = c2.get(targetRef)
   console.log('  读到的 access_token:', String(v.access_token).slice(0, 40))
   console.log('  来自 overlay:', c2.isFromOverlay(targetRef))
-  console.log('  预期: TEST_TOKEN_WRITTEN_BY_GUARDIAN')
+  console.log('  预期: TEST_TOKEN_WRITTEN_BY_WHALE_POD')
 
   console.log('\n=== 其它 ref 仍然可读（来自 DSH 文件）===')
   for (const r of c2.listRefs().slice(0, 6)) {

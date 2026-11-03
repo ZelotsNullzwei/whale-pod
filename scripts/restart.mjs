@@ -134,22 +134,26 @@ if (!fs.existsSync(entry)) { console.error(`❌ 入口不存在：${entry}`); pr
  *    症状极具误导性：看着像用户的 API Key 没了，其实是路径没传。
  *    成功启动的日志里一定有 `DSH：D:/DSH Desktop/resources/app` 这一行。
  */
-function findDshApp() {
-  const candidates = [
-    process.env.DSH_APP_DIR,
-    'D:/DSH Desktop/resources/app',
-    'C:/Program Files/DSH Desktop/resources/app',
-    path.join(process.env.LOCALAPPDATA ?? '', 'Programs/DSH Desktop/resources/app'),
-  ].filter(Boolean)
-  for (const c of candidates) {
-    // 认 resources/app 下的 package.json，光有目录不够
-    if (c && fs.existsSync(path.join(c, 'package.json'))) return c
-  }
-  return null
-}
+/*
+ * ⚠️ 2026-11-02 改：**这里原来有一份 `findDshApp()` 的复制品**。
+ *
+ *    后果：`src/gateway/dsh-appdir.js` 那份升级支持了 asar 布局
+ *    （`D:\DSH Next\resources\app.asar`），**这一份还是老的** ——
+ *    新版 DSH 下它永远返回 null，白打一句「没找到 DSH 安装目录」，
+ *    而实际是能用的（index.js 自己会探测到）。
+ *
+ *    这类"同一份逻辑抄两处"的毛病就是这么来的：**改了一处、漏了另一处，
+ *    而且漏掉的那处只会喊一句错话、不会真的坏 —— 所以特别容易留着**。
+ *    现在改成调共享的那份，只此一处。
+ */
+const { findDshResources } = await import('../src/gateway/dsh-appdir.js')
 
-const dshApp = findDshApp()
-if (dshApp) console.log(`  DSH: ${dshApp}`)
+const resolved = findDshResources()
+// 旧布局给 app 目录、新布局给 resources 目录（findDshResources 两种都认，
+// 它会同时看候选本身和它的上一级）
+const dshApp = resolved.appDir ?? resolved.resources ?? null
+if (resolved.appDir) console.log(`  DSH: ${resolved.appDir}（普通目录布局）`)
+else if (resolved.asar) console.log(`  DSH: ${resolved.asar}（asar 布局 —— 需要的包会按需提取）`)
 else console.log('  ⚠️ 没找到 DSH 安装目录 —— LLM 渠道可能挂不上（可用 DSH_APP_DIR 环境变量指定）')
 
 // 输出追加到日志文件（和程序自身的日志同一个文件）

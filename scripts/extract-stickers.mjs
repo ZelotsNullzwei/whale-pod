@@ -23,7 +23,8 @@ import path from 'node:path'
  * 定位 QQ 数据目录（含 nt_qq/nt_data/Emoji 的那一层）。
  *
  * ⚠️ 不写死个人路径 —— 这个脚本要能给别人用。
- * 优先：命令行参数 > 环境变量 GUARDIAN_QQ_DATA > 从常见位置探测。
+ * 优先：命令行参数 > 环境变量 WHALE_POD_QQ_DATA > 从常见位置探测。
+ * （旧名 GUARDIAN_QQ_DATA 仍然认 —— 项目改名前的写法）
  */
 function resolveQQDataDir(explicit) {
   const candidates = []
@@ -61,11 +62,17 @@ function resolveQQDataDir(explicit) {
 
   console.error('找不到 QQ 数据目录。请显式传入，例如：')
   console.error('  node scripts/extract-stickers.mjs "D:/Tencent/.../Tencent Files/123456789"')
-  console.error('（也可以设环境变量 GUARDIAN_QQ_DATA）')
+  console.error('（也可以设环境变量 WHALE_POD_QQ_DATA）')
   process.exit(1)
 }
 
-const base = resolveQQDataDir(process.argv[2] ?? process.env.GUARDIAN_QQ_DATA)
+/*
+ * ⚠️ 环境变量在 2026-11-03 从 `GUARDIAN_QQ_DATA` 改名成 `WHALE_POD_QQ_DATA`
+ *    （项目改名前留下的老名字）。**旧名仍然认** —— 否则谁以前设过它，
+ *    升级后就会突然"找不到 QQ 数据目录"，而报错看起来像路径问题，极难查。
+ */
+const qqDataEnv = process.env.WHALE_POD_QQ_DATA ?? process.env.GUARDIAN_QQ_DATA
+const base = resolveQQDataDir(process.argv[2] ?? qqDataEnv)
 console.log('QQ 数据目录：' + base)
 const mf = path.join(base, 'nt_qq/nt_data/Emoji/marketface')
 const jsonDir = path.join(mf, 'json')

@@ -25,6 +25,10 @@ import { makeMessage } from '../memory/short.js'
 import { resolveCandidates, openFirstAvailable, applyFreeOrder, PROVIDER_MODEL_HINTS } from '../gateway/router.js'
 import { deriveRouting } from '../gateway/strategy.js'
 import { needsFreshInfo, webSearch, formatSearchContext, pickCoverImage, checkBalance } from '../gateway/search.js'
+import { fetchLinkPreview, extractLink, formatLinkContext } from '../gateway/link-preview.js'
+import { detectCode, formatCodeContext } from '../gateway/codes.js'
+import { fetchAlbum, formatAlbumContext, JmHostCache } from '../gateway/jm.js'
+import { readJmPages, formatAlbumPagesNote } from '../gateway/jm-read.js'
 import FACE_TABLE from './faces.json' with { type: 'json' }
 import { InteractionTracker, BegState, decideBeg } from './beg.js'
 import { ProactiveScheduler, ProactiveState } from './proactive.js'
@@ -34,7 +38,11 @@ import { applyQuestionOverride } from './questionGate.js'
 import { shouldAnswerSticker } from './stickerGate.js'
 import { StickerTagStore, stickerKey, splitTags } from './sticker-tags.js'
 import { hasBiliLink, resolveBvid, fetchVideoInfo, fetchTopComments, fetchDanmaku, fetchAudioCandidates, downloadAudio, formatVideoContext } from './bilibili.js'
-import { transcribeVideoCached } from './asr.js'
+import { transcribeVideoCached, transcribeVideoDetailed } from './asr.js'
+// 梗百科 —— 本地词库（零成本），联网查梗之前先走它；没收录才放行联网
+import { openMemeDb, memeHint } from './memewiki.js'
+// 画面（分镜图）—— B 站自己的 x/player/videoshot，不用 ffmpeg
+import { fetchVideoShots, formatShotsNote } from './videoshot.js'
 import { buildBalanceHint } from './balanceHint.js'
 import { buildVarietyHint, buildExpressionHint } from '../persona/variety.js'
 import { currentSlot, renderDayPlan } from '../memory/dayPlan.js'
@@ -95,6 +103,26 @@ export const REFER_IMAGE_WEAK =
  * `mediaHint` 是空串。图附上去了却一句话都没交代，
  * 它就会把这张旧图当成"刚发给它的"来评论，答非所问。
  */
+/**
+ * ★★ 喂给模型的「提示原文」—— 注入侧和清洗侧**共用这一份**。
+ *
+ * ## 为什么要提出来当常量
+ * 这类提示是**拼进对话记录**的，模型偶尔会照抄出来（历史上踩过好几次：
+ * 媒体描述、时间戳都漏过）。所以输出侧必须能**按原文擦掉**。
+ *
+ * 如果原文在注入处写一遍、在清洗处再写一遍 —— 以后改了一处、另一处就失效，
+ * 而失效的表现是「兜底悄悄不生效」：不报错、不告警，
+ * 只能等下一次用户再撞见一句漏出来的提示。
+ *
+ * @type {string[]}
+ */
+export const PROMPT_NOTE_TEXTS = [
+  '有字的梗图就懂意思、用自己的话接一句；纯情绪图（没字）只回一个表情，不要打字也不要描述画面',
+  // 旧版本拆开写过的两段（老记录里可能还留着，一并擦）
+  '纯情绪图（没字）只回一个表情，不要打字也不要描述画面',
+  '只回一个表情，不要打字也不要描述画面',
+]
+
 export const IMG_REFER_NOTE = `## ⚠️ 这次附的图是**旧的**
 
 对方这条消息里**没有图**，但它的话在指代一张图（「这个 / 那张 / 图里…」），
@@ -362,11 +390,32 @@ export function describeMedia(m) {
      *    念一遍当回复（「图里写着『今天又加班』」），等于废话。
      *    用户的要求是「懂意思、接梗、不复述」。
      */
-    const tail = '有字的梗图就懂意思、用自己的话接一句；'
-      + '纯情绪图（没字）只回一个表情，不要打字也不要描述画面'
+    const tail = PROMPT_NOTE_TEXTS[0]
+    /*
+     * ★★ 2026-11-02：提示改用 `〔提示：…〕` 记号 —— 它**一眼就不是台词**。
+     *
+     * ## 出过的事故（用户实测报的）
+     * 私聊里连发**两张表情包** → 拼出两段括号注 → 模型**照着吐了出来**：
+     *     12:33:42 [我]「只回一个表情，不要打字也不要描述画面） 只回一个表情，不要打字也不要描述画面）
+     *
+     *                  喏，说好两张就是两张。」
+     * **把给模型的指令直接发给用户了，而且发了两遍**（两张表情包各拼一段）。
+     * 她随后还自己圆场：「那行字漏出来了…我写着写着把提示也打出去了」。
+     *
+     * ## 为什么会漏
+     * 提示是**拼进对话记录**里的，而且原来用 `（…）` ——
+     * 那正是**她自己写动作/舞台提示**的格式。模型分不清
+     * "这是给我的要求" 还是 "这是要我说的话"，就照着念了。
+     *
+     * 所以把它换成 `〔提示：…〕`：方括号 + 「提示」两个字，
+     * 在记录里跟任何人的发言、任何动作描述**都不同形**。
+     *
+     * ⚠️ 但光换记号**不够** —— 措辞再怎么改都可能被念。所以还有第二层：
+     *    发送前用 `stripPromptLeak()` 把这几段**原文擦掉**（见那个函数的说明）。
+     */
     return n
-      ? `（${who}发了一个表情包，关于「${n}」。${tail}）`
-      : `（${who}发了一个表情包。${tail}）`
+      ? `（${who}发了一个表情包，关于「${n}」）〔提示：${tail}〕`
+      : `（${who}发了一个表情包）〔提示：${tail}〕`
   })
   /*
    * 系统小黄脸：**给出名字**，不再只给 id（2026-10-31）。
@@ -543,10 +592,61 @@ export function cleanModelText(raw) {
    * 所以锚点改成 `(对方|你)发(了个QQ表情|了一个表情包|了一张图)`，
    * 比「括号内任意内容」精准（后者会误伤「（笑）」「（认真脸）」）。
    */
+  /*
+   * ★★ 2026-11-02：**原来那条正则会剥一半、把提示留在正文里**（用户实测报的）。
+   *
+   * ## 病因：`[^）)]*` 不许出现右括号，而这些注记里**本来就有内层括号**
+   * 原写法：`[（(]…[^）)]*[）)]`。两类注记都踩：
+   *
+   * ```
+   * （对方发了一个表情包，关于「猫猫」。纯情绪图（没字）只回一个表情…）
+   *                                              ↑↑↑↑↑↑ 内层括号
+   * （你发了个QQ表情：流泪（id=5））
+   *                      ↑↑↑↑↑↑ 内层括号
+   * ```
+   * 于是在**内层**那个 `）` 处提前收手：
+   * ```
+   * 被剥掉：（对方发了一个表情包，关于「猫猫」。纯情绪图（没字）
+   * 留下来：只回一个表情，不要打字也不要描述画面）   ← 连右括号一起发给了用户
+   * ```
+   * 用户私聊里连发**两张**表情包 → 两段注 → **同样一句漏了两遍**，
+   * 她还得自己圆场「那行字漏出来了…我写着写着把提示也打出去了」。
+   *
+   * ## 修法：改成「**这一行最后一个右括号**」
+   * 用贪婪的 `[^\n]*` 而不是 `[^）)]*` —— 注记是**整行**注进去的，
+   * 模型照抄时也基本独占一行，所以"到行尾最后一个 `）`"就是它的真实边界。
+   *
+   * ⚠️ 代价说清楚：如果模型在同一行里**先抄注记、后面又跟了别的括号**，
+   *    会被多剥一点。这个取舍是故意的 ——
+   *    **两种错法的不对称性**：漏掉注记（用户看到一句莫名其妙的话、
+   *    日志里毫无异常）比多剥掉几个字难发现得多。
+   *    何况下面还有一层**按原文精确擦除**兜底。
+   */
   s = s.replace(
-    /[（(]\s*(?:对方|你)发(?:了个QQ表情|了一个表情包|了一张图)[^）)]*[）)]/g,
+    /[（(]\s*(?:对方|你)发(?:了个QQ表情|了一个表情包|了一张图)[^\n]*[）)]/g,
     '',
   )
+  /*
+   * ★ 新版注记用 `〔提示：…〕`（方括号 + 「提示」两个字）——
+   * 在记录里跟任何人的发言、任何动作描述**都不同形**，
+   * 模型不容易当成"要我说的话"（见 describeMedia 里的说明）。
+   * 它**没有嵌套**，所以一条正则就干净了。
+   */
+  s = s.replace(/〔\s*提示：[\s\S]*?〕/g, '')
+  /*
+   * ★★ **原文兜底**：把已知的提示原文**按字符串**擦掉（允许后面跟个右括号）。
+   *
+   * 这一层是**故意的冗余**：上面两条正则都是"按形状匹配"，
+   * 形状一变（就像这次内层括号）就会漏。而这一层认的是**原文本身**，
+   * 只要提示文字没改，怎么嵌套、怎么排版都跑不掉。
+   * 原文跟注入侧共用 `PROMPT_NOTE_TEXTS`，不会两边走偏。
+   */
+  for (const frag of PROMPT_NOTE_TEXTS) {
+    const esc = frag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    s = s.replace(new RegExp(esc + '[）)]?', 'g'), '')
+  }
+  // 擦完可能留下孤立的空格/空行
+  s = s.replace(/[ \t]{2,}/g, ' ').replace(/\n{3,}/g, '\n\n')
 
   /*
    * ⑨ 剥掉**时间戳标记**。
@@ -844,6 +944,16 @@ export class QQBridge {
      * 这个 `SearchQuota` 是真计数：写盘、跨天归零。
      */
     this.searchQuota = opts.searchQuota ?? null
+    /*
+     * 每小时限次（2026-11-03）—— 防"某个小时连搜"。
+     *
+     * ⚠️ 跟 `searchQuota` 是**两个不同层级**的闸，两个都要：
+     *   `searchQuota`  一天的**总账**（省钱主力，落盘，跨重启还在）
+     *   `searchPacing` 一小时的**突发闸**（内存，重启即清）
+     * 日上限拦不住"判据发疯" —— 实测一小时内连搜了 3 次「能看吗」，
+     * 那种情况下判据明显失灵，限一下比事后看账单强。
+     */
+    this.searchPacing = opts.searchPacing ?? null
     this.persona = opts.persona
     /**
      * 人物档案（可空）—— 按 **QQ 号**认人，昵称只当别名。     *
@@ -3266,6 +3376,18 @@ export class QQBridge {
         this._videoJobs.delete(String(msg.scope ?? ''))
         void this._videoFollowUp(vjob, msg, mem, scene, self)
       }
+      /*
+       * ★★ 车牌内页：**同一个模式**（2026-11-02）。
+       *
+       * 开浏览器看内页实测 **26 秒** —— 绝不能卡在上面那条回复里。
+       * 这里只是"把已经派出去的任务接上"：任务在 `_generate` 里 `void` 派出去的
+       * （那时浏览器已经在后台开了），现在回复发完了，交给 `_jmFollowUp` 收尾。
+       */
+      const jmjob = this._jmJobs?.get(String(msg.scope ?? ''))
+      if (jmjob) {
+        this._jmJobs.delete(String(msg.scope ?? ''))
+        void this._jmFollowUp(jmjob, msg, mem, scene, self)
+      }
       // 记下自己发出的 message_id —— 过时检测要靠它认出
       // 「后续消息引用了我的回复」= 有人在追问我，不能判过时。
       this._rememberMyReplyIds(msg.scope, sentIds)
@@ -3347,8 +3469,28 @@ export class QQBridge {
     return pick
   }
 
-  async _collectImages(recent, preRef) {
+  async _collectImages(recent, preRef, extraBlocks = null) {
     const out = new Map()
+
+    /*
+     * ★★ 先把**外面塞进来的图块**放进去（2026-11-02）。
+     *
+     * 为什么需要：QQ 的图是靠 `onebot.fetchImage(ref)` 去下载的，
+     * 但**浏览器截图**本来就是 base64 —— 不需要下载那一步。
+     * 硬塞进 `msg.images` 那条路会白跑一趟下载（而且必然失败）。
+     *
+     * 用途：生物"看完车牌内页补一句"那块 —— 截图直接从这里进上下文。
+     *
+     * ⚠️ 放在最**前面**，且**不受**下面那些开关影响：
+     *    · `imagesEnabled=false`（那是管"要不要下载 QQ 图"的）
+     *    · `makeImageBlock` 不可用（下面会判，但这里已经拿到成块了）
+     *   截图是我们自己生成的，已经入库过一次，没必要再受一遍闸。
+     */
+    if (extraBlocks && typeof extraBlocks[Symbol.iterator] === 'function') {
+      for (const [k, v] of extraBlocks) if (v) out.set(k, v)
+      if (out.size > 0) this.log.info?.(`bridge：附图 ${out.size} 张（浏览器截图）`)
+    }
+
     // 配置里显式关掉就不抓（省钱 / 模型不支持图片时）
     if (this.cfg.reply?.imagesEnabled === false) {
       this.log.info?.('bridge：配置里 imagesEnabled=false —— 不抓图（模型只能看到"[图片]"文字）')
@@ -3674,7 +3816,11 @@ export class QQBridge {
   }
 
   /** 调 LLM 生成回复。 */
-  async _generate(msg, mem, scene, self) {
+  /**
+   * @param {object} [extraBlocks] 外面塞进来的图块（浏览器截图那种，见 `_collectImages`）
+   * @param {string} [extraNote]   外面塞进来的注记（"看完车牌内页"补发时用）
+   */
+  async _generate(msg, mem, scene, self, extraBlocks = null, extraNote = '') {
     const long = this.longMemory?.get(msg.scope)
     const memoryText = long?.toPrompt() ?? ''
 
@@ -3727,6 +3873,18 @@ export class QQBridge {
     //    触发判断在 search.js 的 needsFreshInfo()，收得比较紧。
     let searchContext = ''
     /*
+     * ★ 梗百科的词条（2026-11-03）。命中就进上下文，**并且这次不联网搜** ——
+     * 用户要的「本地优先 + 联网兜底」就是这么分工的（详见 `_memeHint`）。
+     */
+    let memeContext = ''
+    try {
+      const m = this._memeHint?.(msg.text)
+      if (m) {
+        memeContext = m.text
+        this._lastMeme = { at: Date.now(), query: m.query, title: m.title }
+      }
+    } catch { /* 静默 —— 词库是加分项，不该影响回复 */ }
+    /*
      * ★ **B 站分享链接 → 免费抓元信息**（2026-10-31）。
      *
      * 之前她只看到 `【标题】https://...` 一串文字，**不点、也不搜**（`needsFreshInfo`
@@ -3742,9 +3900,12 @@ export class QQBridge {
      * 失败静默：拿不到就当没有，绝不因为一个外链拖垮整条回复。
      */
     let biliContext = ''
+    /** "看画面"模式下 B 站分镜图（`_biliContext` 带出来的）；没开就是 null */
+    let biliShots = null
     try {
       const bili = await this._biliContext(String(msg.text ?? ''))
       biliContext = bili.ctx
+      biliShots = bili.shots ?? null
       /*
        * 长视频会在这里挂一个**后台转写任务**，交给 `_handle` 在回复发完之后补发
        * （见 `_videoFollowUp`）。
@@ -3758,6 +3919,134 @@ export class QQBridge {
         this._videoJobs.set(String(msg.scope ?? ''), bili.job)
       }
     } catch { /* 静默 */ }
+    /*
+     * ★★ A：**非 B 站的链接也真去打开看看**（2026-11-02）。
+     *
+     * ## 原来什么样
+     * 只有 B 站会去抓（`_biliContext` 第一行就是 `if (!hasBiliLink(text)) return`）。
+     * 别的站：
+     *   · 分享卡片**带标题** → 她只读到**消息里那行文字**（那是腾讯加的卡片标题，
+     *     不是网页内容）
+     *   · **裸链接**         → 什么都看不到
+     * 用户实测问「现在分享一个链接…她能去看吗」→ 除了 B 站都不行。
+     *
+     * ## 现在
+     * 抓 `og:title` / `og:description` / `og:site_name`，
+     * 没有 og 标签的站退而取**正文头几百字**。
+     * 实测：小黑盒 377ms、知乎 440ms、example.com 1351ms，都能拿到标题+描述。
+     *
+     * ## 三条约束（都写在 link-preview.js 里了）
+     * ① 超时 3.5s —— **宁可拿不到，也不让回复卡住**（用户不喜欢额外延迟）
+     * ② 只读前 400KB（og 标签一定在 head 里）
+     * ③ 失败返回 null，不抛错
+     *
+     * ⚠️ **抓不到时必须明说"打不开"**，不能留空让模型拿标题硬猜 ——
+     *    历史上它编过「点开想学修电脑」（标题/评论里一个字都没有）。
+     */
+    let linkContext = ''
+    if (!biliContext) {
+      const url = extractLink(String(msg.text ?? ''))
+      if (url) {
+        try {
+          const preview = await fetchLinkPreview(url)
+          linkContext = formatLinkContext(preview)
+          this.log.info?.(
+            `bridge：链接预览 ${preview ? `✅ ${preview.title.slice(0, 40)}` : '✗ 打不开'} — ${url.slice(0, 60)}`,
+          )
+        } catch { /* 静默：预览是锦上添花 */ }
+      }
+    }
+    /*
+     * ★★ B：**认出「车牌」**（2026-11-02）。
+     *
+     * 群里/私聊有人用代号指作品（`JM123456`），原来两条路都不通：
+     *   · `JM123456` → 被 `needsFreshInfo` 当成"提到具体名字" → 拿去联网搜
+     *     （搜的还是原始串）→ 垃圾结果、白花钱
+     *   · 纯数字 / 「禁漫 123456」 → **连搜都不触发** → 她压根没反应
+     *
+     * 现在认出编号就把「这是什么」写进提示词，并且**不让它去搜索**（见下面的闸）。
+     *
+     * ⚠️ 措辞里必须留「看不到内容」——不然她会顺着编号硬编
+     *    （历史上编过「点开想学修电脑」，标题/评论里一个字都没有）。
+     */
+    const code = detectCode(String(msg.text ?? ''))
+    /*
+     * ★★ 2026-11-02：认出车牌后**真去打开看看**（用户明确要的：
+     *    「内容可以去抓吧，私聊都那样了，漫画怎么了」）。
+     *
+     * 实测这条链路是通的（普通 fetch，不需要浏览器）：
+     *   · 作品页 `/album/<编号>` → 200、非挑战页、280KB
+     *   · `og:title` 里**信息量很大**：
+     *     `[汉化组][作者] 作品名 (原作) [翻译]` —— 汉化组/作者/作品名/原作全在里面
+     *   · `og:description` 是**站点标语**（每部作品都一样），已在 jm.js 里丢掉
+     *
+     * ⚠️ 两个坑都写在 jm.js 的注释里了，这里只强调一个：
+     *    **编号不存在时错误页会挂 Cloudflare 挑战** —— 我第一轮拿 `/album/1`
+     *    探路，差点得出"作品页全被挡着"的错结论。
+     *
+     * 抓不到就退回 `formatCodeContext`（那句"我看不到内容、别猜"）——
+     * 绝不能让它拿编号硬编。
+     */
+    let codeContext = ''
+    if (code) {
+      if (code.kind === 'jm') {
+        try {
+          const album = await fetchAlbum({
+            id: code.id,
+            hosts: this._jmHosts(),
+            log: (lv, msg) => this.log[lv]?.(msg),
+          })
+          codeContext = album ? formatAlbumContext(album) : formatCodeContext(code)
+          if (album) this.log.info?.(`bridge：车牌 ${code.raw} 抓到了「${album.title.slice(0, 40)}」`)
+        } catch (e) {
+          codeContext = formatCodeContext(code)
+          this.log.warn?.(`bridge：车牌抓取出错 — ${String(e?.message ?? e).slice(0, 80)}`)
+        }
+
+        /*
+         * ★★ **内页要真去看 —— 但那是 26 秒的活，扔后台**（2026-11-02）。
+         *
+         * 实测：开浏览器 + 开作品页 + 开阅读器 + 滚 4 屏 ≈ **26 秒**。
+         * 卡在回复里等于让用户等半分钟 —— 所以照抄**长视频那套**：
+         * 这一条回复照常发（带着标题），**看完内页再补一条**。
+         *
+         * ⚠️ 这里**只登记任务、不 await**。`void` 派出去就返回，
+         *    由 `_handle` 在回复发完之后接（见 `_jmFollowUp`）。
+         *    跟长视频同一个理由：**即时回复的延迟必须是 0**。
+         */
+        if (this.cfg.jmRead?.enabled !== false) {
+          const scope = String(msg.scope ?? '')
+          if (scope) {
+            if (!this._jmJobs) this._jmJobs = new Map()
+            /*
+             * ⚠️ **同一个会话只挂一个** —— 连着发两个车牌时，
+             *    两个 26 秒的浏览器实例会互相抢（而且第二个会覆盖第一个的任务，
+             *    导致第一个永远不补）。所以已有任务时直接跳过，日志说清楚。
+             */
+            if (this._jmJobs.has(scope)) {
+              this.log.info?.(`车牌 ${code.raw}：这个会话已经有一个在看内页了，跳过`)
+            } else {
+              this.log.info?.(`车牌 ${code.raw}：后台开始看内页（回复先发，看完再补）`)
+              this._jmJobs.set(scope, {
+                id: code.id,
+                at: Date.now(),
+                promise: readJmPages({
+                  id: code.id,
+                  maxShots: Number(this.cfg.jmRead?.maxShots) || undefined,
+                  log: (lv, m) => this.log[lv]?.(m),
+                }).catch((e) => {
+                  this.log.warn?.(`车牌 ${code.raw}：看内页出错 — ${String(e?.message ?? e).slice(0, 80)}`)
+                  return { ok: false, why: 'error' }
+                }),
+              })
+            }
+          }
+        }
+      } else {
+        codeContext = formatCodeContext(code)
+      }
+    }
+    if (code) this.log.info?.(`bridge：认出车牌 ${code.raw}（${code.kind} 编号 ${code.id}）`)
     /** 本次回复备下的封面图（随返回值带走，避免实例变量竞态）。 */
     let pendingCover = null
     const qqCfg = this.cfg.search ?? {}
@@ -3775,8 +4064,42 @@ export class QQBridge {
      * 当然搜不到 → 返回一堆无关内容 → 模型以为"打不开这个链接"。
      *
      * **B 站的信息已经抓到（标题/评论/弹幕），再搜一遍纯属帮倒忙。**
+     *
+     * ★ 2026-11-02 扩到**任何链接**：只要 `biliContext` **或** `linkContext`
+     *   已经有了（B 站抓的、或者通用链接预览抓的），就**不再搜** ——
+     *   页面内容已经拿到，拿 URL 去搜只会得到一堆垃圾（见上面那条事故链）。
+     *   这同时也是**控成本**：一次搜索约 ¥0.02，能省就省。
+     *
+     * ★★ C：**三条"不值得搜"的闸**（2026-11-02，用户要求「别乱搜…控制成本」）
+     *
+     * ① **消息里有链接** → 不搜。哪怕预览**抓失败了**也不搜 ——
+     *    把 URL 丢给搜索引擎从来搜不出这页的内容，只会返回一堆无关结果把模型带偏
+     *    （上面那段事故链就是这么来的）。
+     * ② **认出了车牌编号** → 不搜。搜「JM123456」搜不出内容，
+     *    只是把**用户发的编号**白送给搜索引擎（跟之前"私密内容被搜出去"同一类问题）。
+     * ③ 其余照旧走 `needsFreshInfo` 判定。
      */
-    if (qqCfg.enabled !== false && this.searchKey && !biliContext) {
+    const hasAnyUrl = Boolean(extractLink(String(msg.text ?? '')))
+    const skipSearch = Boolean(biliContext) || Boolean(linkContext) || hasAnyUrl || Boolean(code)
+    if (skipSearch && qqCfg.enabled !== false && this.searchKey) {
+      this.log.info?.(
+        `bridge：跳过联网搜索（${biliContext || linkContext ? '页面已抓到'
+          : hasAnyUrl ? '消息里有链接'
+            : '认出车牌编号'}）`,
+      )
+    }
+    /*
+     * ★★ **`!memeContext` —— 梗库命中就不再联网搜**（2026-11-03）。
+     *
+     * 用户原话：「这个能让她更好接梗，**我们还可以保留联网搜索兜底**」。
+     * 分工就是这个：
+     * ```
+     *   梗库命中 → 词条已经在上下文里了，**再搜就是白花钱**（一次 ≈ ¥0.0074）
+     *   梗库没收录 → 不拦，走这条联网路 ✓（新梗天天有，6668 条盖不全）
+     * ```
+     * ⚠️ **只是"跳过搜索"，不是"跳过这轮"** —— 回复照常生成，只是不查网了。
+     */
+    if (qqCfg.enabled !== false && this.searchKey && !skipSearch && !memeContext) {
       const hit = needsFreshInfo(msg.text)
       if (hit.need) {
         /*
@@ -3790,12 +4113,25 @@ export class QQBridge {
          * ⚠️ `take()` 必须在**真的要搜之前**调 —— 被拦下的那次不该计数。
          */
         const quota = this.searchQuota?.check(qqCfg.maxPerDay) ?? { ok: true, used: 0, max: 0 }
+        /*
+         * ★ 每小时限次（2026-11-03）—— 跟日上限是**两个层级**，两个都要过。
+         *   日上限是总账（省钱主力），小时限次防的是"判据发疯时一口气搜掉半天额度"。
+         *   实测：一小时内连搜了 3 次「能看吗」，那种时候判据明显失灵。
+         */
+        const pace = this.searchPacing?.allow(qqCfg.pacing) ?? { ok: true, used: 0, max: 0 }
         if (!quota.ok) {
           this.log.warn?.(
             `bridge：搜索：今天已达上限（${quota.used}/${quota.max}），跳过「${hit.query.slice(0, 30)}」`,
           )
+        } else if (!pace.ok) {
+          this.log.warn?.(
+            `bridge：搜索：本小时已达上限（${pace.used}/${pace.max}），跳过「${hit.query.slice(0, 30)}」`,
+          )
         } else try {
           this.searchQuota?.take()
+          // ⚠️ **真的要搜了才记** —— 被上面两道闸拦下的那次不该计数
+          //    （跟 `take()` 同一个道理：问了一次不等于搜了一次）
+          this.searchPacing?.note()
           this.log.info?.(`bridge：需要联网（${hit.why}）→ 查「${hit.query.slice(0, 40)}」`)
           const r = await webSearch({
             question: hit.query,
@@ -4096,7 +4432,7 @@ export class QQBridge {
        * 所以 B 站这段从 `extras` **挪到 `facts`**：单独成段、带权威标记、
        * 放最末尾、并明确写「和你之前说过的话冲突时以这里为准」。
        */
-      facts: [biliContext].filter(Boolean),
+      facts: [memeContext, biliContext, linkContext, codeContext, extraNote].filter(Boolean),
       extras: [
         searchContext,
         /*
@@ -4290,9 +4626,44 @@ export class QQBridge {
      * 这就是「一张都没入库，按纯文本发送」那条日志的来源。
      */
     const history = mem.recent(30)
+    /*
+     * ★★ **B 站分镜图并进来**（2026-11-03）。
+     *
+     * `bili` 是上面 `_biliContext` 拿到的，"看画面"模式下它带着 `shots.images`
+     * （B 站 `videoshot` 给的 10×10 拼图，**不用 ffmpeg**）。
+     *
+     * ⚠️ 它跟 `extraBlocks`（外面传进来的，比如车牌内页截图）**是两路**，
+     *    但走的是**同一个口子** —— 所以在这里合并，别在调用点加参数
+     *    （`_generate` 的调用点有五六处，加参数一定会漏）。
+     */
+    let blocks = extraBlocks
+    if (Array.isArray(biliShots?.images) && biliShots.images.length) {
+      if (typeof this.gateway?.makeImageBlock === 'function') {
+        const merged = new Map(extraBlocks ?? [])
+        for (const [i, buf] of biliShots.images.entries()) {
+          try {
+            const blk = await this.gateway.makeImageBlock({
+              base64: Buffer.from(buf).toString('base64'),
+              mediaType: 'image/jpeg',
+              name: `bili-shot-${i + 1}`,
+            })
+            if (blk) merged.set(`bili:shot:${i + 1}`, blk)
+          } catch (e) {
+            this.log.warn?.(`bridge：B站分镜图入库失败 — ${String(e?.message ?? e).slice(0, 60)}`)
+          }
+        }
+        if (merged.size) {
+          blocks = merged
+          this.log.info?.(`bridge：B站分镜图 ${merged.size} 张进上下文`)
+        }
+      } else {
+        // 没有 attachment 服务 → 图进不去。**必须说清**，否则她会以为看到了画面
+        this.log.warn?.('bridge：attachment 服务不可用 —— B站分镜图只能靠文字说明（模型看不到画面）')
+      }
+    }
     // ⚠️ 把上面提前算好的「指代哪张图」传进去 —— 见 `_pickReferencedImage`。
     //    不传的话它会自己再算一遍（结果一样，只是多打一行日志）。
-    const imageCache = await this._collectImages(history, imgReferrer)
+    const imageCache = await this._collectImages(history, imgReferrer, blocks)
 
     const messages = buildChatMessages({
       system,
@@ -5049,6 +5420,59 @@ export class QQBridge {
    * @param {string} text
    * @returns {Promise<string>}
    */
+  /**
+   * 禁漫域名缓存（懒建、进程内复用）。
+   *
+   * ⚠️ 为什么必须**落盘**（走 `this.cfg.home`）：那个站域名一直在换，
+   *    实测 6 个候选里只有一个能跳转到当前域名 —— 每次都趟一遍
+   *    就是 6 次超时。实测对比：缓存命中 1124ms / 首次 3991ms。
+   *    whale-pod 一天可能重启十几次，只放内存等于白缓存。
+   */
+  _jmHosts() {
+    if (!this._jmHostsCache) this._jmHostsCache = new JmHostCache(this.cfg.home ?? '')
+    return this._jmHostsCache
+  }
+
+  /**
+   * 梗百科 —— 命中就返回词条，没命中返回 `null`。
+   *
+   * ## ★★★ 它是"联网搜索"的**第一道闸**（2026-11-03）
+   * ```
+   *   像在问梗 → 本地查
+   *                ├─ 命中 → 用词条，**这次不联网搜** ✓（省钱，而且比搜得准）
+   *                └─ 没命中 → **不拦** → 走原来那条联网搜索路 ✓（兜底）
+   * ```
+   * 用户原话：「**我们还可以保留联网搜索兜底**」。
+   *
+   * ## 为什么值得省这一次
+   * 一次搜索 ≈ ¥0.0074（接口 ¥0.005 + 处理结果的模型钱 ✓）。
+   * 群里问梗是**高频**动作，本地查是**零成本零延迟**。
+   *
+   * ⚠️ 库打不开 / 没这个文件 → **静默返回 null**（行为跟加这个功能之前一模一样）。
+   *    16MB 的词库放在数据目录（`<home>/memes.db`），**不进仓库**（版权归 cnmeme.wiki）。
+   */
+  _memeHint(text) {
+    // ⚠️ **默认开**（`=== false` 才关）—— 用户要的就是这个功能
+    if (this.cfg?.meme?.enabled === false) return null
+    try {
+      // 懒开库（只读），开过就一直用
+      if (this._memeDb === undefined) {
+        const file = path.join(this.cfg?.home ?? '', 'memes.db')
+        this._memeDb = fs.existsSync(file) ? openMemeDb(file) : null
+        if (!this._memeDb) {
+          this.log.info?.('梗百科：没找到词库（memes.db），接梗功能关闭（联网搜索照旧）')
+        } else {
+          this.log.info?.('梗百科：词库已加载（联网查梗之前先走本地）')
+        }
+      }
+      if (!this._memeDb) return null
+      return memeHint(text, { conn: this._memeDb, log: (m) => this.log.info?.(`梗百科：${m}`) })
+    } catch (e) {
+      this.log.warn?.(`梗百科：查询出错（忽略）— ${String(e?.message ?? e).slice(0, 60)}`)
+      return null
+    }
+  }
+
   async _biliContext(text) {
     if (!hasBiliLink(text)) return { ctx: '', job: null }
     const bvid = await resolveBvid(text)
@@ -5129,29 +5553,68 @@ export class QQBridge {
        *   ③ 转完更新缓存，由 `_handle` 那边补发一句（见 `_videoFollowUp`）
        */
       if (info.duration > 0 && info.duration <= 300) {
-        try {
-          const t0 = Date.now()
-          const text = await transcribeVideoCached(
-            bvid,
-            info.cid,
-            { fetchAudioCandidates, downloadAudio },
-            { timeoutMs: 20_000, log: this.log },
-          )
-          if (text) {
-            info.transcript = text
-            this.log.info?.(
-              `B站：${bvid} 转写出 ${text.length} 字（${Math.round((Date.now() - t0) / 1000)}s）`,
+        /*
+         * ★★★ 短视频：**交给后台，别在回复里等**（2026-11-02 改）。
+         *
+         * ## 原来错在哪
+         * 这里给的是 `timeoutMs: 20_000` —— **只给 20 秒**。
+         * 而实测转写本身要 **17～26 秒**（每次约 25 秒，其中约 20 秒是
+         * whisper **模型加载**的固定成本，跟视频长短无关）。
+         *
+         * 于是：
+         * ```
+         * 15:41:38  转写出 29 字（17s）   ← 17 < 20  勉强挤过去 ✓
+         * 08:48:17  没转出可用语音        ← 那次要 26s > 20 → 被掐 ✗
+         * ```
+         * **"有时能看有时不能"就是这么来的** —— 不是视频没说话，
+         * 也不是没装 ASR，是**预算给少了**。
+         *
+         * ## 改法：跟长视频走同一条路
+         * `pendingLong` 那套（先回一句 → 后台听完 → `_videoFollowUp` 补一条）
+         * **本来就是为"不能等"设计的**，短视频一样受用：
+         * 模型加载那 20 秒是**所有人**都要付的，凭什么短视频就得在回复里等？
+         *
+         * ⚠️ 只有**很短**的片段（≤15s）才走同步 —— 那种多半是"一句话"，
+         *    而且运气好时 17s 能挤进 20s 的预算。挤不进也**不报错**，
+         *    而是**落到后台去补**（见下面的 catch/else）。
+         */
+        const SHORT_SYNC_MAX_SEC = 15
+        if (info.duration <= SHORT_SYNC_MAX_SEC) {
+          try {
+            const t0 = Date.now()
+            const text = await transcribeVideoCached(
+              bvid,
+              info.cid,
+              { fetchAudioCandidates, downloadAudio },
+              { timeoutMs: 20_000, log: this.log },
             )
-          } else {
-            /*
-             * ⚠️ 这里原来是 **debug** 级 —— 默认日志里看不见，
-             *    于是"这条为什么没内容"从日志根本查不出来（我就是靠重跑一遍才摸到两道门的）。
-             *    一次分享只打一行，不吵。
-             */
-            this.log.info?.(`B站：${bvid} 没转出可用语音（${info.duration}s 短片：无语音/没装 ASR/超时）`)
+            if (text) {
+              info.transcript = text
+              this.log.info?.(
+                `B站：${bvid} 转写出 ${text.length} 字（${Math.round((Date.now() - t0) / 1000)}s）`,
+              )
+            } else {
+              /*
+               * ⚠️ 同步没成**不代表这视频没内容** —— 转写去后台再试一次，
+               *    别在这儿下"无语音"的结论（那正是原来那句话误导人的地方）。
+               */
+              this.log.info?.(`B站：${bvid} 同步没转出来（${info.duration}s）→ 转后台再试`)
+              info.pendingLong = true
+              job = this._startVideoTranscribe(bvid, info)
+            }
+          } catch (e) {
+            this.log.warn?.(`B站：转写异常 → 转后台再试 — ${String(e?.message ?? e)}`)
+            info.pendingLong = true
+            job = this._startVideoTranscribe(bvid, info)
           }
-        } catch (e) {
-          this.log.warn?.(`B站：转写异常（忽略）— ${String(e?.message ?? e)}`)
+        } else {
+          /*
+           * 15 秒以上：**直接走后台**。理由实测：转写固定成本约 25s，
+           * 同步等就是让用户多等 25 秒 —— 那是他明确抱怨过的量级。
+           */
+          this.log.info?.(`B站：${bvid} ${info.duration}s → 先回一句，后台听（别在回复里等 25s 的模型加载）`)
+          info.pendingLong = true
+          job = this._startVideoTranscribe(bvid, info)
         }
       } else if (info.duration > 300) {
         info.pendingLong = true
@@ -5163,6 +5626,38 @@ export class QQBridge {
         this.log.info?.(`B站：${bvid} 拿不到时长，跳过转写`)
       }
 
+      /*
+       * ★★ **画面（分镜图）** —— 2026-11-03，"看画面"模式（用户自己选的）。
+       *
+       * ## 数据来自 B 站自己的接口，不是我们抽帧
+       * `x/player/videoshot` 直接给 10×10 的拼图 + 每格时间点，**免登录、不用 ffmpeg**。
+       * 详见 `src/qq/videoshot.js` 的文件头（那里记了单位校验和三个坑）。
+       *
+       * ## 为什么放在转写之后、而且**是同步的**
+       * 它只要 **~700ms**（实测 715/804ms）—— 跟转写那 25 秒完全不是一个量级，
+       * 所以**不必走后台**。失败就静默跳过（没画面 ≠ 没内容）。
+       *
+       * ## 为什么要看 `bilibili.visual` 这个开关
+       * 每张拼图都进模型 = **真花钱**（视觉 token）。默认 `'audio'`（只听），
+       * 用户想要"看画面"才在设置里切到 `'visual'`。
+       */
+      if (this.cfg.bilibili?.visual === 'visual') {
+        try {
+          const shots = await fetchVideoShots({
+            bvid,
+            duration: Number(info.duration) || 0,
+            maxImages: Number(this.cfg.bilibili?.maxShots) || 2,
+            log: (lv, m) => this.log[lv]?.(m),
+          })
+          if (shots) {
+            info.shotsNote = formatShotsNote(shots)
+            info.shots = shots
+          }
+        } catch (e) {
+          this.log.warn?.(`B站：${bvid} 分镜图出错（忽略）— ${String(e?.message ?? e).slice(0, 80)}`)
+        }
+      }
+
       ctx = formatVideoContext(info)
     }
     this._biliCache.set(bvid, { at: now, text: ctx })
@@ -5171,7 +5666,15 @@ export class QQBridge {
     }
     if (ctx) this.log.info?.(`B站：${bvid} → ${String(info?.title ?? '').slice(0, 40)}`)
     else this.log.info?.(`B站：${bvid} 没拿到元信息（跳过）`)
-    return { ctx, job }
+    /*
+     * ★ 把分镜图一起带出去（2026-11-03）。
+     *
+     * ⚠️ 为什么不塞进 `ctx` 文本里 —— 图**没法变成文字**。
+     *    `_generate` 那边会把 `shots.images` 用 `makeImageBlock` 入库，
+     *    再从 `_collectImages` 的 `extraBlocks` 口子塞进上下文
+     *    （就是车牌内页用的同一条路）。
+     */
+    return { ctx, job, shots: info?.shots ?? null }
   }
 
   /**
@@ -5210,16 +5713,61 @@ export class QQBridge {
     const at = Date.now()
     const promise = (async () => {
       try {
-        const text = await transcribeVideoCached(
+        /*
+         * ★ 2026-11-03：改用**带原因**的那版（`transcribeVideoDetailed`）。
+         *
+         * 原来这里只拿一个空字符串，于是"没听出内容"只能写一句笼统的话 ——
+         * 而**"这视频真没说话"和"我这边没转出来"是完全不同的两件事**：
+         * ```
+         *   asr-empty       这视频里真的没人说话（纯音乐/无声演示）→ 别再试了
+         *   asr-timeout     我超时了                                  → 可以重试/加预算
+         *   download-failed 音频没下下来                              → 换候选
+         * ```
+         * 现场（2026-11-03 群里那个 70 秒《绝区零》演示）：日志写的是
+         * 「可能没语音：纯音乐 / 无声演示」—— **它自己也不知道是哪种** ✗，
+         * 而 70 秒的音频**够转**（固定成本才 ~25 秒），所以这个判断很可疑。
+         */
+        const r = await transcribeVideoDetailed(
           bvid,
           info.cid,
           { fetchAudioCandidates, downloadAudio },
           // ⚠️ 超时给足：这是**后台**任务，不挡任何人的回复，所以不必抠 20 秒
           { timeoutMs: 120_000, prefixBytes, log: this.log },
         )
+        const text = String(r?.text ?? '')
         if (!text) {
-          this.log.info?.(`B站：${bvid} 后台没听出内容（只取开头 ${(prefixBytes / 1048576).toFixed(0)}MB）`)
-          return null
+          /*
+           * ⚠️ **分开说**，而且**别把"我失败了"说成"这视频没声音"** ——
+           *    后者会让用户以为视频本身有问题（甚至以为它在敷衍）。
+           */
+          const why = String(r?.why ?? 'unknown')
+          const human = {
+            'asr-empty': '这视频**真的没说话**（纯音乐/无声演示），不是我没听',
+            'asr-timeout': '★ 我**超时**了（不是没声音）—— 该加预算或重试',
+            'download-failed': '★ 音频**没下下来** —— 该换候选',
+            'no-candidates': '★ B 站**没给音频地址**',
+            'asr-failed': '★ 转写进程**出错了**',
+          }[why] ?? `★ 原因不明（${why}）`
+          this.log.info?.(
+            `B站：${bvid} 后台没拿到内容 —— ${human}（why=${why}，只取开头 ${(prefixBytes / 1048576).toFixed(0)}MB）`,
+          )
+          /*
+           * ★★ **"这视频真没说话"也要更新缓存**（2026-11-03）。
+           *
+           * 缓存里那份是 `pendingLong: true`（"我刚开始听"）。
+           * 补发那一条会**重新走 `_generate`**，而 `_generate` 读的就是这份缓存 ——
+           * 不更新的话，她补发时还以为自己在听 ✗，于是又会说"我正看着" ✗。
+           *
+           * 所以：**真没说话**时把缓存换成"听完了，但这视频没说话"。
+           * 失败（超时/下载失败）**不更新** —— 那意味着我们还没真听过，
+           * 保持"正在听"反而是诚实的。
+           */
+          if (why === 'asr-empty') {
+            const ctx = formatVideoContext({ ...info, transcript: '', silentVideo: true, pendingLong: false })
+            this._biliCache.set(bvid, { at: Date.now(), text: ctx })
+            return { text: '', ctx, why }
+          }
+          return { text: '', ctx: '', why }
         }
         const sec = Math.round((Date.now() - at) / 1000)
         this.log.info?.(`B站：${bvid} 后台听完开头一段 → ${text.length} 字（${sec}s）`)
@@ -5260,10 +5808,111 @@ export class QQBridge {
    * @param {object} scene
    * @param {object} self
    */
+  /**
+   * 「车牌内页看完了，补一句」（2026-11-02）。
+   *
+   * ## 跟长视频那套是**同一个模式**
+   * 开浏览器 + 开页 + 滚 4 屏 ≈ **26 秒**（实测）。卡在回复里等于让人等半分钟，
+   * 所以：**回复先按标题发出去，看完再补一条**。
+   *
+   * ## 截图怎么进上下文
+   * 截图**本来就是 base64**（浏览器截的），所以不走 `onebot.fetchImage`
+   * 那条下载路（那条必然失败）—— 直接用 `makeImageBlock` 入库，
+   * 再从 `_collectImages` 的 `extraBlocks` 那个口子塞进去。
+   *
+   * ⚠️ 三道闸，都是别处踩过的：
+   *   ① `_generate` 返回的是 **`{ text, cover }` 不是字符串** —— 长视频那边
+   *      第一版把一个对象丢进 `String()`，真的往 QQ 发了「[object Object]」。
+   *   ② `[SILENT]` 只有**整条就是它**才算不说话。
+   *   ③ 图一张都没入库时**别硬发** —— 那等于说"我看了"却没有画面。
+   */
+  async _jmFollowUp(job, msg, mem, scene, self) {
+    const scope = String(msg.scope ?? '')
+    try {
+      const r = await job.promise
+      if (!scope) return
+      // 会话已经聊走了就别硬插一句（跟长视频同一个判据）
+      const age = Date.now() - job.at
+      const maxAge = Number(this.cfg.jmRead?.followUpMaxAgeMs ?? 3 * 60_000)
+      if (age > maxAge) {
+        this.log.info?.(`车牌 ${job.id}：看完了，但已经过了 ${Math.round(age / 1000)}s → 不补了`)
+        return
+      }
+      if (!r?.ok) {
+        this.log.info?.(`车牌 ${job.id}：内页没看成（${r?.why}）→ 不补`)
+        return
+      }
+      if (!Array.isArray(r.shots) || r.shots.length === 0) {
+        this.log.warn?.(`车牌 ${job.id}：说看完了却一张截图都没有 → 不补`)
+        return
+      }
+
+      // ① 截图入库（base64 → image block）
+      const blocks = new Map()
+      if (typeof this.gateway?.makeImageBlock === 'function') {
+        for (const [i, b64] of r.shots.entries()) {
+          const blk = await this.gateway.makeImageBlock({
+            base64: b64,
+            mediaType: 'image/jpeg',
+            name: `jm-${job.id}-${i + 1}`,
+          })
+          if (blk) blocks.set(`jm:${job.id}:${i + 1}`, blk)
+        }
+      }
+      if (blocks.size === 0) {
+        this.log.warn?.(`车牌 ${job.id}：截图一张都没入库 → 不补（说了"看了"却没画面，不如不说）`)
+        return
+      }
+      this.log.info?.(`车牌 ${job.id}：内页看完（${blocks.size} 张）→ 补一句`)
+
+      // ② 带着截图 + "只看了前面几屏"的注记重新生成
+      const gen = await this._generate(msg, mem, scene, self, blocks, formatAlbumPagesNote(r))
+      if (typeof gen?.text !== 'string') {
+        this.log.warn?.(`车牌 ${job.id}：补发时生成层返回的不是字符串（${typeof gen?.text}），跳过`)
+        return
+      }
+      const text = gen.text
+      if (!text.trim()) return
+      // `[SILENT]` 只有整条就是它才算不说话（照抄 _handle 的判据，别自己发明）
+      if (/^\s*\[SILENT\]\s*$/i.test(text)) {
+        this.log.info?.(`车牌 ${job.id}：她说不用补 → 不补`)
+        return
+      }
+      await this._send(msg, text, gen?.cover ?? null)
+      this.stats.replied++
+      this.log.info?.(`bridge：[我] ${scope}「${String(text).slice(0, 400)}」`)
+    } catch (e) {
+      this.log.warn?.(`车牌 ${job.id}：补发失败 — ${String(e?.message ?? e).slice(0, 100)}`)
+    } finally {
+      this._jmJobs?.delete(scope)
+    }
+  }
+
   async _videoFollowUp(job, msg, mem, scene, self) {
     try {
       const r = await job.promise
-      if (!r?.text) return
+      /*
+       * ★★★ **不是"有转写才补"**（2026-11-03 修）。
+       *
+       * 原来是 `if (!r?.text) return` —— 于是**"这视频真没说话"也被当成没内容，
+       * 永远不补一句** ✗。现场：70 秒的演示视频，评论 5 条 / 弹幕 10 条都抓到了，
+       * 后台判定"没内容"就一声不吭 —— **而它明明有评论/弹幕可说**。
+       *
+       * 现在的分流：
+       * ```
+       *   有转写                     → 补（听到了新东西）
+       *   why === 'asr-empty'        → **补**（"这视频没说话"本身就是结论，
+       *                                 而且评论/弹幕已经进上下文了）
+       *   其它（超时/下载失败/取不到地址/进程出错）→ **不补**
+       *       —— 那是**我的失败**，补一句等于说"我听完了"，是撒谎
+       * ```
+       */
+      const why = String(r?.why ?? '')
+      const hasText = Boolean(String(r?.text ?? ''))
+      if (!hasText && why !== 'asr-empty') {
+        if (r && why) this.log.info?.(`B站：${job.bvid} 后台没成（${why}）→ 不补（那是我的问题，不是视频没内容）`)
+        return
+      }
       if (!this._videoFollowed) this._videoFollowed = new Map()
       if (this._videoFollowed.has(job.bvid)) return
       const maxAge = Number(this.cfg.bilibili?.followUpMaxAgeMs ?? 5 * 60_000)
