@@ -823,7 +823,19 @@ export function cleanModelText(raw) {
   if (/^[（(][^）)\n]{1,120}[）)]$/.test(trimmed)) {
     if (DECIDE_ASIDE.test(trimmed)) return ''
     if (/^[（(][\u4e00-\u9fa5A-Za-z]{1,6}[）)]$/.test(trimmed)) return trimmed
-    return ''
+    /*
+     * ③ **动作也是内容 → 脱掉最外层括号当正文发**（2026-11-04 改语义）。
+     *
+     * 旧行为是「整条括号 → 返回空串（当没说）」。但人格现在要求
+     * 「动作和身体感觉必须加括号」，于是一条**只有动作**的回复
+     * （亲密戏里极常见）会被**整条丢掉** —— 实测
+     * `cleanModelText('（手往下摸，隔着睡裤慢慢磨）')` → `''`。
+     * **她写了，但没发出去** —— 这就是"身体描写不够/差点意思"的一部分根源。
+     *
+     * 代价：极少数"内心评价"旁白会被发出来（旧 bug 的反向）。
+     * 但"丢掉她真写的东西"更糟；DECIDE_ASIDE 那一类（思考/换话题）仍然照丢。
+     */
+    return trimmed.slice(1, -1).trim()
   }
 
   return trimmed
