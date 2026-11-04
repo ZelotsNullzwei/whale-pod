@@ -193,6 +193,18 @@ await ok('记人用真实 QQ 昵称：群名片只进别名，不当展示名', 
   assert.equal(new PeopleStore({ home }).get('222').nickname, '真·昵称2')
 })
 
+await ok('stats() 按好感度从高到低排（同分按最近说话）', () => {
+  const home = tmpHome()
+  const ps = new PeopleStore({ home })
+  ps.setImpression('31', '很熟', '甲')
+  ps.setImpression('32', '一般', '乙')
+  ps.setImpression('33', '不太熟', '丙')
+  ps.get('31').affinity = 30
+  ps.get('32').affinity = 90
+  ps.get('33').affinity = 60
+  assert.deepEqual(ps.stats().people.map((p) => p.id), ['32', '33', '31'], '应当由多到少')
+})
+
 await ok('写真印象之后 toPrompt() 不再是空串，且含名字和印象', () => {
   const home = tmpHome()
   const ps = new PeopleStore({ home })

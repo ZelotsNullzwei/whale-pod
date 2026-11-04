@@ -1614,6 +1614,10 @@ window.__ModuleLoader__.load({
             }, stats?.paused === true ? t('qq.resume') : t('qq.pause')) : null,
             flash === null ? null : h('span', { className: flash.ok ? 'gd_note' : 'gd_err' }, flash.text))),
 
+        // ── 后端进程窗口（可折叠，5 秒刷新）──────────────────────────
+        // 放在启停按钮之后：排查「现在到底有什么在跑」时最先想到它。
+        h(ProcessPanel, { t }),
+
         // ── 消息计数 ─────────────────────────────────────────────────
         enabled ? h('div', { className: 'gd_grid' },
           h('div', { className: 'gd_count' }, h('b', null, String(counters.received ?? 0)), h('span', null, t('dash.received'))),
@@ -1672,10 +1676,6 @@ window.__ModuleLoader__.load({
 
         // ── 当前模型（只读一行，点它跳设置页改）─────────────────────
         enabled ? h(CurrentModelRow, { t }) : null,
-
-        // ── 后端进程窗口（可折叠，5 秒刷新）──────────────────────────
-        // 放在启停按钮之后、消息流之前：排查"到底什么在跑"时最先想到它。
-        h(ProcessPanel, { t }),
 
         // ── 最近消息流（可折叠；默认展开 —— 这是常看的部分）───────────
         enabled ? h(Fold, {

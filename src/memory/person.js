@@ -480,7 +480,9 @@ export class PeopleStore {
       described: all.filter((p) => p.impression || p.facts.length > 0).length,
       people: all
         .filter((p) => p.impression || p.facts.length > 0)
-        .sort((a, b) => (b.lastSeen ?? 0) - (a.lastSeen ?? 0))
+        // 按好感度从高到低（用户口径：认的人「由多到少」）。
+        // 同分再按最近说话，避免每次刷新顺序乱跳。
+        .sort((a, b) => (b.affinity ?? 50) - (a.affinity ?? 50) || (b.lastSeen ?? 0) - (a.lastSeen ?? 0))
         .slice(0, 50)
         .map((p) => ({
           id: p.id,
