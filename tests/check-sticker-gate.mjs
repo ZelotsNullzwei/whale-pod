@@ -120,5 +120,15 @@ ok('isPureStickerText 不把「表情+文字」当纯表情', () => {
   assert.equal(isPureStickerText(''), false)
 })
 
+ok('★ 「刚说完话」必须紧接在她那句后面（中间有人插话就不接）', () => {
+  const mine = (at) => ({ isMe: true, text: '行', at, id: 'm' })
+  const sticker = (at) => ({ isMe: false, text: '[表情包]', at, id: 's', sender: '9' })
+  assert.equal(shouldAnswerSticker({ selfId: '1', msg: sticker(5000), recent: [mine(0)] }), true, '紧接 5s → 接')
+  const someone = { isMe: false, text: '哈哈', at: 3000, id: 'x', sender: '8' }
+  assert.equal(shouldAnswerSticker({ selfId: '1', msg: sticker(5000), recent: [mine(0), someone] }), false, '中间有人插话 → 不接')
+  assert.equal(shouldAnswerSticker({ selfId: '1', msg: sticker(16000), recent: [mine(0)] }), false, '16s 超过 12s 窗口 → 不接')
+})
+
+
 console.log(`\n通过 ${pass} / 失败 ${fail}`)
 process.exit(fail > 0 ? 1 : 0)

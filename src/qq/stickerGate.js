@@ -71,8 +71,17 @@ export function shouldAnswerSticker(o = {}) {
     if (gap >= 0 && gap <= 60_000 && isPureStickerText(lastMine.text)) {
       return true                                    // ③ 斗图：接它刚发的表情
     }
-    if (gap >= 0 && gap <= 20_000 && !isPureStickerText(lastMine.text)) {
-      return true                                    // ④ 它刚说完话，同一个人接着发表情
+    if (gap >= 0 && gap <= 12_000 && !isPureStickerText(lastMine.text)) {
+      /*
+       * ★ ④ 收紧（2026-11-04）：原来 20 秒内**任何人**发表情都接，而且不看她那句话
+       *   后面有没有别人插话 —— 群里聊得密时几乎每张表情都能中招（用户：
+       *   「群里好像还在读表情」）。
+       *   现在要求：**紧接在她那句话后面**（中间没人说过话）+ 12 秒内。
+       */
+      const between = recent.some((m) => !m?.isMe
+        && Number(m?.at ?? 0) > Number(lastMine.at ?? 0)
+        && Number(m?.at ?? 0) < Number(msg?.at ?? 0))
+      if (!between) return true
     }
   }
 
