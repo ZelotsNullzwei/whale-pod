@@ -3335,6 +3335,19 @@ window.__ModuleLoader__.load({
                       h('div', { className: 'gd_rowlabel', style: { minWidth: 0 } },
                         h('b', null, `${p.name || p.id}`),
                         h('i', null, `${p.id} · ${p.seen ?? 0} 句`)),
+                      /* ★ 好感度（2026-11-04）：没有数据就整行不画，不显示 0/undefined */
+                      p.affinity == null ? null : h('div', { style: { display: 'flex', alignItems: 'center', gap: '6px', fontSize: '11.5px', marginTop: '2px', color: 'var(--dsw-alias-label-secondary)' } },
+                        h('span', null, `好感度 ${Math.round(p.affinity)}`),
+                        h('span', {
+                          style: { display: 'inline-block', width: '64px', height: '5px', borderRadius: '3px', background: 'color-mix(in srgb,var(--dsw-alias-border-l1) 70%,transparent)', overflow: 'hidden' },
+                        }, h('span', {
+                          style: {
+                            display: 'block', height: '100%',
+                            width: Math.max(0, Math.min(100, Math.round(p.affinity))) + '%',
+                            background: p.affinity > 85 ? '#3fb950' : p.affinity >= 70 ? '#d29922' : p.affinity >= 40 ? '#8b949e' : '#6e7681',
+                          },
+                        })),
+                      ),
                       h('div', { style: { fontSize: '11.5px', color: 'var(--dsw-alias-label-secondary)', marginTop: '2px' } },
                         p.impression || (p.facts ?? []).join('、') || '')))))
             })(),
