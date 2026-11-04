@@ -176,6 +176,23 @@ await ok('setImpression 写入印象，但**不**增加 seen（不能污染「�
   assert.equal(ps.get('111').seen, seenAfterTouch, 'setImpression 不该动 seen')
 })
 
+await ok('记人用真实 QQ 昵称：群名片只进别名，不当展示名', () => {
+  const home = tmpHome()
+  const ps = new PeopleStore({ home })
+  // 群消息：senderName 是群名片，nickname 是 QQ 资料昵称
+  ps.touch('222', '群里的马甲', undefined, { nickname: '真·昵称' })
+  assert.equal(ps.get('222').displayName, '真·昵称', 'displayName 应优先 QQ 昵称')
+  assert.deepEqual(ps.get('222').aliases, ['群里的马甲'], '群名片仍留在别名里')
+  ps.touch('222', '群里的马甲2', undefined, { nickname: '真·昵称2' })
+  assert.equal(ps.get('222').displayName, '真·昵称2', '昵称变了展示名跟着变')
+  // 老适配器（没有 nickname 字段）回退到最后一次别名
+  ps.touch('333', '只有名片')
+  assert.equal(ps.get('333').displayName, '只有名片')
+  // 昵称要能落盘
+  ps.save()
+  assert.equal(new PeopleStore({ home }).get('222').nickname, '真·昵称2')
+})
+
 await ok('写真印象之后 toPrompt() 不再是空串，且含名字和印象', () => {
   const home = tmpHome()
   const ps = new PeopleStore({ home })

@@ -2177,7 +2177,8 @@ export class QQBridge {
     //
     // 保留 `?? msg.sender` 只是防御：万一别处递进来的对象带 `sender`。
     if (!msg.isMe && (msg.userId || msg.sender)) {
-      this.people?.touch(msg.userId ?? msg.sender, msg.senderName)
+      // 记人认 QQ 昵称（跨群稳定）；群名片只进别名。
+      this.people?.touch(msg.userId ?? msg.sender, msg.senderName, undefined, { nickname: msg.nickname })
       /*
        * ★ **好感度：来了就算亲近一点**（2026-11-04，1.5 刀）。
        *
@@ -2254,7 +2255,7 @@ export class QQBridge {
     // 记一次互动 —— 讨钱时要 @「最近跟它说话最多的人」。
     // 放在入口处（不受串行队列阻塞），这样排队中的消息也算数。
     if (!msg.isMe && msg.senderId && String(msg.senderId) !== String(this.selfId)) {
-      this.noteInteraction(msg.senderId, msg.senderName)
+      this.noteInteraction(msg.senderId, msg.nickname || msg.senderName)
     }
 
     // 同会话串行，避免两条消息同时触发两条回复

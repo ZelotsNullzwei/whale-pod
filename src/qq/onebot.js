@@ -1325,7 +1325,7 @@ export function parseMessage(raw) {
 
 /**
  * 从事件里取出标准化的消息对象。
- * @returns {null|{scope:string,kind:'group'|'private',groupId?:string,userId:string,senderName:string,messageId:string,text:string,mentions:string[],images:string[],at:number,isAtMe:(id:string)=>boolean}}
+ * @returns {null|{scope:string,kind:'group'|'private',groupId?:string,userId:string,senderName:string,nickname:string,messageId:string,text:string,mentions:string[],images:string[],at:number,isAtMe:(id:string)=>boolean}}
  */
 export function normalizeEvent(ev) {
   if (!ev || ev.post_type !== 'message') return null
@@ -1339,6 +1339,15 @@ export function normalizeEvent(ev) {
     groupId,
     userId,
     senderName: String(ev.sender?.card || ev.sender?.nickname || userId),
+    /*
+     * ★ 真实 QQ 昵称（2026-11-04）：人物档案只认这个。
+     *
+     * `senderName` 保持「群名片优先」——那是聊天里大家看到的称呼，
+     * 展示消息时用它是合适的。但**记人不能用它**：群名片是群内马甲，
+     * 换个群就变、还能天天改，同一个人会攒出一串别名，
+     * 于是仪表盘上显示谁取决于他最后在哪个群说话（用户实测反馈）。
+     */
+    nickname: String(ev.sender?.nickname ?? ''),
 
     messageId: String(ev.message_id ?? ''),
     text: parsed.text,

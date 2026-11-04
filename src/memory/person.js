@@ -72,6 +72,13 @@ export class PersonProfile {
     this.id = String(id)
     /** @type {string[]} 昵称别名，最近的在最后 */
     this.aliases = []
+    /**
+     * ★ 真实 QQ 昵称（`sender.nickname`）。展示时优先用它。
+     *
+     * 别名里仍保留群名片 —— 它能帮助理解「他在这个群里叫什么」，
+     * 但换个群就是另一个称呼，不能拿来当门面。
+     */
+    this.nickname = ''
     /** @type {string} 一句印象（覆盖式） */
     this.impression = ''
     /** @type {string[]} 稳定事实（累积、去重、有上限） */
@@ -96,9 +103,12 @@ export class PersonProfile {
    * 记一次出现（每收到一条他的消息就调）。
    *
    * @param {string} name 当前昵称
+   * @param {string} [nickname] 真实 QQ 昵称（优先展示）
    * @param {number} at 时间戳
    */
-  touch(name, at) {
+  touch(name, at, nickname = '') {
+    const nick = String(nickname ?? '').trim()
+    if (nick) this.nickname = nick
     const n = String(name ?? '').trim()
     // 昵称变了就追加到别名末尾（不重排已有的，避免展示时跳来跳去）
     if (n && !this.aliases.includes(n)) {
@@ -139,12 +149,13 @@ export class PersonProfile {
 
   /** 展示用名字：最近用过的昵称。 */
   get displayName() {
-    return this.aliases[this.aliases.length - 1] || this.id
+    return this.nickname || this.aliases[this.aliases.length - 1] || this.id
   }
 
   toJSON() {
     return {
       id: this.id,
+      nickname: this.nickname,
       aliases: this.aliases,
       impression: this.impression,
       facts: this.facts,
@@ -204,6 +215,7 @@ export class PeopleStore {
         if (Number.isFinite(v.firstSeen)) p.firstSeen = v.firstSeen
         if (Number.isFinite(v.lastSeen)) p.lastSeen = v.lastSeen
         if (Number.isFinite(v.seen)) p.seen = v.seen
+        if (typeof v.nickname === 'string') p.nickname = v.nickname
         if (Number.isFinite(v.affinity)) p.affinity = Math.max(0, Math.min(100, v.affinity))
         this.people.set(personKey(id), p)
       }
@@ -303,10 +315,12 @@ export class PeopleStore {
    *
    * @param {string|number} id QQ 号
    * @param {string} name 昵称
+   * @param {object} [opts]
+   * @param {string} [opts.nickname] 真实 QQ 昵称
    * @param {number} [at]
    * @returns {PersonProfile|null}
    */
-  touch(id, name, at = this._now()) {
+  touch(id, name, at = this._now(), opts = {}) {
     const key = personKey(id)
     if (!key) return null
     let p = this.people.get(key)
@@ -314,7 +328,7 @@ export class PeopleStore {
       p = new PersonProfile(String(id))
       this.people.set(key, p)
     }
-    p.touch(name, at)
+    p.touch(name, at, opts.nickname ?? '')
     this._dirty = true
     return p
   }
