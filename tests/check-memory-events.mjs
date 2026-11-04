@@ -233,6 +233,26 @@ ok('强度/命中次数/游标都能存回去', () => {
   fs.rmSync(dir, { recursive: true, force: true })
 })
 
+console.log('\n=== 7b. listScopes：设置页只要计数，不拉全文 ===')
+ok('按会话汇总 total/alive，冻透的不算「还记着」', () => {
+  const s = new EventStore({ cfg: {}, ...quiet })
+  const t0 = 1_700_000_000_000
+  s.remember('group:1', [
+    { kind: 'fact', text: '周末常去图书馆' },
+    { kind: 'promise', text: '给他留一碗饭' },
+  ], { now: t0 })
+  s.remember('private:2', [{ kind: 'state', text: '这周在赶毕设' }], { now: t0 })
+  // 群里那两条放到 200 小时后 —— 冻透
+  s.active('group:1', { now: t0 + 200 * H })
+  const list = s.listScopes()
+  assert.equal(list.length, 2)
+  const g = list.find((x) => x.scope === 'group:1')
+  assert.equal(g.total, 2, '总数还是要如实回')
+  assert.equal(g.alive, 0, '冻透就不算"还记着"')
+  const p = list.find((x) => x.scope === 'private:2')
+  assert.equal(p.alive, 1)
+})
+
 console.log('\n=== 8. 配置默认值 / 提示词自洽 ===')
 ok('默认值跟 MaiBot 的比例一致（迟滞：revive > prune）', () => {
   assert.ok(EVENT_DEFAULTS.reviveTo > EVENT_DEFAULTS.pruneThreshold)

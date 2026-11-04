@@ -245,11 +245,27 @@ name     她对某人或某物的固定叫法（绰号、内部叫法）
 规则：
 - 一行一条，格式：类型 | 一句话（不超过 40 字）
 - ⚠️ 只写**对方**的事；你自己答应的（promise）可以写，你自己的日常琐事不写
-- ⚠️ 客气话、玩笑、反话、猜测、角色扮演**一律不记**
-- ⚠️ 当天就过去的（吃了什么、天气、路上看到啥、一次性的吐槽）**不记**
-- ⚠️ 已经在【已知的事】里的，**不要重复输出**；有明显变化的才重写一行
+- ⚠️⚠️ **你自己在干什么不记**：「正在修资料页面功能」「在画图」「在找东西」
+  —— 那是你的动作，不是他的。实测就这么混进来过。
+- ⚠️⚠️ 对方给你的**规矩 / 要求不记**：「以后都这样」「不要那样」「按这个规则来」
+  —— 那是配置，不是一件事。只有他明确说「答应我以后…」才进 promise。
+- ⚠️ 一次性的花钱 / 收到的东西不记（买了什么、送了张卡、买了个气泡）
+- ⚠️⚠️ **主语写清楚**：用昵称或 QQ 号开头，说不清是谁的就别记
+  （「这周回城」这种半边句子，宁可不记）
+- ⚠️ 客气话、玩笑、反话、猜测、角色扮演一律不记
+- ⚠️ 当天就过去的（吃了什么、天气、路上看到啥、一次性的吐槽）不记
+- ⚠️ 已经在【已知的事】里的，不要重复输出；有明显变化的才重写一行
 - 没有值得记的就只输出 NONE
-- 不要编号、不要解释、不要空行、不要前后缀
+
+对 / 错示例（照这个形状写）：
+  ✅ promise | 答应 Null_zwei 下课后一起摸鱼
+  ✅ state | 番茄下周有两天要去公司学习
+  ✅ fact | 阿乙周末常去图书馆
+  ✅ name | 管他叫老陈
+  ❌ state | 正在修资料页面功能        ← 这是你自己在做的事
+  ❌ promise | 以后核图按带字规则归档    ← 这是规矩，不是答应过的事
+  ❌ fact | 给我买了聊天气泡            ← 一次性消费
+  ❌ state | 这周回城                  ← 谁回城？说不清
 
 【已知的事】
 {known}
@@ -657,6 +673,30 @@ export class EventStore {
       alive += b.events.filter((e) => e.strength >= this.cfg.pruneThreshold).length
     }
     return { enabled: this.enabled, sessions: this.scopes.size, events, alive }
+  }
+
+  /**
+   * 每个会话记着几件（设置页「记忆管理」用它，比 `stats()` 多一层 per-scope）。
+   *
+   * 只回**计数**，不回内容 —— 内容走 `list(scope)`。
+   * 一次把所有会话的事件全文塞进轮询接口，几十条 × 多会话会把响应撑大，
+   * 而设置页 8 秒轮询一次，那不值得。
+   *
+   * @returns {Array<{scope:string, total:number, alive:number, updatedAt:number|null}>}
+   */
+  listScopes() {
+    const out = []
+    for (const [scope, b] of this.scopes) {
+      if (!b.events.length) continue
+      out.push({
+        scope,
+        total: b.events.length,
+        alive: b.events.filter((e) => e.strength >= this.cfg.pruneThreshold).length,
+        updatedAt: b.updatedAt || null,
+      })
+    }
+    out.sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0))
+    return out
   }
 
   /** 某个会话的明细（Web UI / 调试用）。 */

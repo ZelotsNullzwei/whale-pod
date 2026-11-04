@@ -1148,6 +1148,8 @@ export function createWebServer(opts) {
         return whalePodCompat({
           sub: sub_, method: req.method, url, req, res, json, readJson,
           store, memory, persona, longMemory, bridge, decision, state, log, logger, protocols,
+          // 事件记忆（2026-11-04）：设置页「记忆管理」要显示"记着几件事"
+          events,
           // llm 供 /models 用：要读 providers / catalog / defaultModels
           llm,
           // creds 供 /qq/start 动态建桥接时读凭据（联网搜索用）
@@ -2170,7 +2172,7 @@ async function stopQqBridge({ store, state, log }) {
   }
 }
 
-async function whalePodCompat(o) {  const { sub, method, url, req, res, json, readJson, store, memory, persona, longMemory, bridge, decision, state, log, logger, protocols, llm, creds, usage } = o
+async function whalePodCompat(o) {  const { sub, method, url, req, res, json, readJson, store, memory, persona, longMemory, bridge, decision, state, log, logger, protocols, llm, creds, usage, events } = o
 
   try {
     // ── 状态总览 ─────────────────────────────────────────────────
@@ -2559,6 +2561,17 @@ async function whalePodCompat(o) {  const { sub, method, url, req, res, json, re
         longMemory: longMemory?.stats?.() ?? null,
         // 长期摘要的会话列表（前端 longs 读这个）
         longScopes: longMemory?.listScopes?.() ?? [],
+        /*
+         * 事件记忆（2026-11-04）。
+         *
+         * `events` 是总数/还活着几条；`eventScopes` 是每个会话记着几件 ——
+         * 设置页「记忆管理」用后者在会话行尾显示「X 件」，点开能看具体是哪几件。
+         *
+         * ⚠️ 单独一个接口 `GET /memory/events?scope=` 才回**内容**：
+         *    这里一次把所有事件都塞进来，几十条 × 多会话会把轮询接口撑大。
+         */
+        events: events?.stats?.() ?? null,
+        eventScopes: events?.listScopes?.() ?? [],
         // 人物档案：按 QQ 号认人，昵称只是别名
         people: state.people?.stats?.() ?? null,
         // 记忆落盘位置：设置页拿它显示当前目录 + 让用户改
@@ -2577,7 +2590,21 @@ async function whalePodCompat(o) {  const { sub, method, url, req, res, json, re
       memory?.clear?.(scope)
       if (scope === undefined) longMemory?.clear?.()
       else longMemory?.clear?.(scope)
+      // 事件记忆也一起清 —— 用户点「清空」的意思是"忘掉这个会话"，不是只清一半
+      events?.clear?.(scope)
       return json(res, 200, { ok: true, cleared: scope ?? 'all' })
+    }
+    if (sub === '/memory/events' && method === 'GET') {
+      /*
+       * 某个会话记着的**具体的事**（2026-11-04）。
+       *
+       * 每行：`{ kind, text, strength, hits, at, frozen }` ——
+       * `frozen` 表示已经淡到不注入（但数据还在，重提会活过来）。
+       * 设置页拿它显示「她到底记着哪几件」，这是排查"怎么忘了"的唯一入口。
+       */
+      const scope = url.searchParams.get('scope') ?? ''
+      if (!scope) return json(res, 400, { error: '缺少 scope' })
+      return json(res, 200, { ok: true, scope, events: events?.list?.(scope) ?? [] })
     }
     if (sub === '/memory/summary' && method === 'GET') {
       const scope = url.searchParams.get('scope') ?? ''

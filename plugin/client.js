@@ -165,6 +165,18 @@ window.__ModuleLoader__.load({
         'mem.longEmpty': '暂无长期摘要',
         'mem.viewSummary': '查看摘要',
         'mem.summaryTitle': '长期记忆摘要',
+        // 事件记忆（2026-11-04）：第三层 —— 具体的事，会淡忘
+        'mem.events': '记着的事',
+        'mem.eventsHint': '答应过的 / 他说过的 / 正在做的。**会淡忘**：忘了不丢，重新提起会活过来',
+        'mem.eventsNone': '还没记下什么（聊够几条才会开始记）',
+        'mem.eventsAlive': '还记着',
+        'mem.eventsFrozen': '已淡忘',
+        'mem.viewEvents': '看看记着什么',
+        'mem.eventsTitle': '记着的事',
+        'mem.kind.promise': '答应过',
+        'mem.kind.fact': '他说过',
+        'mem.kind.state': '在做',
+        'mem.kind.name': '叫法',
         'mem.close': '关闭',
 
         'persona.editor': '人格编辑器',
@@ -3289,6 +3301,12 @@ window.__ModuleLoader__.load({
         ? { scope: s, messages: 0 }
         : s))
       const longs = mem.data?.longScopes ?? []
+      /*
+       * 事件记忆（2026-11-04）：总和 + 每个会话记着几件。
+       * 只有计数，内容点「看看记着什么」再单独取 —— 轮询接口别塞全文。
+       */
+      const ev = mem.data?.events ?? null
+      const eventScopes = mem.data?.eventScopes ?? []
       return h(Section, { title: t('mem.title'), hint: t('mem.hint') },
         mem.status === 'error'
           ? h('p', { className: 'gd_err' }, mem.error)
@@ -3439,6 +3457,43 @@ window.__ModuleLoader__.load({
                         } catch (error) { setToast({ ok: false, text: String(error?.message ?? error) }) }
                       },
                     }, t('mem.viewSummary'))))))),
+            // ── 记着的事（事件记忆）────────────────────────────
+            //
+            // 2026-11-04：第三层记忆。短期 30 条会被滚掉，长期摘要只写
+            // 「这个人是什么样」——「他答应过什么 / 我欠他什么」靠这一层。
+            //
+            // ⚠️ 它会**淡忘**：强度 <0.1 就冻结（不注入、数据留着），
+            //    重新提起会活过来。所以这里同时显示「还记着 / 一共」两个数。
+            h('div', { style: { marginTop: '10px' } },
+              h('div', { className: 'gd_rowlabel' },
+                h('b', null, t('mem.events')),
+                h('i', null, `${ev?.alive ?? 0} ${t('mem.eventsAlive')} / ${ev?.events ?? 0}`)),
+              eventScopes.length === 0
+                ? h('p', { className: 'gd_note' }, t('mem.eventsNone'))
+                : h('div', { style: { display: 'flex', flexDirection: 'column', gap: '6px', marginTop: '6px' } },
+                  eventScopes.map((row) => h('div', { key: row.scope, className: 'gd_row' },
+                    h('div', { className: 'gd_rowlabel' },
+                      h('b', null, row.scope),
+                      h('i', null, `${row.alive} ${t('mem.eventsAlive')} / ${row.total} 件`)),
+                    h('button', {
+                      className: 'gd_btn',
+                      disabled: busy,
+                      onClick: async () => {
+                        try {
+                          const d = await api(`/memory/events?scope=${encodeURIComponent(row.scope)}`)
+                          const lines = (d.events ?? []).map((x) => {
+                            const kind = t(`mem.kind.${x.kind}`) ?? x.kind
+                            return `[${kind}] ${x.text}　强度 ${x.strength}　提过 ${x.hits} 次`
+                              + (x.frozen ? `　（${t('mem.eventsFrozen')}）` : '')
+                          })
+                          setViewing({
+                            scope: row.scope,
+                            title: t('mem.eventsTitle'),
+                            text: lines.join('\n') || '—',
+                          })
+                        } catch (error) { setToast({ ok: false, text: String(error?.message ?? error) }) }
+                      },
+                    }, t('mem.viewEvents')))))),
             // ── 认识的人 ────────────────────────────────────────
             //
             // 按 QQ 号列。昵称会变，所以主标题用 QQ 号，昵称作为别名。
@@ -3476,7 +3531,7 @@ window.__ModuleLoader__.load({
                 onClick: (e) => e.stopPropagation(),
               },
                 h('div', { className: 'gd_sechead' },
-                  h('h3', { className: 'gd_sectitle' }, `${t('mem.summaryTitle')}：${viewing.scope}`),
+                  h('h3', { className: 'gd_sectitle' }, `${viewing.title || t('mem.summaryTitle')}：${viewing.scope}`),
                   h('button', { className: 'gd_btn', style: { marginLeft: 'auto' }, onClick: () => setViewing(null) }, t('mem.close'))),
                 h('div', { style: { whiteSpace: 'pre-wrap', fontSize: '12.5px', lineHeight: 1.7 } }, viewing.text || '—'))))
     }
