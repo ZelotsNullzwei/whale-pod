@@ -4814,9 +4814,12 @@ export class QQBridge {
     if (this._cachedRenderedPreview(key)) return
     if (!this._linkJobs) this._linkJobs = new Map()
     if (this._linkJobs.has(key)) return
-    const job = (async () => {
+    const run = async () => {
       try {
-        const preview = await fetchLinkPreviewRendered(key, { log: (lv, msg) => this.log[lv]?.(msg) })
+        const preview = await fetchLinkPreviewRendered(key, {
+          log: (lv, msg) => this.log[lv]?.(msg),
+          profileDir: this.cfg.home ? path.join(this.cfg.home, 'browser-profile') : undefined,
+        })
         if (preview) {
           this._linkRenderCache().set(key, { at: Date.now(), preview })
           while (this._linkRenderCache().size > 20) {
@@ -4831,7 +4834,11 @@ export class QQBridge {
       } finally {
         this._linkJobs.delete(key)
       }
-    })()
+    }
+    // ⚠️ 同一个持久 profile 只能有一个浏览器实例 → 渲染任务串行排队
+    const prev = this._linkRenderQueue ?? Promise.resolve()
+    const job = prev.then(run, run)
+    this._linkRenderQueue = job
     this._linkJobs.set(key, job)
     void job
   }

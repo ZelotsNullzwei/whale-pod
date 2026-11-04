@@ -325,6 +325,8 @@ const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
  * @param {number} [opts.width]  视口宽（默认 1000 —— 够看，又别太大）
  * @param {number} [opts.height]
  * @param {number} [opts.startTimeoutMs]
+ * @param {boolean} [opts.headless]  默认 true；false = 开有界面的窗口（登录用）
+ * @param {string} [opts.profileDir] 持久 profile 目录；给了就不删（登录态留着）
  * @returns {Promise<{cdp:Cdp, exe:string, profileDir:string, close:()=>Promise<void>}|null>}
  */
 export async function openBrowser(opts = {}) {
@@ -337,10 +339,18 @@ export async function openBrowser(opts = {}) {
 
   // 随机端口：避免跟用户自己开的调试端口撞
   const port = 19000 + Math.floor(Math.random() * 900)
-  const profileDir = fs.mkdtempSync(path.join(os.tmpdir(), 'whale-browser-'))
+  /*
+   * ★ 持久 profile（2026-11-04）：登录态要留得住。
+   *   给了 `opts.profileDir` 就用它、**关掉也不删**；没给就还是临时目录（用完即删）。
+   *   配合 `headless:false` 可以开一个有界面的窗口让用户手动登录一次。
+   */
+  const persistent = typeof opts.profileDir === 'string' && opts.profileDir.trim() !== ''
+  const profileDir = persistent ? opts.profileDir : fs.mkdtempSync(path.join(os.tmpdir(), 'whale-browser-'))
+  if (persistent) { try { fs.mkdirSync(profileDir, { recursive: true }) } catch { /* ignore */ } }
+  const headless = opts.headless !== false
 
   const args = [
-    '--headless=new',
+    ...(headless ? ['--headless=new'] : []),
     `--remote-debugging-port=${port}`,
     `--user-data-dir=${profileDir}`,
     '--no-first-run',
@@ -361,6 +371,8 @@ export async function openBrowser(opts = {}) {
 
   const cleanup = async () => {
     try { child.kill('SIGKILL') } catch { /* ignore */ }
+    // 持久 profile 绝不删 —— 删了登录态就没了
+    if (persistent) return
     /*
      * ⚠️ 「看完就扔」：**临时 profile 整个删掉**。
      *    里面会有 cookie、缓存、可能还有页面资源 —— 不留任何痕迹。
@@ -397,7 +409,7 @@ export async function openBrowser(opts = {}) {
   })
 
   const cdp = new Cdp(ws)
-  log('info', `browser：${path.basename(exe)} 已启动（headless，端口 ${port}）`)
+  log('info', `browser：${path.basename(exe)} 已启动（${headless ? 'headless' : '有界面'}，端口 ${port}${persistent ? '，持久 profile' : ''}）`)
 
   return { cdp, exe, profileDir, close: cleanup }
 }

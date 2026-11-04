@@ -240,7 +240,13 @@ export async function fetchLinkPreviewRendered(url, opts = {}) {
   let bot = null
   let page = null
   try {
-    bot = await openBrowser({ log: opts.log ?? (() => {}), startTimeoutMs: opts.startTimeoutMs ?? 15_000 })
+    bot = await openBrowser({
+      log: opts.log ?? (() => {}),
+      startTimeoutMs: opts.startTimeoutMs ?? 15_000,
+      // ★ 持久 profile：登录过的小黑盒/微博等，cookie 才带得上
+      profileDir: opts.profileDir,
+      headless: opts.headless !== false,
+    })
     page = await newPage(bot.cdp, 'about:blank')
     const ok = await page.goto(url, timeoutMs)
     if (!ok) return null
