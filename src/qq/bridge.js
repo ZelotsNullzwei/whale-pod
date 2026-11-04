@@ -1329,11 +1329,39 @@ export class QQBridge {
         if (!mem) return false
         const kind = scope.startsWith('group:') ? 'group' : 'private'
         const id = scope.slice(scope.indexOf(':') + 1)
+        this._lastSpeakScope = String(scope ?? '')   // 供「没人接 −2」用
+
         return await this._speakUp({ scope, kind, groupId: kind === 'group' ? id : null, userId: kind === 'private' ? id : null }, mem)
       },
       // 可主动发言的会话：白名单内、并且「有过聊天」（短期或长期任一有记录即可）
       // 可主动发言的会话（逻辑见上方 computeScopes）
       scopes: computeScopes,
+
+      /*
+
+       * ★ **主动说了没人接 → 那个人 −2**（2026-11-04，好感度「减」的那半边）。
+
+       * 只有私聊扣得到具体的人；群里不知道"该谁接"，所以不扣（避免误伤）。
+
+       * 地板 40：普通私聊不会因为几次没接就掉到冰点。
+
+       */
+
+      onIgnored: ({ kind }) => {
+
+        try {
+
+          const scope = this._lastSpeakScope ?? ''
+
+          if (!(kind === 'Private' && scope.startsWith('private:'))) return
+
+          const uid = scope.slice('private:'.length)
+
+          this.people?.bumpAffinity?.(uid, -2, { floor: 40, reason: '主动发言没人接' })
+
+        } catch { /* 忽略 */ }
+
+      },
       // 静默时长 = 所有候选会话里「距上次有人说话」的最大值
       idleMs: () => {
         /*

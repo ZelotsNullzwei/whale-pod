@@ -390,6 +390,8 @@ export class ProactiveScheduler {
         st[streakKey] = 0
       } else {
         st[streakKey] += 1
+        // ★ 通知宿主：这次「主动发言没人接」可以扣好感度（2026-11-04）
+        try { this.onIgnored?.({ kind, streak: st[streakKey] }) } catch { /* 扣分失败不影响调度 */ }
         this.log.info?.(
           `proactive：${kind === 'Group' ? '群' : '私聊'}上次主动发言 ${Math.round((t - spokeAt) / 60_000)} 分钟没人接`
           + ` → 连续 ${st[streakKey]} 次`,
