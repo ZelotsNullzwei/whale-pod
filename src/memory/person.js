@@ -82,7 +82,15 @@ export class PersonProfile {
     this.lastSeen = null
     /** @type {number} 说过多少句 */
     this.seen = 0
-  }
+    /*
+     * ★ **好感度 0~100**（2026-11-04 加）。
+     *
+     * 口径（用户定）：初始 50；上下都动；有地板（close 私聊 80 / 普通私聊 40 / 群 20）
+     * 和天花板 100；有防抖（单次 ±3、每天净变化 ±10、同一人 60 秒内第二次忽略）。
+     * close 只是**地板高**，不是不掉 —— 长期冷落照样 100 → 85。
+     * ⚠️ 这一刀只存数，不接主动发言/概率/@ 谁。
+     */
+    this.affinity = 50  }
 
   /**
    * 记一次出现（每收到一条他的消息就调）。
@@ -143,6 +151,7 @@ export class PersonProfile {
       firstSeen: this.firstSeen,
       lastSeen: this.lastSeen,
       seen: this.seen,
+      affinity: this.affinity,
     }
   }
 
@@ -195,11 +204,63 @@ export class PeopleStore {
         if (Number.isFinite(v.firstSeen)) p.firstSeen = v.firstSeen
         if (Number.isFinite(v.lastSeen)) p.lastSeen = v.lastSeen
         if (Number.isFinite(v.seen)) p.seen = v.seen
+        if (Number.isFinite(v.affinity)) p.affinity = Math.max(0, Math.min(100, v.affinity))
         this.people.set(personKey(id), p)
       }
     } catch {
       // 首次运行 / 文件坏了 —— 从空开始，不阻断启动
     }
+  }
+
+  /** 某人的好感度（没见过的按初始 50）。 */
+  affinityOf(id) {
+    const p = this.people.get(personKey(String(id ?? "")))
+    return Number.isFinite(p?.affinity) ? p.affinity : 50
+  }
+
+  /**
+   * ★ **增减好感度**（2026-11-04，第一刀：只存数）。
+   *
+   * 用户原话：「好感不可能一直都很高吧，除了亲密 close 私聊」——所以上下都动，
+   * close 私聊只是**地板高**（80）。防抖三道：单次 ±3、每天净 ±10、同一人 60 秒内忽略。
+   * 每日累计是内存态（重启清零）；分数本身落盘。
+   *
+   * @param {string|number} id QQ 号
+   * @param {number} delta 正=加 负=减
+   * @param {{floor?:number, ceil?:number, reason?:string}} [opts]
+   * @returns {{before:number, after:number, applied:number}|null}
+   */
+  bumpAffinity(id, delta, opts = {}) {
+    const key = personKey(String(id ?? ""))
+    const p = this.people.get(key)
+    if (!p || !Number.isFinite(delta) || delta === 0) return null
+    const MAX_STEP = 3
+    const MAX_DAY = 10
+    const MIN_GAP_MS = 60_000
+    const now = this._now()
+    if (!this._aff) this._aff = new Map()
+    const st = this._aff.get(key) ?? { day: "", net: 0, lastAt: 0 }
+    const day = new Date(now).toDateString()
+    if (st.day !== day) { st.day = day; st.net = 0 }
+    if (now - st.lastAt < MIN_GAP_MS) return null
+    const step = Math.max(-MAX_STEP, Math.min(MAX_STEP, delta))
+    const room = MAX_DAY - Math.abs(st.net)
+    if (room <= 0) return null
+    const applied = step > 0 ? Math.min(step, room) : -Math.min(-step, room)
+    const floor = Number.isFinite(opts.floor) ? opts.floor : 20
+    const ceil = Number.isFinite(opts.ceil) ? opts.ceil : 100
+    const before = Number.isFinite(p.affinity) ? p.affinity : 50
+    const after = Math.max(floor, Math.min(ceil, before + applied))
+    p.affinity = after
+    st.net += after - before
+    st.lastAt = now
+    this._aff.set(key, st)
+    if (after !== before) {
+      const d = after - before
+      this.log.info?.(`人物：好感度 ${before} → ${after}（${opts.reason ?? ""} ${d > 0 ? "+" : ""}${d}）`)
+    }
+    this._dirty = true
+    return { before, after, applied: after - before }
   }
 
   save() {
