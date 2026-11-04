@@ -32,6 +32,7 @@ import { createDecisionLayer } from './decision/index.js'
 import { createWebServer } from './web/server.js'
 import { MemoryStore } from './memory/short.js'
 import { LongTermStore } from './memory/long.js'
+import { EventStore, EXTRACT_PROMPT } from './memory/events.js'
 import { DayPlanStore } from './memory/dayPlan.js'
 import { HotTopicStore } from './qq/hot-topics.js'
 import { SearchQuota } from './gateway/search.js'
@@ -743,6 +744,69 @@ export async function main(argv = process.argv.slice(2)) {
   const dayPlan = new DayPlanStore({ dir: memoryDir, log }).load()
     longMemory.load()
 
+    /*
+     * ★ **事件记忆层**（2026-11-04）。
+     *
+     * 短期 30 条 / 长期滚动摘要之间原本是空的：「他这周要交毕设」
+     * 「我答应留一碗饭」这种**一件一件的事**两头都留不住。
+     * 这一层记具体的事，并且会淡忘（见 `memory/events.js` 的文件头）。
+     *
+     * ## 抽取为什么走网关、为什么节流
+     * 抽取本身是一次 LLM 调用 —— 每条消息都抽等于把余额交给记忆层。
+     * `EventStore#maybeExtract` 按 `extractAfter`（默认 6 条）节流，
+     * 并且**失败也推进游标**，避免一次故障后每条消息重试、把余额打穿。
+     *
+     * ⚠️ 用 `auto` 档（跟摘要同一个渠道池），**不传 maxTokens** ——
+     *    推理模型会先把 token 花在 reasoning 上，限了 max_tokens 就只剩空正文
+     *    （这个坑在摘要那里已经踩过，见上面 `summarize` 的长注释）。
+     */
+    const memoryEvents = new EventStore({
+      cfg: cfg.memory?.events ?? {},
+      dir: cfg.memory?.dir,
+      home: store.home,
+      log,
+      extract: async ({ messages, scene, known }) => {
+        const prompt = EXTRACT_PROMPT
+          /*
+           * ⚠️ 用**函数式替换**，不用字符串替换（2026-11-04）。
+           * `String#replace(pattern, string)` 会把替换串里的 `$&`、`$'`
+           * 当成特殊记号 —— 聊天记录里只要出现一个 `$`，整段提示词就可能
+           * 被替换成别的东西（而且不报错）。函数式替换没有这个语义。
+           */
+          .replace('{known}', () => known || '（无）')
+          .replace('{messages}', () => messages.map((m) => (
+            m.isMe
+              ? `[我]${m.senderName ? `(${m.senderName})` : ''}: ${m.text}`
+              : `${m.senderName}(${m.sender}): ${m.text}`
+          )).join('\n'))
+        const candidates = resolveCandidates('auto', {
+          freeProviders: llm.providers,
+          freeOrder: cfg.gateway?.freeProviders ?? [],
+          disabledProviders: cfg.gateway?.disabledProviders ?? [],
+          catalog: llm.catalog,
+          selfModels: llm.defaultModels?.() ?? {},
+          fallback: cfg.gateway?.fallback,
+        })
+        if (candidates.length === 0) return ''
+        const opened = await openFirstAvailable({
+          llm,
+          candidates,
+          request: { messages: [{ role: 'user', content: [{ type: 'text', text: prompt }] }] },
+          onAttempt: () => { },
+        })
+        let text = ''
+        for await (const chunk of opened.stream) {
+          // 草稿不是答案：reasoning 一律不收（跟摘要/日程同一套规矩）
+          if (chunk?.type === 'reasoning-delta' || chunk?.type === 'reasoning') continue
+          if (typeof chunk?.text === 'string') text += chunk.text
+        }
+        return text.trim()
+      },
+    })
+    memoryEvents.load()
+    state.memoryEvents = memoryEvents
+    shutdown.push(() => memoryEvents.flush())
+
     // 人物档案：按 QQ 号认人。跨会话共享。
     // 带上 log —— 落盘失败要能看见（以前 `catch {}` 全吞，people.json
     // 从没写出来都没人发现）。
@@ -1025,6 +1089,8 @@ export async function main(argv = process.argv.slice(2)) {
         decision,
         memory,
         longMemory,
+        // 事件记忆层（2026-11-04）：注入 + 回复后强化 + 异步抽取
+        events: memoryEvents,
         dayPlan,
         generateDayPlan,
         hotTopics,
@@ -1159,6 +1225,8 @@ export async function main(argv = process.argv.slice(2)) {
         memory,
         persona,
         longMemory,
+        // 事件记忆（2026-11-04）：面板的 /api/memory 要能看到条数/冻结情况
+        events: memoryEvents,
         bridge: state.bridge,
         state,
         log,

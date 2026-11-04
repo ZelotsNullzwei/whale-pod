@@ -477,5 +477,57 @@ ok('★ 配置层要给生产这三个新键（否则线上永远用默认值）
   assert.ok(r.typingCutInMinGapMs > 0, '要配上"频率不要太多"的那道闸')
 })
 
+// ── 生成期间「跨人合并」（2026-11-04）──────────────────────
+//
+// 现场（群里 15:14–15:16）：
+//   15:14:23 群「[表情包]」→ 94 秒后生成完 → 群里已说 4 条 → 丢弃
+//   15:15:57 群「[表情包]」→ 立即「等待期间群里又说了 3 条」→ 放弃
+// 群里几个人你一句我一句的时候，她**一条都发不出来**。
+//
+// 现在的规则：只有**这个会话正在跑任务**时，才把不同人的话并成一条。
+// 空闲时仍然按人分（否则私聊连发合并会被打乱）。
+ok('★ 会话正在生成时：不同人的话并成同一条', async () => {
+  const br = mkBridge({ mergeWindowMs: 1500 })
+  br._markBusy('group:7')
+  br._coalesceInbound(msg('甲说', { uid: '111', scope: 'group:7' }), 1)
+  br._coalesceInbound(msg('乙说', { uid: '222', scope: 'group:7' }), 2)
+  assert.equal(br._pending.size, 1, '生成期间不该各攒各的')
+  const buf = [...br._pending.values()][0]
+  assert.equal(buf.msgs.length, 2, '两条都要在同一个 buffer 里')
+  br._unmarkBusy('group:7')
+})
+
+ok('空闲时仍然按人分（这条不能退化）', async () => {
+  const br = mkBridge({ mergeWindowMs: 1500 })
+  br._coalesceInbound(msg('甲说', { uid: '111', scope: 'group:7' }), 1)
+  br._coalesceInbound(msg('乙说', { uid: '222', scope: 'group:7' }), 2)
+  assert.equal(br._pending.size, 2, '空闲时两个人各攒各的')
+})
+
+ok('跨人合并要带名字（否则会把甲的话当成乙说的）', async () => {
+  const br = mkBridge({})
+  const merged = br._mergeBurst([
+    { text: '甲说', senderName: '甲', sender: '1' },
+    { text: '乙说', senderName: '乙', sender: '2' },
+  ])
+  assert.match(merged.text, /甲: 甲说/)
+  assert.match(merged.text, /乙: 乙说/)
+})
+
+ok('同一个人连发不带名字（原样保留）', async () => {
+  const br = mkBridge({})
+  const merged = br._mergeBurst([
+    { text: '一', senderName: '甲', sender: '1' },
+    { text: '二', senderName: '甲', sender: '1' },
+  ])
+  assert.equal(merged.text, '一\n二')
+})
+
+ok('★ 配置层要给出首块超时（firstChunkMs）', async () => {
+  const { DEFAULTS } = await import('../src/config/store.js')
+  assert.ok(DEFAULTS.qq?.reply?.firstChunkMs > 0, '没配的话线上就一直用代码默认值')
+  assert.ok(DEFAULTS.qq.reply.firstChunkMs <= 60000, '别配得比一分钟还宽 —— 那就等于没这回事')
+})
+
 console.log(`\n通过 ${pass} / 失败 ${fail}`)
 process.exit(fail > 0 ? 1 : 0)

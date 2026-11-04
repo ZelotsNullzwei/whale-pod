@@ -737,10 +737,36 @@ export class LongTermStore {
     // 没有消息可摘要就别白跑一次 LLM
     if (msgs.length === 0) return false
 
+    /*
+     * ★★ **只送"还没进过摘要"的那几条**（2026-11-04 改）。
+     *
+     * 原来是 `messages: msgs` —— 每次摘要都把**整个窗口（30 条）**
+     * 连同旧摘要一起重压一遍。后果是**多代压缩**：
+     *
+     * ```
+     * 第 1 代：把 m1..m30 压成摘要
+     * 第 2 代：把"第 1 代摘要 + m27..m56"再压   ← m27..m30 被压了第二次
+     * 第 3 代：……                             ← 又被压第三次
+     * ```
+     *
+     * 同一句话反复被改写，信息一层层磨掉 —— 这就是"摘要越来越空、
+     * 343 字记 685 条"（0.5 字/条）的来源。交接文档里那句
+     * 「摘要写回只覆盖新增消息」说的就是这里。
+     *
+     * 现在按**累计计数**切：`total - summarizedTotal` 就是要送的条数，
+     * 从窗口尾部取这么多条。窗口比增量短（一般不会：窗口 30 > 阈值 20）
+     * 就整窗都送，宁可多压一次也不漏掉新内容。
+     *
+     * ⚠️ 旧摘要仍然通过 `previous` 送进去 —— 提示词里【事】【我】【梗】
+     *    本来就是"在已有印象上更新"，所以它不会因此忘掉更早的事。
+     */
+    const freshCount = Math.max(1, Math.min(unsummarized, msgs.length))
+    const fresh = msgs.slice(-freshCount)
+
     this._busy.add(scope)
     try {
       const text = await this.summarize({
-        messages: msgs,
+        messages: fresh,
         previous: mem.summary,
         scene: ctx.scene,
         self: ctx.self,
@@ -753,7 +779,9 @@ export class LongTermStore {
         mem.summarizedCount = msgs.length
         this._dirty = true
         this.save()
-        this.log.info?.(`长期记忆：${scope} 已更新摘要（${text.length} 字，累计 ${total} 条）`)
+        this.log.info?.(
+          `长期记忆：${scope} 已更新摘要（${text.length} 字，本次 ${fresh.length} 条，累计 ${total} 条）`,
+        )
         return true
       }
     } catch (e) {

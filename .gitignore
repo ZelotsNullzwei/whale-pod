@@ -2,6 +2,7 @@
 node_modules/
 .test-home/
 .test-home-qq/
+.test-home-selfrepeat/
 *.log
 
 # 运行期数据（不该进仓库）

@@ -444,6 +444,38 @@ export class ModelDecisionProvider extends DecisionProvider {
       }
     }
 
+    // ── 连续发言闸（2026-11-04）─────────────────────────────
+    //
+    // 实测（群里 13:36–13:41）：6 分钟里判了 16 次「该接」，实发 16 条，
+    // 13:39:32–13:40:44 连着 6 条 / 72 秒。决策层 `p=1.00 该接` 几乎恒定 ——
+    // 模型看单条永远觉得"能接"，没人管**已经接了几条**。
+    //
+    // `rule` 那边有 maxConsecutiveTurns，但配置是 order=[model→rule]，
+    // model 先跑就把它绕过去了；提示词里那句「已连续发言 N 轮，可以收着点」
+    // 要等到 **8 轮**才出现，而且只是软提示。
+    //
+    // ⚠️ 只在**群聊**里掐，而且只在**没人点名**时掐：
+    //   · 私聊是一对一，连续说话是常态，掐掉等于"问它不理我"
+    //   · 被 @ / 被引用追问 → 上面已经直接放行，不经过这里
+    //   · 阈值 8（2026-11-04 从 5 提上来）—— 用户原话「连发现在来说 5 条感觉少了」；
+    //     3 轮会把正常接话也掐断（那是 2026-10-27 已经踩过的坑）
+    const turns = Number(input.consecutiveTurns) || 0
+    const maxTurns = Number(this.cfg.maxConsecutiveTurns ?? 8)
+    if (maxTurns > 0 && turns >= maxTurns && input.scene?.kind === 'group') {
+      this.stats.consecutiveCapped = (this.stats.consecutiveCapped ?? 0) + 1
+      this.log.info?.(
+        `decision/model：已连续发言 ${turns} 轮（上限 ${maxTurns}）—— 这轮先让别人说`,
+      )
+      return {
+        reply: false,
+        probability: 0.3,
+        reason: `已连续发言 ${turns} 轮，先让别人说`,
+        provider: this.id,
+        raw: { verdict: 'wait', modelSaid: null, capped: true },
+        definitive: true,
+      }
+    }
+
     // ── 正常路径：问模型 ─────────────────────────────────────
     let verdict = null
     let raw = ''

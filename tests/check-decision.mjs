@@ -5,6 +5,7 @@
 import { createDecisionLayer, applyThreshold } from '../src/decision/index.js'
 import { DecisionRegistry, DecisionProvider } from '../src/decision/provider.js'
 import { RuleDecisionProvider, mentionsSelf, nicknameTokens, detectThread } from '../src/decision/rule.js'
+import { ModelDecisionProvider } from '../src/decision/model.js'
 
 let pass = 0
 let fail = 0
@@ -545,6 +546,60 @@ console.log('\n=== 19. @ 了别人不该插嘴 ===')
     const d = await decideWith(mk('发到 abc@qq.com 就行'), 0.5)
     check('邮箱里的 @ 不误判', /@ 的是别人/.test(d.reason) === false, d.reason)
   }
+}
+
+// ── ⑦ 模型决策的「连续发言闸」（2026-11-04）──────────────────
+//
+// 实测（群里 13:36–13:41）：6 分钟判了 16 次「该接」、实发 16 条，
+// 其中 13:39:32–13:40:44 连着 6 条 / 72 秒。模型看单条永远觉得"能接"，
+// 没人管已经接了几条 —— `rule` 那边有 maxConsecutiveTurns，
+// 但配置是 order=[model→rule]，model 先跑就把它绕过去了。
+{
+  const fakeLlm = {
+    stream: () => (async function* () { yield { type: 'text', text: 'reply' } })(),
+  }
+  const provider = (cfg) => new ModelDecisionProvider({ ...cfg }, { llm: fakeLlm, log })
+
+  const msg = (extra = {}) => ({
+    messages: [{ sender: '1', senderName: '甲', text: '随便一句', isMe: false, at: Date.now() }],
+    self: { id: '999', nickname: 'Bot' },
+    scene: { kind: 'group' },
+    sinceMyLastMessage: 3000,
+    ...extra,
+  })
+
+  const capped = await provider({ maxConsecutiveTurns: 5 }).decide(msg({ consecutiveTurns: 6 }))
+  check('群聊连发 6 轮（上限 5）→ 先让别人说', capped.reply === false, `reply=${capped.reply}`)
+  check('理由里带上轮数（日志可查）', /连续发言 6 轮/.test(capped.reason), capped.reason)
+
+  /*
+   * ★ 默认阈值（2026-11-04 傍晚从 5 提到 8）—— 用户原话
+   *   「连发现在来说 5 条感觉少了」。这条锁住的是**默认值**，
+   *   不是某个显式配置，否则改默认值没测试会悄悄回归。
+   */
+  const atSeven = await provider({}).decide(msg({ consecutiveTurns: 7 }))
+  check('默认阈值 8：连发 7 轮还不掐', atSeven.reply === true, `reply=${atSeven.reply}`)
+  const atEight = await provider({}).decide(msg({ consecutiveTurns: 8 }))
+  check('默认阈值 8：到第 8 轮才掐', atEight.reply === false, `reply=${atEight.reply}`)
+
+  const mentioned = await provider({ maxConsecutiveTurns: 5 }).decide({
+    ...msg({ consecutiveTurns: 9 }),
+    messages: [{
+      sender: '1', senderName: '甲', text: '@Bot 在吗', isMe: false, mentionsMe: true, at: Date.now(),
+    }],
+  })
+  check('被 @ 时不受这道闸影响', mentioned.reply === true, `reply=${mentioned.reply}`)
+
+  const privateScene = await provider({ maxConsecutiveTurns: 5 }).decide(
+    msg({ consecutiveTurns: 9, scene: { kind: 'private', userId: '1' } }),
+  )
+  check('私聊不掐（问它不理我最伤人）', privateScene.reply === true, `reply=${privateScene.reply}`)
+
+  const under = await provider({ maxConsecutiveTurns: 5 }).decide(msg({ consecutiveTurns: 2 }))
+  check('没到上限时照常问模型', under.reply === true, `reply=${under.reply}`)
+
+  const off = await provider({ maxConsecutiveTurns: 0 }).decide(msg({ consecutiveTurns: 9 }))
+  check('配 0 = 关掉这道闸', off.reply === true, `reply=${off.reply}`)
 }
 
 console.log(`\n${'='.repeat(40)}`)

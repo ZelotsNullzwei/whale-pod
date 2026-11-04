@@ -908,6 +908,21 @@ window.__ModuleLoader__.load({
 @container (min-width:560px){.gd_grid{grid-template-columns:repeat(4,minmax(0,1fr))}}
 /* 用量卡片只有 3 项，宽屏下用三列而不是四列 */
 @container (min-width:560px){.gd_grid.gd_grid3{grid-template-columns:repeat(3,minmax(0,1fr))}}
+/* 用量块：**两排卡片之间**的竖向间隔。
+   ⚠️ 2026-11-04 修：原来这两排外面是个没有类名的 div，两排 grid 直接相邻、
+   上下间隔是 0 —— 上面三张大卡片和下面三张渠道卡片贴在一起，
+   跟卡片之间的 12px 横间距对不上，看着像没做完。
+   这里统一成和 .gd_grid 的 gap 一样的 12px。 */
+.gd_stack{display:flex;flex-direction:column;gap:12px;min-width:0}
+.gd_stack .gd_note{margin:0}
+/* 渠道那一排的列数要**跟着条数走**（最多 3 条）。
+   原来复用 .gd_grid，宽屏是 4 列 —— 3 张卡片各占 1/4，
+   跟上面三张（各 1/3）对不齐，右边界空出一格。
+   auto-fit + 空轨道折叠：3 条就是 3 等分，2 条就是 2 等分。
+   ⚠️ 窄容器必须和上面那排**一样退回两列**（gd_grid3 在 <560 也是两列），
+      否则 432~560 这一段会出现"上面两列、下面三列"的错位。 */
+.gd_gridauto{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+@container (min-width:560px){.gd_gridauto{grid-template-columns:repeat(auto-fit,minmax(132px,1fr))}}
 .gd_kv{display:flex;flex-direction:column;gap:2px;padding:8px 10px;border-radius:10px;border:1px solid var(--dsw-alias-border-l1);background:color-mix(in srgb,var(--dsw-alias-bg-layer-1) 55%,transparent);min-width:0}
 .gd_kv b{font-size:12px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .gd_kv span{color:var(--dsw-alias-label-tertiary);font-size:10.5px;letter-spacing:.2px}
@@ -1679,7 +1694,21 @@ window.__ModuleLoader__.load({
               }, `${t('dash.affinity')} ${score}`),
               bar)
           })
-          return h(Section, { title: t('dash.people'), hint: t('dash.peopleHint') },
+          /*
+           * ★ 折叠（2026-11-04，用户提的）：侧栏本来就挤，好感排行属于
+           *   "想起来才看一眼"的东西 —— 默认收起，标题右边显示「N 人」，
+           *   点一下展开。
+           *
+           * 和下面「最近消息流」用的是同一个 Fold；区别只是默认态：
+           *   消息流默认展开（常看），这个默认收起（偶尔看）。
+           * 展开/收起状态记在组件内，刷新页面会回到默认。
+           */
+          return h(Fold, {
+            title: t('dash.people'),
+            hint: t('dash.peopleHint'),
+            summary: rows.length === 0 ? t('dash.peopleEmpty') : `${rows.length} 人`,
+            defaultOpen: false,
+          },
             rows.length === 0
               ? h('p', { className: 'gd_note' }, t('dash.peopleEmpty'))
               : h('div', { style: { display: 'flex', flexDirection: 'column', gap: '8px' } }, rows))
@@ -2310,12 +2339,12 @@ window.__ModuleLoader__.load({
       if (y >= 0.01) return `≈¥${y.toFixed(3)}`
       return `≈¥${y.toFixed(4)}`
     }
-      return h('div', null,
+      return h('div', { className: 'gd_stack' },
         h('div', { className: 'gd_grid gd_grid3' },
           h('div', { className: 'gd_count' }, h('b', null, String(u.calls ?? 0)), h('span', null, t('usage.calls'))),
           h('div', { className: 'gd_count' }, h('b', null, fmtTok(u.tokensTotal ?? 0)), h('span', null, t('usage.tokens'))),
           h('div', { className: 'gd_count' }, h('b', null, money(u.costUsd, u.costCny)), h('span', null, t('usage.cost')))),
-        top.length === 0 ? null : h('div', { className: 'gd_grid' },
+        top.length === 0 ? null : h('div', { className: 'gd_gridauto' },
           top.map((p) => h('div', { className: 'gd_kv', key: p.id },
             h('span', null, p.id),
             h('b', null, `${p.calls} 次 · ${fmtTok((p.tokensIn ?? 0) + (p.tokensOut ?? 0))} tok`)))),

@@ -79,6 +79,8 @@ export function createWebServer(opts) {
   const {
     web, store, logger, llm, decision, credentials,
     memory, persona, longMemory, bridge, state, log,
+    // 事件记忆层（2026-11-04，可空 —— 老调用/独立启动时没有）
+    events,
     protocols, runtime, modes,
   } = opts
 
@@ -1010,6 +1012,12 @@ export function createWebServer(opts) {
         return json(res, 200, {
           short: memory?.stats?.() ?? null,
           long: longMemory?.stats?.() ?? null,
+          /*
+           * 事件记忆（2026-11-04）：`events` 总条数 / `alive` 还活着的条数。
+           * 面板靠这两个数看「有没有真的在记、有没有淡忘」—— 光看 summary
+           * 看不出这一层，而它才是"他答应过我什么"的来源。
+           */
+          events: events?.stats?.() ?? null,
           scopes: memory?.scopes?.() ?? [],
         })
       }
@@ -1017,6 +1025,7 @@ export function createWebServer(opts) {
         const scope = url.searchParams.get('scope')
         memory?.clear?.(scope ?? undefined)
         longMemory?.clear?.(scope ?? undefined)
+        events?.clear?.(scope ?? undefined)
         log.info('Web：已清空记忆' + (scope ? '（' + scope + '）' : '（全部）'))
         return json(res, 200, { ok: true, scope: scope ?? 'all' })
       }
@@ -1030,6 +1039,8 @@ export function createWebServer(opts) {
           consecutiveTurns: m.consecutiveTurns,
           sinceMyLastMs: Number.isFinite(m.sinceMyLast()) ? m.sinceMyLast() : null,
           summary: longMemory?.get(scope)?.summary ?? '',
+          // 这个会话记着的事（带强度 / 冻结标记），排查"她怎么忘了"用
+          events: events?.list?.(scope) ?? [],
         })
       }
 

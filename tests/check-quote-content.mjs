@@ -51,25 +51,25 @@ function lastText(history) {
 }
 
 // ── 渲染：窗口内的引用 ─────────────────────────────────────
-ok('引用窗口内的消息 → 渲染出「引用谁：什么」', () => {
+ok('引用窗口内的消息 → 渲染出「引用谁的话：什么」', () => {
   const quoted = m({ id: 'q1', senderName: '阿乙', text: '这个怎么样', at: T - 5000 })
   const cur = m({ text: '我觉得不行', replyTo: 'q1', quote: { sender: '阿乙', text: '这个怎么样' } })
   const t = lastText([quoted, cur])
-  assert.match(t, /（引用阿乙：这个怎么样）/, `实际：${t}`)
+  assert.match(t, /（引用阿乙的话：这个怎么样）/, `实际：${t}`)
   assert.match(t, /我觉得不行/, '正文不能被引用挤掉')
 })
 
 ok('引用自己的话 → 说「你自己」，不是「某人」', () => {
   const cur = m({ text: '对', replyTo: 'q2', quote: { sender: '', text: '本鱼说过这句', isMe: true } })
   const t = lastText([cur])
-  assert.match(t, /（引用你自己：本鱼说过这句）/, `实际：${t}`)
+  assert.match(t, /（引用你自己的话：本鱼说过这句）/, `实际：${t}`)
 })
 
 ok('引用排在说话人之后、正文之前', () => {
   const cur = m({ text: '正文在这', replyTo: 'q3', quote: { sender: '阿乙', text: '被引用的原话' } })
   const t = lastText([cur])
   const iWho = t.indexOf('阿乙: ')
-  const iQuote = t.indexOf('（引用阿乙：')
+  const iQuote = t.indexOf('（引用阿乙的话：')
   const iBody = t.indexOf('正文在这')
   assert.ok(iWho >= 0, `没有说话人前缀：${t}`)
   assert.ok(iWho < iQuote, '引用不该跑到说话人前面')
@@ -85,7 +85,7 @@ ok('长引用截到 60 字（不挤占正文）', () => {
   const i1 = t.indexOf('）', i0)
   const body = t.slice(i0, i1 + 1)
   assert.ok(body.endsWith('…）'), `没截断：${body}`)
-  assert.ok(body.length <= 60 + '（引用阿乙：'.length + '…）'.length, `截得太松：${body.length}`)
+  assert.ok(body.length <= 60 + '（引用阿乙的话：'.length + '…）'.length, `截得太松：${body.length}`)
 })
 
 // ── 渲染：取不到内容 ───────────────────────────────────────

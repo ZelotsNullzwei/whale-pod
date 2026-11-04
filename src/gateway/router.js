@@ -319,6 +319,8 @@ export async function openFirstAvailable(opts) {
 
   for (const c of candidates) {
     const t0 = Date.now()
+    /** @type {AsyncIterator<any>|null} */
+    let it = null
     try {
       const stream = llm.stream({
         provider: c.provider,
@@ -328,8 +330,29 @@ export async function openFirstAvailable(opts) {
 
       // 取首块判断「是否真的能用」。
       // 必须用 takeFirst + resume 保住原迭代器，否则会关掉整个流。
-      const { it, first } = takeFirst(stream)
-      const firstResult = await first
+      const taken = takeFirst(stream)
+      it = taken.it
+
+      /*
+       * ⚠️ **首块超时**（2026-11-04）。
+       *
+       * 实测事故（群里 15:14:23）：这条消息 15:14:23 就决定要回，
+       * `llm.stream()` 也返回了，但**第一块直到 15:15:57 才来** —— 94 秒。
+       * 期间日志里一个字都没有（因为根本没有可打的），最后这条回复
+       * 因为"过时"被丢掉，用户看到的就是「半天回一句，还不回」。
+       *
+       * 原来这里 `await first` 是**无上限**的：上游卡住就一直等，
+       * 只有底下 HTTP 的默认超时能兜（可能几分钟）。
+       *
+       * 现在给它一个上限，超了就当这个渠道失败、换下一个候选。
+       * 默认 30 秒 —— 依据是当天 159 次生成的实测分布：
+       *   p50 4.4s / p90 11.5s / p99 45.2s / max 55.5s
+       * 30 秒能保住 ~98%，同时把 90 秒那种彻底挡掉。
+       */
+      const firstMs = Number(opts.firstChunkMs ?? 30_000)
+      const firstResult = firstMs > 0
+        ? await withTimeout(taken.first, firstMs, () => new Error(`首块超时（${firstMs}ms）`))
+        : await taken.first
 
       if (firstResult.done) {
         // 空流：当成功但没有输出
@@ -355,6 +378,8 @@ export async function openFirstAvailable(opts) {
       attempts.push({ ...c, ok: false, ms: Date.now() - t0, error: msg })
       onAttempt?.(attempts.at(-1))
       errors.push(`${c.provider}/${c.model}: ${msg}`)
+      // 超时/异常时把流关掉，别让它继续在后台吐 chunk
+      try { await it?.return?.() } catch { /* ignore */ }
     }
   }
 
@@ -364,6 +389,28 @@ export async function openFirstAvailable(opts) {
 }
 
 // ── 辅助 ──────────────────────────────────────────────────────
+
+/**
+ * `Promise.race` 的超时版本。
+ *
+ * ⚠️ 被 race 的两个 promise 都会挂上处理器，所以超时之后原 promise
+ *    再 reject 也**不会**变成 unhandled rejection。
+ *
+ * @template T
+ * @param {Promise<T>} promise
+ * @param {number} ms
+ * @param {() => Error} makeErr
+ * @returns {Promise<T>}
+ */
+export function withTimeout(promise, ms, makeErr) {
+  let timer = null
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(makeErr()), ms)
+  })
+  return Promise.race([promise, timeout]).finally(() => {
+    if (timer) clearTimeout(timer)
+  })
+}
 
 const EMPTY = Symbol('empty')
 

@@ -4364,12 +4364,14 @@ export const CLIENT_JS = `
     setMain(loading('读取记忆…'))
     api('/api/memory').then(function(m){
       var wrap = el('<div></div>')
-      var s = m.short || {}, l = m.long || {}
+      var s = m.short || {}, l = m.long || {}, e = m.events || {}
       wrap.appendChild(el(metrics([
         { label: '活跃会话', value: s.sessions || 0, tone: 'accent' },
         { label: '消息总数', value: s.totalMessages || 0 },
         { label: '长期摘要', value: l.withSummary || 0, unit: '个会话' },
         { label: '摘要字数', value: l.totalChars || 0 },
+        /* 事件记忆（2026-11-04）：还活着几条 —— 冻结的不算，这是"现在还记得" */
+        { label: '记着的事', value: e.alive || 0, unit: '条' },
       ])))
 
       var scopes = m.scopes || []
@@ -4395,6 +4397,17 @@ export const CLIENT_JS = `
             lines.push('（连续发言 ' + d.consecutiveTurns + ' 轮，距上次 ' +
               (d.sinceMyLastMs == null ? '-' : Math.round(d.sinceMyLastMs / 1000) + 's') + '）')
             if (d.summary) { lines.push(''); lines.push('【长期摘要】'); lines.push(d.summary) }
+            /*
+             * 事件记忆（2026-11-04）：这个会话记着的**具体的事**。
+             * 带强度和「已冻结」—— 冻结 = 忘了但不丢，重新提起会活过来。
+             */
+            if (d.events && d.events.length) {
+              lines.push(''); lines.push('【记着的事】')
+              d.events.forEach(function(x){
+                lines.push('[' + x.kind + '] ' + x.text + '　强度 ' + x.strength +
+                  '　提过 ' + x.hits + ' 次' + (x.frozen ? '　（已冻结）' : ''))
+              })
+            }
             lines.push(''); lines.push('【最近消息】')
             ;(d.messages || []).forEach(function(x){
               lines.push((x.isMe ? '[我] ' : x.senderName + ': ') + x.text)
@@ -4407,7 +4420,7 @@ export const CLIENT_JS = `
         var ok = await uiConfirm({
           icon: 'broom',
           title: '清空全部记忆',
-          body: '会删除所有会话的短期上下文<b>和长期摘要</b>。<br>' +
+          body: '会删除所有会话的短期上下文<b>、长期摘要和记着的事</b>。<br>' +
             '<span class="note">此操作不可撤销。机器人会「忘掉」之前聊过的内容。</span>',
           ok: '清空', danger: true,
         })

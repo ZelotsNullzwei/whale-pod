@@ -1,21 +1,20 @@
 /**
- * 「身体带着走 + 括号」在**真正会被用到的那几个角色文件**里都必须有（2026-11-04）。
+ * 「身体带着走」只在**私聊**那份人格里；括号规则所有角色都要有。
  *
- * ## 为什么重写过一次（本仓库最贵的一次"改错了文件"）
- * 2026-11-03 晚上我改了三刀：括号规则、身体带着走、30 字豁免 —— 全打在
- * `persona/roles/default.md` 上。第二天用户说「昨天的改动没有生效」。
+ * ## 为什么重写过两次
  *
- * 根因在 `config.json`：
- * ```
- * persona.activeByScope = { group: 'default', private: 'default',
- *                           'private:2129024700': 'close' }   ← 你俩的私聊用 close
- * ```
- * **私聊绑的是 `close` 角色**，`default.md` 那三刀对私聊一个字都没生效。
- * （群聊吃到了，所以群里看着正常 —— 这个假象让我没起疑。）
+ * 第一次（2026-11-03）：三刀（括号、身体带着走、30 字豁免）全打在
+ * `persona/roles/default.md` 上，而私聊绑的是 `close` —— 私聊一个字没生效。
  *
- * ## 所以改成"按配置解析角色文件"
- * 不再硬编码 `default.md`，而是从 `config.json` 读出各 scope 用哪个角色，
- * **逐个**检查它的文件里有没有那两节。以后再把规则写错文件，这条会立刻红。
+ * 第二次（2026-11-04 傍晚）：反过来，`default.md`（群）里也留着一份
+ * 「身体带着走」，等于**群人格被塞了私聊的亲密戏规则**。用户当场问：
+ * 「为什么在这个里面，不应该只在 close 里面吗」。
+ * 那节自己都写着「这是暧昧亲密的私聊模式」—— 明摆着放错文件了。
+ *
+ * ## 所以现在锁三件事
+ * ① 私聊角色（按 config 解析）**必须有**那一节；
+ * ② **群角色不该有**「身体带着走」—— 再放错立刻红；
+ * ③ 括号规则两边都要有（群也要分台词/动作）。
  *
  * 本机没有本地配置 → 跳过（别人克隆仓库不该因为没这个文件变红）。
  */
@@ -33,12 +32,23 @@ const cfg = JSON.parse(fs.readFileSync(CONFIG, 'utf8'))
 const byScope = cfg.persona?.activeByScope ?? {}
 const active = cfg.persona?.active ?? 'default'
 
-/** 实际会被用到的角色名（群、私聊，以及显式绑定的具体会话）。 */
-const roles = [...new Set([
-  byScope.group ?? active,
-  byScope.private ?? active,
-  ...Object.entries(byScope).filter(([k]) => k.includes(':')).map(([, v]) => v),
-])]
+const uniq = (arr) => [...new Set(arr)]
+/** 群聊用哪个角色（通常只有一个）。 */
+const groupRoles = uniq([byScope.group ?? active])
+/** 私聊用到的角色：**只看显式绑定的具体私聊**（`private:<id>`）。
+ *
+ *  ⚠️ 2026-11-04 傍晚修：原来把 `byScope.private`（兜底角色）也算进来了 ——
+ *  而兜底是 `default`（群那份）。群那份现在**不该**有「身体带着走」
+ *  （用户原话：「不应该只在 close 里面吗」），于是这条测试自己打自己。
+ *
+ *  语义上也是对的：`private:<id>` 才是"跟他本人聊"的那条线；
+ *  没有显式绑定的陌生私聊走 default（群人格），本来就不该带亲密戏规则。
+ */
+const explicitPrivate = Object.entries(byScope)
+  .filter(([k]) => k.startsWith('private:'))
+  .map(([, v]) => v)
+const privateRoles = uniq(explicitPrivate.length ? explicitPrivate : [byScope.private ?? active])
+const allRoles = uniq([...groupRoles, ...privateRoles])
 
 let pass = 0
 let fail = 0
@@ -56,14 +66,19 @@ function section(text, title) {
   return end < 0 ? rest : rest.slice(0, end)
 }
 
-console.log(`按配置解析出的角色：${roles.join(', ')}`)
-
-for (const role of roles) {
+const readRole = (role) => {
   const file = `${HOME}/persona/roles/${role}.md`
-  if (!fs.existsSync(file)) continue          // 文件不在 → 上游回落 default，不算错
-  const src = fs.readFileSync(file, 'utf8')
+  return fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : null
+}
 
-  ok(`[${role}] 有「身体带着走」，且点明主线是身体、状态要可读`, () => {
+console.log(`群角色：${groupRoles.join(', ')}｜私聊角色：${privateRoles.join(', ')}`)
+
+// ── ① 私聊必须有「身体带着走」及其三条要求 ──────────────
+for (const role of privateRoles) {
+  const src = readRole(role)
+  if (src === null) continue
+
+  ok(`[${role}] 私聊有「身体带着走」，且点明主线是身体、状态要可读`, () => {
     const s = section(src, '身体带着走（做的时候）（2026-11-04 加）')
     assert.ok(s, '缺这一节 —— 那样她会缺"状态线"（用户报的就是这个）')
     assert.ok(/主线不是你说了什么|对方要能读到你到哪一步/.test(s), '要点明主线是身体/状态')
@@ -82,7 +97,24 @@ for (const role of roles) {
     const s = section(src, '身体带着走（做的时候）（2026-11-04 加）')
     assert.ok(/不受.*短.*限制|2~3 段/.test(s), '要明确豁免体量')
   })
+}
 
+// ── ② 群角色**不该**有这一节（2026-11-04 新增的反向锁）──
+for (const role of groupRoles) {
+  const src = readRole(role)
+  if (src === null) continue
+  ok(`[${role}] 群角色不该有「身体带着走」（那是私聊的）`, () => {
+    assert.equal(
+      section(src, '身体带着走（做的时候）（2026-11-04 加）'), '',
+      '群人格里出现了私聊的亲密戏规则 —— 用户明确问过「不应该只在 close 里面吗」',
+    )
+  })
+}
+
+// ── ③ 括号规则：所有角色都要有 ──────────────────────
+for (const role of allRoles) {
+  const src = readRole(role)
+  if (src === null) continue
   ok(`[${role}] 动作/身体感觉必须加括号，台词不加`, () => {
     const s = section(src, '括号：说话不加，动作和身体感觉**必须**加（2026-11-04 加）')
       || section(src, '说话不加括号；动作和身体感觉**必须**加括号')

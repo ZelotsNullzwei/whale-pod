@@ -282,9 +282,19 @@ console.log('\n=== 6b. 媒体标记的改写（别让模型去解说图）===')
   const { buildChatMessages, describeMedia } = await imp('src/qq/bridge.js')
   const { makeMessage } = await imp('src/memory/short.js')
 
-  check('表情包 → 说明式文字 + 行为指引', describeMedia({ text: '[表情包:猫猫]' }).includes('（对方发了一个表情包，关于「猫猫」') && describeMedia({ text: '[表情包:猫猫]' }).includes('不要打字'),
+  /*
+   * ⚠️ 2026-11-04 傍晚改（用户原话）：「没有说别人发表情必须回复表情，
+   * 也可以是文字，但是不要去读表情」。
+   * 所以这里断言的**行为指引**从「不要打字」换成了「别描述图里画了什么」——
+   * 文字和表情两种回法都合法，唯独"读图"必须继续禁。
+   */
+  check('表情包 → 说明式文字 + 行为指引',
+    describeMedia({ text: '[表情包:猫猫]' }).includes('（对方发了一个表情包，关于「猫猫」')
+    && describeMedia({ text: '[表情包:猫猫]' }).includes('别描述图里画了什么'),
     describeMedia({ text: '[表情包:猫猫]' }))
-  check('无名表情包也说明 + 行为指引', describeMedia({ text: '[表情包]' }).includes('（对方发了一个表情包') && describeMedia({ text: '[表情包]' }).includes('不要打字'))
+  check('无名表情包也说明 + 行为指引',
+    describeMedia({ text: '[表情包]' }).includes('（对方发了一个表情包')
+    && describeMedia({ text: '[表情包]' }).includes('别描述图里画了什么'))
   /*
    * ⚠️ 2026-10-31：`describeMedia({text:'[表情:4]'})` 现在输出
    * 「（对方发了个QQ表情：得意（id=4））」—— 多了**名字**。

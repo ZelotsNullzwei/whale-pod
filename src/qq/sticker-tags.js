@@ -133,6 +133,30 @@ export class StickerTagStore {
   }
 
   /**
+   * 按**图片内容的 md5** 找库里那条表情（2026-11-04）。
+   *
+   * ## 为什么需要
+   * 用户发一张表情过来说「这个标签打错了」时，手上只有**这条消息里的
+   * 图片引用**（`multimedia.nt.qq.com.cn/...`），而标签库的 key 是
+   * 收藏表情的 URL（`p.qpic.cn/qq_expression/...`）—— 两串完全不一样，
+   * 没法直接对上。
+   *
+   * 实测确认（2026-11-04）：收藏 URL 文件名里那串 32 位十六进制
+   * **就是图片字节的 md5** —— 拿同一张图算 md5 就能精确命中，不靠猜。
+   *
+   * @param {string} hash 32 位十六进制（大小写都行）
+   * @returns {string|null} 命中的库 URL
+   */
+  findUrlByHash(hash) {
+    const h = String(hash ?? '').toUpperCase()
+    if (!/^[0-9A-F]{32}$/.test(h)) return null
+    for (const k of this.map.keys()) {
+      if (String(k).toUpperCase().includes(h)) return k
+    }
+    return null
+  }
+
+  /**
    * 记下标签。
    * @param {string} url
    * @param {string[]} tags

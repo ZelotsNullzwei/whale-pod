@@ -21,6 +21,7 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { createHash } from 'node:crypto'
 import { makeMessage } from '../memory/short.js'
 import { resolveCandidates, openFirstAvailable, applyFreeOrder, PROVIDER_MODEL_HINTS } from '../gateway/router.js'
 import { deriveRouting } from '../gateway/strategy.js'
@@ -37,6 +38,7 @@ import { extractBanMarkers, stripBanMarkers, validateBan, describeBanMinutes, ex
 import { applyQuestionOverride } from './questionGate.js'
 import { shouldAnswerSticker } from './stickerGate.js'
 import { StickerTagStore, stickerKey, splitTags } from './sticker-tags.js'
+import { extractQQMarkers, runQQMarkers, buildEmojiHint } from './qqActions.js'
 import { hasBiliLink, resolveBvid, fetchVideoInfo, fetchTopComments, fetchDanmaku, fetchAudioCandidates, downloadAudio, formatVideoContext } from './bilibili.js'
 import { transcribeVideoCached, transcribeVideoDetailed } from './asr.js'
 // 梗百科 —— 本地词库（零成本），联网查梗之前先走它；没收录才放行联网
@@ -117,11 +119,83 @@ export const REFER_IMAGE_WEAK =
  * @type {string[]}
  */
 export const PROMPT_NOTE_TEXTS = [
+  /*
+   * ⚠️ 2026-11-04 改：把「不要描述画面」写成**形状**，并给出可自查的一句。
+   *
+   * 原来只写「有字的梗图就懂意思…不要描述画面」，实测她照样描述：
+   *   · 14:34:54 群「（眉头一皱）肥嘟嘟是它，不是我啊」
+   *   · 14:53:32 私「笑嘻嘻举着个牌子，光笑不说话，这招可糊弄不了本鱼」
+   * 第二句就是标准的"图里画了什么" —— 对方自己看得见，说一遍等于废话。
+   *
+   * 所以加一条自检：**这句话单独拎出来像在给盲人描述这张图 → 就是错了**。
+   */
+  /*
+   * ⚠️ 2026-11-04 傍晚再改（用户原话）：
+   * 「没有说别人发表情必须回复表情，也可以是文字，但是不要去读表情，
+   *   没有人会这么做」
+   *
+   * ## 群日志能直接看出来（2026-11-04 当天 18 组「他发表情 → 她回」）
+   * ```
+   * 12:47:58  [表情包:震惊]        ← 4 秒就回，回的是图
+   * 12:52:09  [表情包:震惊]
+   * 12:57:47  [表情包:无语]
+   * 13:39:27  [表情包:无语]
+   * 16:05:56  [表情包:震惊]
+   * 17:46:37  [表情包:震惊]
+   * ```
+   * 一是**几乎一律用图回图**（只有少数几条接的是文字），
+   * 二是**反复就那两张**（震惊 4 次、无语 2 次）。
+   * 群友当场问过「突然一个雷霆大头你要干嘛」—— 图不搭，对方一头雾水。
+   *
+   * 所以这里改成：**文字、表情都正常，没有"必须回图"这条规矩**；
+   * 但"别描述画面"仍然是硬的。
+   */
+  '对方发表情包：**懂意思就接一句**（用文字完全可以）；也可以只回一个表情 —— '
+    + '两种都正常，**没有"别人发表情就必须回表情"这条规矩**。\n'
+    + '⚠️ **别描述图里画了什么**（谁、在干什么、举着什么、什么姿势、什么表情）—— '
+    + '对方自己看得见，念一遍等于废话。写完自查：这句话单独拎出来像在给盲人描述这张图，'
+    + '那就是写错了。\n'
+    + '⚠️ 也别老回同一张（连着几条都是震惊、无语，看着像你只有两张脸）。',
+  // 上一版（2026-11-04 上午）的原文，老记录里可能还留着，一并擦
+  '有字的梗图：懂意思就用自己的话接一句；'
+    + '**别描述图里画了什么**（谁、在干什么、举着什么、什么姿势、什么表情）—— '
+    + '对方自己看得见。写完自查一下：这句话要是单独拎出来像在给盲人描述这张图，'
+    + '那就是写错了。纯情绪图（没字）只回一个表情，不要打字。',
+  // 旧版本（2026-10-27 ~ 2026-11-03）的原文，老记录里可能还留着，一并擦
   '有字的梗图就懂意思、用自己的话接一句；纯情绪图（没字）只回一个表情，不要打字也不要描述画面',
-  // 旧版本拆开写过的两段（老记录里可能还留着，一并擦）
   '纯情绪图（没字）只回一个表情，不要打字也不要描述画面',
   '只回一个表情，不要打字也不要描述画面',
 ]
+
+/**
+ * `[改标签:嫌弃,厌恶]`（2026-11-04）
+ *
+ * ## 为什么要有
+ * 用户在私聊里发一张表情过来说「这个标签打错了，是嫌弃不是震惊」——
+ * 她嘴上应了「改了改了」，但**代码里没有任何通道**能让这句话成真：
+ * `stickerTags.set()` 全项目只有自动打标签那一处调用。
+ * 结果就是连着两句谎报（"改了改了" / "标签改完了"），
+ * 而 sticker-tags.json 的 mtime 停在 15:17，一个字都没动。
+ *
+ * 所以给她一个**真通道**：标记 → 真的改库 → 日志有记录 → 正文后面还附一句
+ * 「（标签改成…）」。私聊（close）权限宽一点：可以改"刚发出去的那张"；
+ * 群聊只允许改"对方这条里那张"，免得她随手改库影响群里用法。
+ */
+export function extractTagMarkers(text) {
+  const out = []
+  const re = /[\[［]\s*改标签\s*[:：]\s*([^\]］]*)[\]］]/g
+  for (const m of String(text ?? '').matchAll(re)) out.push(String(m[1] ?? '').trim())
+  return out
+}
+
+/** 把改标签标记从正文里剥掉（绝不能发给用户）。 */
+export function stripTagMarkers(text) {
+  return String(text ?? '')
+    .replace(/[\[［]\s*改标签\s*[:：]\s*[^\]］]*[\]］]/g, '')
+    // 剥掉标记后会留下两个连续空格 —— 收成一个，别让正文看着像缺字
+    .replace(/[ \t]{2,}/g, ' ')
+    .trim()
+}
 
 export const IMG_REFER_NOTE = `## ⚠️ 这次附的图是**旧的**
 
@@ -285,8 +359,25 @@ export function buildChatMessages({ system, history = [], imageCache = new Map()
     const body = String(q.text ?? '').replace(/\s+/g, ' ').trim()
     const shown = body.length > 60 ? body.slice(0, 60) + '…' : body
     // 引用自己的话要说「你」，和 describeMedia 里的称呼保持一致
-    const who = q.isMe ? '你自己' : (q.sender ? q.sender : '某人')
-    return shown ? `（引用${who}：${shown}）` : `（引用${who}）`
+    const who = q.isMe ? '你自己' : (q.sender ? `${q.sender}` : '某人')
+    /*
+     * ⚠️ 引用**别人**的话时要标清「说话的是他」（2026-11-04）。
+     *
+     * 原来渲染成 `（引用2129024700：…）` / `（引用番茄：…）`，紧跟着正文里又是
+     * 「我说新发群里的视频」—— 两处「我」指向两个人，中间没有任何分界。
+     * 实测她把这句接成了「我说的那个新盟约视频」，然后连解释三句，
+     * 群友连发两个问号。
+     */
+    if (!shown) return `（引用${who}）`
+    /*
+     * 「的话」两个字不是装饰：它把"引用的是**那个人说的话**"这件事点出来，
+     * 配合 system prompt 里那句「消息里的『我』指说话的人，不是指你」，
+     * 才不会把别人说的「我说的是那个视频」接成「我说的」。
+     * 加得太长会挤占正文，所以只加这两个字。
+     */
+    return q.isMe
+      ? `（引用你自己的话：${shown}）`
+      : `（引用${who}的话：${shown}）`
   }
 
   return [
@@ -843,9 +934,22 @@ export function cleanModelText(raw) {
     '$2',
   )
   s = s.replace(
-    /(^|[\s\n])[（(]\s*(\d{1,3}\s*(?:秒|分钟?|小时)\s*(?:后|之前|以前|前|以后|左右|多)?|紧接着|刚刚|刚才|过了一会儿?|片刻后)\s*[）)]/gm,
+    /(^|[\s\n])[（(]\s*([+＋]?\s*(?:\d{1,3}|几|一|半|好几|若干|\?|？)\s*(?:秒|分钟?|小时)\s*(?:后|之前|以前|前|以后|左右|多)?|紧接着|刚刚|刚才|过了一会儿?|片刻后)\s*[）)]/gm,
     '$1',
   )
+  /*
+   * ⚠️ 2026-11-04 傍晚再补两种（同一天里又撞到两次，见下面清单）：
+   *
+   * ```
+   * 17:23:52 （+? 秒）那不就得了，LYFan也这么讲…
+   * 17:37:57 （+? 秒）醒醒，五点三十六了，十分钟到了。
+   * 16:59:41 （-）上瘾怎么了，好东西当然得多说几遍。
+   * ```
+   *
+   * 上面那条要求「数字或几/半/一」，而模型会把没算出来的时间写成 `?`，
+   * 把"空注记"写成 `（-）`。两者形状都像时间注，就一起在这条家族里收掉。
+   */
+  s = s.replace(/(^|[\s\n])[（(]\s*[-—－]\s*[）)]/gm, '$1')
 
   const trimmed = s.trim()
   if (/^[（(][^）)\n]{1,120}[）)]$/.test(trimmed)) {
@@ -1080,6 +1184,12 @@ export class QQBridge {
     this.decision = opts.decision
     this.memory = opts.memory
     this.longMemory = opts.longMemory
+    /**
+     * 事件记忆层（2026-11-04）。可为 null（老调用/测试）。
+     * 见 `src/memory/events.js` —— 注入走 `toPrompt`，
+     * 收尾（强化 + 异步抽取）挂在 `_maybeSummarize` 里，见 `_touchEvents`。
+     */
+    this.events = opts.events ?? null
     /**
      * 今日状态（每天一份日程）。可空 —— 没有就跳过这一段提示词。
      *
@@ -1330,7 +1440,7 @@ export class QQBridge {
         const kind = scope.startsWith('group:') ? 'group' : 'private'
         const id = scope.slice(scope.indexOf(':') + 1)
         this._lastSpeakScope = String(scope ?? '')   // 兼容旧字段
-        // 按类型各存一份：私聊/群分别结算「没人接」，别互相覆盖（2026-11-04）
+        // 按类型各存一份：私聊/群分别结算「没人接」，别互相覆盖
         const kk = scope.startsWith('group:') ? 'group' : 'private'
         this._lastSpeakScopeByKind = this._lastSpeakScopeByKind ?? {}
         this._lastSpeakScopeByKind[kk] = String(scope ?? '')
@@ -1352,16 +1462,15 @@ export class QQBridge {
        */
 
       onIgnored: ({ kind }) => {
-
         try {
-
+          /*
+           * ⚠️ 按类型取 scope（2026-11-04 修）：原来用共享的 `_lastSpeakScope` ——
+           * 私聊发言后群里又主动说一次就会把 scope 覆盖成 group，结算时静默跳过。
+           */
           const kk = String(kind ?? '').toLowerCase()
           const scope = this._lastSpeakScopeByKind?.[kk] ?? this._lastSpeakScope ?? ''
-
           if (!(kk === 'private' && scope.startsWith('private:'))) return
-
           const uid = scope.slice('private:'.length)
-
           this.people?.bumpAffinity?.(uid, -2, { floor: 40, reason: '主动发言没人接' })
 
         } catch (e) { this.log.debug?.('好感度扣分失败（忽略）：' + String(e?.message ?? e)) }
@@ -1896,7 +2005,14 @@ export class QQBridge {
        * `full` 就是 msg 的展开，字段齐。
        */
       const sentIds = await this._send(full, clean)
-      mem.push(makeMessage({ sender: this.selfId ?? '0', senderName: this.selfName, text: clean, isMe: true, at: Date.now() }))
+      // 同上：记**剥完标记之后**的正文（`_send` 会挂 `__sentText`）
+      mem.push(makeMessage({
+        sender: this.selfId ?? '0',
+        senderName: this.selfName,
+        text: full.__sentText ?? clean,
+        isMe: true,
+        at: Date.now(),
+      }))
       this.stats.replied++
       const where = msg.kind === 'group' ? `群` : `私聊`
       this.log.info?.(`proactive：[我主动] ${msg.scope}（${where}，${sentIds.length} 条）「${clean.slice(0, 100)}」`)
@@ -2265,10 +2381,12 @@ export class QQBridge {
 
     // 同会话串行，避免两条消息同时触发两条回复
     const prev = this._queues.get(msg.scope) ?? Promise.resolve()
+    this._markBusy(msg.scope)
     const next = prev.then(() => this._handle(msg, seq)).catch((e) => {
       this.log.warn?.(`bridge：${msg.scope} 处理失败 — ${String(e?.message ?? e)}`)
       this.stats.failed++
     })
+    next.then(() => this._unmarkBusy(msg.scope), () => this._unmarkBusy(msg.scope))
     this._queues.set(msg.scope, next)
     await next
   }
@@ -2388,6 +2506,32 @@ export class QQBridge {
    * @param {number} seq 该消息的单调序号
    * @returns {boolean} true = 已缓冲，调用方应直接 return
    */
+  /**
+   * 这个会话**现在有没有任务在跑**（排队中或生成中）。
+   *
+   * `_queues` 是 Promise 链尾，看不出"还在不在跑"。所以另外记一个计数：
+   * 入队 +1、落定 -1。用于 `_coalesceInbound` 判断"要不要跨人合并"。
+   *
+   * @param {string} scope
+   * @returns {boolean}
+   */
+  _queueBusy(scope) {
+    return Number(this._qBusy?.get(String(scope ?? '')) ?? 0) > 0
+  }
+
+  _markBusy(scope) {
+    if (!this._qBusy) this._qBusy = new Map()
+    const k = String(scope ?? '')
+    this._qBusy.set(k, (this._qBusy.get(k) ?? 0) + 1)
+  }
+
+  _unmarkBusy(scope) {
+    const k = String(scope ?? '')
+    const n = (this._qBusy?.get(k) ?? 1) - 1
+    if (n <= 0) this._qBusy?.delete(k)
+    else this._qBusy.set(k, n)
+  }
+
   _coalesceInbound(msg, seq) {
     /*
      * ⚠️ **代码默认 0（不合并），生产靠配置给 1500**（2026-10-30）。
@@ -2412,7 +2556,30 @@ export class QQBridge {
       this._pendingTimers = new Map()
     }
     const who = String(msg.userId ?? msg.sender ?? '?')
-    const key = `${msg.scope}::${who}`
+    /*
+     * ★ **她正在生成时，群里的话并成一条**（2026-11-04）。
+     *
+     * ## 为什么
+     * 原来只合并"同一个人连发"。群里几个人你一句我一句地刷的时候，
+     * 每条都单独入队 → 单独决策 → 单独生成 → 等她生成完，
+     * 后面又来了 2~4 条 → 每条都判「过时，丢弃」。
+     *
+     * 实测（15:14–15:16）：
+     * ```
+     * 15:14:23  群「[表情包]」 → 81 秒后生成完 → 群里已说 4 条 → 丢弃
+     * 15:15:57  群「[表情包]」 → 立即「等待期间群里又说了 3 条」→ 放弃
+     * ```
+     * 结果就是：群一热闹，她**一条都发不出来**。
+     *
+     * ## 做法
+     * 生成期间（`_queueBusy`）到达的消息，**跨人不分彼此**地并进同一个 buffer；
+     * 等这群人说完（窗口 1.5s）再一起处理一次。
+     * 这样"热闹"不再等于"全丢"，而是"她晚一点、接一句"。
+     *
+     * ⚠️ 只在**同一个会话里已经有任务在跑**时才这样并 —— 空闲时仍然按人分，
+     *    否则一对一私聊的连发合并会被打乱（那条路有 check-coalesce 盯着）。
+     */
+    const key = this._queueBusy(msg.scope) ? `${msg.scope}::__busy` : `${msg.scope}::${who}`
 
     let buf = this._pending.get(key)
     if (!buf) {
@@ -2590,10 +2757,12 @@ export class QQBridge {
     }
 
     const prev = this._queues.get(merged.scope) ?? Promise.resolve()
+    this._markBusy(merged.scope)
     const next = prev.then(() => this._handle(merged, seq)).catch((e) => {
       this.log.warn?.(`bridge：${merged.scope} 处理失败 — ${String(e?.message ?? e)}`)
       this.stats.failed++
     })
+    next.then(() => this._unmarkBusy(merged.scope), () => this._unmarkBusy(merged.scope))
     this._queues.set(merged.scope, next)
     return next
   }
@@ -2609,7 +2778,24 @@ export class QQBridge {
    */
   _mergeBurst(msgs) {
     const last = msgs[msgs.length - 1]
-    const texts = msgs.map((m) => String(m.text ?? '').trim()).filter(Boolean)
+    /*
+     * ⚠️ **跨人合并时要带名字**（2026-11-04）。
+     *
+     * 原来只按"同一个人连发"合并，一条 buffer 里必然是同一个人，不用带名字。
+     * 现在多了一条路：**她正在生成时，群里别人说的话也并进同一条**
+     * （见 `_coalesceInbound` 里的 `__busy`）。那时 buffer 里是不同人说的，
+     * 不带名字拼成一行，模型会把 A 的话当成 B 说的。
+     */
+    const senders = new Set(msgs.map((m) => String(m.userId ?? m.sender ?? '')))
+    const crossSender = senders.size > 1
+    const texts = msgs
+      .map((m) => {
+        const t = String(m.text ?? '').trim()
+        if (!t) return ''
+        const name = String(m.senderName ?? '').trim()
+        return crossSender && name ? `${name}: ${t}` : t
+      })
+      .filter(Boolean)
     const images = []
     const stickerRefs = []
     for (const m of msgs) {
@@ -3416,7 +3602,17 @@ export class QQBridge {
     let text
     let cover = null
     try {
-      const gen = await this._generate(msg, mem, scene, self)
+      const gen = await this._generateGuarded(msg, mem, scene, self, seq)
+      // ⚠️ 生成途中就已经过时了 —— 不再往下走（见 `_generateGuarded`）
+      if (gen?.__stale) {
+        this.stats.superseded = (this.stats.superseded ?? 0) + 1
+        this.log.info?.(
+          `bridge：生成途中群里又说了 ${gen.count} 条且没叫我 —— 不等了（等了 ${Math.round(gen.waitedMs / 1000)}s）`,
+        )
+        this._record(msg, d, null, 'stale-aborted')
+        this._maybeSummarize(msg.scope, mem, scene)
+        return
+      }
       // _generate 返回 { text, cover } —— cover 是搜索时顺手抓的封面图
       text = gen?.text ?? ''
       cover = gen?.cover ?? null
@@ -3484,6 +3680,65 @@ export class QQBridge {
       this.log.info?.(`bridge：回复里混了 [SILENT]，已剥掉后发出 — ${JSON.stringify(stripped.slice(0, 40))}`)
     }
     text = stripped
+
+    /*
+     * ── 4a'. 自重复闸（2026-11-04）──────────────────────────
+     *
+     * ## 修的是什么
+     * 群里 13:36:01 / 13:36:08 两条，把同一个意思换了个说法又讲一遍
+     * （中间还夹着 B 站补一句，第三次）。群友当场回「依旧复读」。
+     *
+     * 根因不是"风格雷同"，是**内容重复**：每条入站消息各触发一次生成，
+     * 谁也不知道自己 3 秒前刚说过什么。提示词里那段「你刚才说过的话」只说了
+     * 「别用相同的开头、别套同一个句式」—— 它照做了，然后把内容又说了一遍。
+     *
+     * 所以这里兜一道**内容**闸：和最近 3 条自己的话比（去掉标点/空白/表情标记）,
+     * 命中就**重写一次**（明确告诉它"这句刚说过"），还重就干脆不发。
+     *
+     * ⚠️ 判据收得很紧（完全相同 / 包含 / 同开头 ≥10 字 / 二元组高重合），
+     *    宁可漏掉近义改写，也不误杀正常回复 —— 误杀的代价是"该说话时不吭声"。
+     * ⚠️ 纯表情不算（`[表情包:无语]` 连发是另一回事，由表情清单那边管）。
+     */
+    const dupSelf = this._selfRepeatOf(text, mem)
+    /*
+     * ⚠️ **私聊不过这道闸**（2026-11-04）。
+     *
+     * 和 `_checkSuperseded` 同理：私聊里所有消息都是对你一个人说的，
+     * 用户复述一句、追问一句都是常态；而且私聊里"回了但重复"远好过
+     * "问了不理我"。群聊才是复读丢人的地方。
+     */
+    const isPrivateScope = String(msg.scope ?? '').startsWith('private')
+    if (dupSelf && !isPrivateScope) {
+      this.log.info?.(
+        `bridge：这句和刚说过的「${String(dupSelf).replace(/\s+/g, ' ').slice(0, 30)}」重了 → 重写一次 — ${msg.scope}`,
+      )
+      try {
+        const again = await this._generate(
+          msg, mem, scene, self, null,
+          '★ **你刚说过这句，已经发出去了**：「' + String(dupSelf).replace(/\s+/g, ' ').slice(0, 60) + '」\n'
+          + '这一轮**不许**把同一件事换个说法再说一遍 —— 要么补真正的新内容'
+          + '（回答新问题 / 接新的话茬 / 往下推进），要么只输出 [SILENT]。',
+        )
+        const againText = String(again?.text ?? '')
+          .replace(/[\[［]\s*[SILENTsilent]{6}\s*[\]］]/g, '')
+          .trim()
+        if (againText && !this._selfRepeatOf(againText, mem)) {
+          text = againText
+        } else {
+          this.stats.silent++
+          this._record(msg, d, null, 'self-repeat')
+          this._maybeSummarize(msg.scope, mem, scene)
+          return
+        }
+      } catch (e) {
+        // 重写失败就按"宁可不说"处理：再发一遍重复的话，代价比沉默大
+        this.stats.silent++
+        this.log.warn?.(`bridge：自重复重写失败（按沉默处理）— ${String(e?.message ?? e)}`)
+        this._record(msg, d, null, 'self-repeat-error')
+        this._maybeSummarize(msg.scope, mem, scene)
+        return
+      }
+    }
 
     /*
      * ── 4b. 找图标记 ──────────────────────────────────────────
@@ -3673,6 +3928,150 @@ export class QQBridge {
       }
     }
 
+    /*
+     * ── 4e. 改标签标记（2026-11-04）────────────────────────────
+     *
+     * 格式：`[改标签:嫌弃,厌恶]`（1~6 个，逗号/顿号/空格分隔）
+     *
+     * 这条是**她唯一能真正改标签的通道**。没有它的时候，用户说
+     * 「这个标签打错了」，她只会嘴上应「改了改了」——
+     * 而 sticker-tags.json 一个字都不会动（实测 16:15 那两句就是纯谎报）。
+     *
+     * 目标见 `_tagTarget`：对方这条里那张（md5 精确命中）。
+     * 私聊权限宽一点：还可以是她刚发出去的那张。
+     */
+    let tagNote = null
+    {
+      const marks = extractTagMarkers(text)
+      if (marks.length > 0) {
+        text = stripTagMarkers(text)
+        if (marks.length > 1) {
+          this.log.warn?.(`bridge：一条回复里有 ${marks.length} 个改标签标记，只执行第一个`)
+        }
+        const tags = splitTags(marks[0])
+        if (tags.length === 0) {
+          this.log.warn?.('bridge：改标签标记里没有可用的标签')
+          tagNote = '标签没改成'
+        } else if (typeof this.stickerTags?.set !== 'function') {
+          this.log.warn?.('bridge：标签库没挂载 —— 改标签跳过')
+          tagNote = '标签没改成'
+        } else {
+          const target = await this._tagTarget(msg)
+          if (!target) {
+            this.log.warn?.(`bridge：改标签找不到目标 — 「${tags.join('、')}」`)
+            tagNote = '没找到那张表情'
+          } else if (this.stickerTags.set(target.url, tags)) {
+            this.log.info?.(
+              `bridge：表情标签已改 → ${tags.join('、')}`
+              + `（目标=${target.why}，${target.url.slice(0, 60)}）`,
+            )
+            tagNote = `标签改成「${tags.join('、')}」`
+          } else {
+            this.log.warn?.(
+              `bridge：表情标签没改成（标签不合法，或本来就是这样）— 「${tags.join('、')}」`,
+            )
+            tagNote = '标签没改成'
+          }
+        }
+      }
+    }
+
+    /*
+     * ── 4g. QQ 侧动作（2026-11-04）──────────────────────────────
+     *
+     * `[回应:13]` 贴表情 / `[戳]` 戳一戳 / `[签名:…]` 改自己签名 / `[撤回]` 撤回上一条。
+     *
+     * 每个动作都有开关（`qq.actions`，见 config/store.js 那张表）：
+     * 免费、不碰别人的默认开；要权限/有副作用的默认关。
+     * 关掉的时候标记**也照样剥掉** —— 绝不能因为开关关了就把「[戳]」发出去。
+     *
+     * ⚠️ **必须排在 4f 谎报闸之前**：谎报闸要知道"这一轮到底发生了什么"，
+     *    签名/撤回也是动作，得先执行再核对。
+     */
+    let qqNotes = []
+    {
+      const marks = extractQQMarkers(text)
+      if (marks.items.length > 0) {
+        text = marks.text
+        qqNotes = await runQQMarkers({
+          items: marks.items,
+          onebot: this.onebot,
+          msg,
+          mem,
+          cfg: this.cfg.actions ?? {},
+          log: this.log,
+          // 改签名必须同时带 nickname（协议端 schema 必填），用当前昵称原样传
+          selfName: this.selfName,
+        })
+        if (qqNotes.length > 0) this.log.info?.(`bridge：QQ 动作执行了 — ${qqNotes.join('、')}`)
+      }
+    }
+
+    /*
+     * ── 4f. 声称做了 / 其实没做（2026-11-04）──────────────────
+     *
+     * 「改了改了」「标签改完了」「已经禁言了」—— 这些话只有在**本轮真的
+     * 执行了对应动作**时才允许发出去。程序只认标记，不认话。
+     *
+     * 处理：重写一次（明确告诉它没发生），还谎报就整条不发。
+     * 宁可这一轮少说一句，也不能让它习惯性地报一件没发生的事。
+     */
+    {
+      const did = {
+        tag: Boolean(tagNote),
+        nick: Boolean(nickNote),
+        ban: Boolean(banNote),
+        image: Boolean(findImage),
+        // QQ 动作的结果也算"真的做了"（见 4g 的 notes 文案）
+        signature: qqNotes.some((n) => String(n).startsWith('签名改成')),
+        recall: qqNotes.some((n) => String(n).includes('撤回')),
+      }
+      const claim = this._falseClaim(text, did, msg?.text)
+      if (claim) {
+        this.log.warn?.(
+          `bridge：她说了「${claim.hit}」，但这一轮没有任何动作（${claim.kind}）→ 重写一次`,
+        )
+        try {
+          const again = await this._generate(
+            msg, mem, scene, self, null,
+            '★ **你刚说「' + claim.hit + '」，但这一轮什么都没发生** —— '
+            + '你只说了话，没有输出任何标记，程序不会替你改。\n'
+            + '两条路选一条：真的做（改标签→[改标签:标签1,标签2]；'
+            + '改昵称→[改昵称:新名字]；禁言→[禁言:QQ号:分钟]；找图→[找图:关键词]），'
+            + '或者把「已经…了」这类话删掉，别报一件没发生的事。',
+          )
+          // ⚠️ 重写里如果又吐标记，这里一律剥掉 —— 那些标记这一轮不会再被执行，
+          //    留着只会让它以为自己做了、下一条继续谎报。
+          const againText = extractQQMarkers(
+            stripFindImageMarkers(
+              stripNicknameMarkers(stripBanMarkers(stripTagMarkers(String(again?.text ?? '')))),
+            ),
+          ).text
+            .replace(/[\[［]\s*[SILENTsilent]{6}\s*[\]］]/g, '')
+            .trim()
+          if (againText && !this._falseClaim(againText, did, msg?.text)) {
+            text = againText
+          } else {
+            this.stats.silent++
+            this._record(msg, d, null, 'false-claim')
+            this._maybeSummarize(msg.scope, mem, scene)
+            return
+          }
+        } catch (e) {
+          this.stats.silent++
+          this.log.warn?.(`bridge：谎报重写失败（按沉默处理）— ${String(e?.message ?? e)}`)
+          this._record(msg, d, null, 'false-claim-error')
+          this._maybeSummarize(msg.scope, mem, scene)
+          return
+        }
+      }
+    }
+
+    /*
+     * ── 4g 已在 4f 之前执行（见上）。这里不再重复 —— 重复执行会让
+     *    `[戳]` 戳两次、`[撤回]` 撤错消息。2026-11-04 调整顺序时踩过这个坑。
+     */
+
     // 5. 发送
     try {
       // findImage 的 buffer 走 base64 data URL —— OneBot 的 image 段
@@ -3682,8 +4081,8 @@ export class QQBridge {
         : cover
       // 禁言结果附一句说明 —— 当事人得知道发生了什么，别偷偷摸摸的。
       // 没写正文（只给了标记）时，就用这句当正文。
-      if (banNote || nickNote) {
-        const notes = [banNote, nickNote].filter(Boolean).join('；')
+      if (banNote || nickNote || tagNote || qqNotes.length > 0) {
+        const notes = [banNote, nickNote, tagNote, ...qqNotes].filter(Boolean).join('；')
         text = text.trim() ? `${text}（${notes}）` : `${notes}。`
       }
       // ★ 节奏控制：生成已经花了多少，就只补剩下的（见 `_waitForPace`）
@@ -3698,7 +4097,9 @@ export class QQBridge {
         id: sentIds.length ? sentIds[sentIds.length - 1] : undefined,
         sender: this.selfId ?? '0',
         senderName: this.selfName,
-        text,
+        // ⚠️ 用 `_send` 剥完标记之后的那份（见 `_send` 里 `msg.__sentText` 的说明）——
+        //    不然 `[等:10]` 这种已经剥掉、用户根本没看到的标记会留在记忆里。
+        text: msg.__sentText ?? text,
         at: Date.now(),
         isMe: true,
         // 记下这条回复是哪家渠道/哪个模型生成的 —— 往上送历史时
@@ -4044,6 +4445,143 @@ export class QQBridge {
    * @param {number} [opts.afterSeq] 本条消息的入站序号；缺省时按 messageId 反查
    * @returns {null|{count:number}} null = 没过时
    */
+  /**
+   * 「说做了，其实没做」（2026-11-04）。
+   *
+   * ## 现场
+   * 私聊里她连说「改了改了」「标签改完了」，而 `sticker-tags.json` 的
+   * mtime 一动不动。人格里早就写着「程序只认标记，不认你说的话」——
+   * 但**没有任何代码去核对**，那句话只是提示词里的一句劝。
+   *
+   * ## 只查"有标记才可能做到"的那几类
+   * 改标签 / 改昵称 / 禁言 / 找图 —— 这四件事都有对应标记。
+   * 别的（「我去看看」「我记住了」）不管：那些本来就没有对应动作，
+   * 硬管会把正常接话也掐掉。
+   *
+   * ## 判据收得很紧
+   *   · 要**肯定式**的完成说法（改好/改完/改了/改成）
+   *   · 附近有「没/不/未」或「不了」→ 是否定句，放过
+   *   · 后面紧跟「吗/么/？」→ 是疑问句，放过
+   *
+   * @param {string} text
+   * @param {{tag?:boolean,nick?:boolean,ban?:boolean,image?:boolean}} did 本轮真的做了什么
+   * @param {string} [ctx] 对方这一轮说的话（判定"跨句谎报"用，见下面的签名规则）
+   * @returns {null|{kind:string,hit:string}}
+   */
+  _falseClaim(text, did = {}, ctx = '') {
+    const s = String(text ?? '')
+    if (!s) return null
+    const around = (idx, len) => s.slice(Math.max(0, idx - 4), Math.min(s.length, idx + len + 4))
+    const rules = [
+      // 标签：明确提到标签，或者她爱用的「改了改了」连说
+      { kind: 'tag', need: 'tag', re: /标签[^。！？\n]{0,12}?改(好|完|了|成|过来)|改(好|完|成了?|过来)(这个|那个)?标签/ },
+      { kind: 'tag', need: 'any', re: /改了改了/ },
+      { kind: 'nick', need: 'nick', re: /(昵称|名字)[^。！？\n]{0,12}?改(好|完|了|成|过来)|改(好|完|成了?)(昵称|名字)/ },
+      { kind: 'ban', need: 'ban', re: /禁言[他她它]?了|禁言[他她它]?好了|禁言[她他它]?掉了/ },
+      { kind: 'image', need: 'image', re: /(给你)?(找到|找好|找了)(一)?张图|图(已经)?(找好|找到)了/ },
+      // 签名/撤回 —— QQ 动作那一批（2026-11-04）。签名默认是关的，
+      // 所以她说「签名改了」而没有 [签名:…] 时，必须拦住。
+      { kind: 'signature', need: 'signature', re: /签名[^。！？\n]{0,10}(改|换)(好|完|了|成)/ },
+      /*
+       * ★ **签名跨句**（2026-11-04 20:xx 补，收口放宽）。
+       *
+       * 实测 19:43:32~44：
+       * ```
+       * 他「你看看现在能自己改签名和其他的了吗」
+       * 她「（…手搭上去动了一下）改了，」     ← 动作描写 + 一个「改了」
+       * ```
+       * 上面的规则要求「签名…改X」**在同一句里** —— 她这轮根本没提"签名"两个字，
+       * 只是顺着对方的问题说「改了」，于是漏网。
+       *
+       * 现在：**对方这一轮问的就是签名/资料**（`ctx`），而她说「改好/改完/改了」
+       * 却没有任何 [签名:…] → 也算谎报。
+       *
+       * ⚠️ 只在 `ctx` 命中时才生效 —— 否则「我改了主意」这种日常说法
+       *    会被当成谎报（`skip` 再挡一道）。
+       */
+      {
+        kind: 'signature',
+        need: 'signature',
+        ctx: /签名|个性签名|个人资料/,
+        re: /改(好|完|了)/,
+        skip: /主意|想法|计划|行程/,
+      },
+      { kind: 'recall', need: 'recall', re: /(已经)?撤回了/ },
+    ]
+    for (const r of rules) {
+      const m = r.re.exec(s)
+      if (!m) continue
+      const acted = r.need === 'any'
+        ? Boolean(did.tag || did.nick || did.ban || did.image)
+        : Boolean(did[r.need])
+      if (acted) continue // 真做了，随便说
+      // 跨句规则（带 `ctx` 的）：对方没提到这件事，她说的「改了」就是别的意思
+      if (r.ctx && !r.ctx.test(String(ctx ?? ''))) continue
+      if (r.skip && r.skip.test(around(m.index, m[0].length))) continue
+      if (/[没不未别甭]|不了/.test(around(m.index, m[0].length))) continue // 否定句
+      const after = s.slice(m.index + m[0].length, m.index + m[0].length + 1)
+      if (/[吗么？?]/.test(after)) continue // 疑问句
+      return { kind: r.kind, hit: m[0] }
+    }
+    return null
+  }
+
+  /**
+   * 这句是不是**在重复我刚说过的内容**？（2026-11-04）
+   *
+   * 只做「内容重复」判断，不做语义相似 —— 判据全都收得很紧：
+   *   · 归一化后完全相同
+   *   · 一方包含另一方（≥6 字）
+   *   · 开头 ≥8 字相同（复读通常连开头都一样）
+   *   · 二元组 Jaccard ≥ 0.6（换几个词但骨架一样的近重复）
+   *
+   * ⚠️ 宁可漏判，也不误杀：误判的代价是**该说话的时候不吭声**，
+   *    比偶尔说重复一句更伤人。所以阈值不往下调。
+   *
+   * @param {string} text 这次准备发出去的正文
+   * @param {object} mem  会话记忆
+   * @returns {string|null} 命中的那条旧消息原文（给重写提示用）；没命中返回 null
+   */
+  _selfRepeatOf(text, mem) {
+    const norm = (s) => String(s ?? '')
+      .replace(/\[表情[^\]]*\]/g, '')
+      .replace(/[\s\u3000]+/g, '')
+      .replace(/[，。！？、；：""''‘’“”（）()《》〈〉…—～·,.!?;:"'`~\-—_]/g, '')
+    const raw = String(text ?? '').trim()
+    if (!raw || /^\[表情/.test(raw)) return null
+    const cur = norm(raw)
+    if (cur.length < 4) return null
+
+    const mine = mem.recent(24)
+      .filter((m) => m.isMe)
+      .map((m) => ({ raw: String(m.text ?? ''), s: norm(m.text) }))
+      .filter((x) => x.s.length >= 4)
+      .slice(-3)
+
+    const bigrams = (s) => {
+      const set = new Set()
+      for (let i = 0; i < s.length - 1; i++) set.add(s.slice(i, i + 2))
+      return set
+    }
+
+    for (const prev of mine) {
+      if (prev.s === cur) return prev.raw
+      if (cur.length >= 6 && prev.s.includes(cur)) return prev.raw
+      if (prev.s.length >= 6 && cur.includes(prev.s)) return prev.raw
+      const head = Math.min(10, cur.length, prev.s.length)
+      if (head >= 8 && cur.slice(0, head) === prev.s.slice(0, head)) return prev.raw
+      const a = bigrams(cur)
+      const b = bigrams(prev.s)
+      if (a.size >= 4 && b.size >= 4) {
+        let inter = 0
+        for (const g of a) if (b.has(g)) inter++
+        const j = inter / (a.size + b.size - inter)
+        if (j >= 0.6) return prev.raw
+      }
+    }
+    return null
+  }
+
   _checkSuperseded(msg, mem, opts = {}) {
     const minNew = Number(opts.minNew ?? 2)
     const scope = String(msg?.scope ?? 'unknown')
@@ -4178,6 +4716,63 @@ export class QQBridge {
    * @param {string} [extraNote]   外面塞进来的注记（"看完车牌内页"补发时用）
    */
   /**
+   * 带「过时就别等了」的生成（2026-11-04）。
+   *
+   * ## 为什么
+   * 原来只在生成**开始前**和**结束后**各查一次过时。生成本身要 10~90 秒，
+   * 一旦上游慢，这段时间群里早就翻篇了 —— 等到结果再丢，白等、白花钱，
+   * 而且用户看到的是"半天没动静"。
+   *
+   * 实测（15:14:23）：一条表情包生成到 15:15:57 才回来，群里已说 4 条，
+   * 直接丢弃。那 94 秒她**既没回、也没做别的**。
+   *
+   * ## 做法
+   * 生成期间每 500ms 复查一次过时判据（判据完全复用 `_checkSuperseded`，
+   * 语义不变）；一命中就**不再等**，返回 `{ __stale: true }` 让调用方当沉默处理。
+   *
+   * ⚠️ 底层请求不会真的被 abort（上游没有 signal 契约），只是**我们不等了**。
+   *    代价是这一轮 token 照花 —— 但用户不用再多等一分钟。
+   * ⚠️ 私聊不这么干：私聊没有"话题被岔开"这回事，等多久都得回。
+   *
+   * @returns {Promise<object|null>} 正常返回 `_generate` 的结果；过时返回 `{__stale:true,count,waitedMs}`
+   */
+  async _generateGuarded(msg, mem, scene, self, seq, extraBlocks = null, extraNote = '') {
+    const t0 = Date.now()
+    const genP = this._generate(msg, mem, scene, self, extraBlocks, extraNote)
+      .then((v) => ({ ok: true, v }), (e) => ({ ok: false, e }))
+
+    const scope = String(msg?.scope ?? '')
+    if (!scope.startsWith('group:')) {
+      const r = await genP
+      if (!r.ok) throw r.e
+      return r.v
+    }
+
+    let timer = null
+    const staleP = new Promise((resolve) => {
+      timer = setInterval(() => {
+        // 生成期间群里可能又来了一堆；判据和发送前那道闸完全一致
+        const s = this._checkSuperseded(msg, mem, { afterSeq: seq })
+        if (s) resolve({ ok: true, __stale: true, count: s.count, waitedMs: Date.now() - t0 })
+      }, 500)
+      /*
+       * ⚠️ 这里**不要** unref。第一版 unref 了，测试里 `await` 的 promise
+       *    还没 settle，事件循环就没别的 ref 句柄了 → Node 直接退出，
+       *    报 "unsettled top-level await"。线上有别的句柄兜着看不出来，
+       *    但那说明这个定时器"随时可能不被调度"，本来就不该这么写。
+       *
+       * 不会泄漏：race 一有结果（正常返回 / 过时 / 抛错）下面立刻 clearInterval。
+       */
+    })
+
+    const r = await Promise.race([genP, staleP])
+    if (timer) clearInterval(timer)
+    if (r.__stale) return r
+    if (!r.ok) throw r.e
+    return r.v
+  }
+
+  /**
    * ★ 链接「渲染兜底」的内存缓存（2026-11-04）。
    *
    * 只在内存里、最多留 24 小时、最多 20 条 —— 用户的原话：
@@ -4233,7 +4828,7 @@ export class QQBridge {
     void job
   }
 
-  async _generate(msg, mem, scene, self, extraBlocks = null, extraNote = '') {
+  async _generate(msg, mem, scene, self, extraBlocks = null, extraNote = '', attempt = 0) {
     const long = this.longMemory?.get(msg.scope)
     const memoryText = long?.toPrompt() ?? ''
 
@@ -4274,6 +4869,24 @@ export class QQBridge {
       peopleText = this.people?.toPrompt?.({ self: msg.sender, limit: 6 }) ?? ''
     } catch (e) {
       this.log.debug?.(`bridge：人物档案注入失败（跳过）：${String(e?.message ?? e)}`)
+    }
+
+    /*
+     * ★ **今天记着的事**（2026-11-04）。
+     *
+     * 事件记忆层：短期 30 条记不住、摘要又只写"人是什么样"，
+     * 中间那段「他答应了什么 / 我欠他什么」用这一段补上（见 `memory/events.js`）。
+     *
+     * ⚠️ 只注入**还活着的**（强度 ≥ 冻结线），而且**带相对时间** ——
+     *    不然她会把三天前的事当成刚发生（这是最像机器人的地方之一）。
+     *
+     * ⚠️ 同步调用、失败一律吞掉：记忆是加分项，不能因为它让这条回复发不出去。
+     */
+    let eventsText = ''
+    try {
+      eventsText = this.events?.toPrompt?.(msg.scope) ?? ''
+    } catch (e) {
+      this.log.debug?.(`bridge：事件记忆注入失败（跳过）：${String(e?.message ?? e)}`)
     }
 
     // ── 联网搜索（只在"需要新信息"时才查）─────────────────────
@@ -4379,6 +4992,40 @@ export class QQBridge {
             this._scheduleLinkRender(url)
           }
         }
+      }
+    }
+
+    /*
+     * ★★ **链接资料留一份**（2026-11-04）。
+     *
+     * ## 修的是什么
+     * 13:35:58 程序明明抓到了 `BV1o44N6VEWo` 的标题 / 5 条评论 / 10 条弹幕 / 分镜图
+     * （日志有），可 13:37:08 有人追问「不是又发了一个吗」——
+     * 她回的是「刚那个链接？我没点开看，又是啥」。
+     *
+     * 因为这份资料是**这一轮临时拼的 facts**：只在触发它的那条消息里存在，
+     * 不进记忆。下一轮追问时，上下文里只剩
+     * 「【哔哩哔哩】https://b23.tv/dhcf5hl?share_mediu」（被截断的裸链接）。
+     *
+     * 所以按会话留一份，追问时（没带新链接）重新挂上 —— 有 6 分钟有效期，
+     * 过期或者带了新链接就覆盖。
+     */
+    const scopeKey = String(msg.scope ?? '')
+    const linkText = String(biliContext || linkContext || '').trim()
+    if (linkText) {
+      if (!this._linkFacts) this._linkFacts = new Map()
+      this._linkFacts.set(scopeKey, { at: Date.now(), text: linkText, url: extractLink(String(msg.text ?? '')) })
+    } else if (!extractLink(String(msg.text ?? ''))) {
+      const prev = this._linkFacts?.get(scopeKey)
+      const fresh = prev && Date.now() - prev.at < 6 * 60_000
+      // ★ 渲染兜底如果后来成功了，追问时优先用它（比当轮的"打不开"有用）
+      const rendered = prev?.url ? this._cachedRenderedPreview(prev.url) : null
+      if (rendered) linkContext = formatLinkContext(rendered)
+      // 只在「像是在问那个链接」的时候挂，别把老视频塞进无关闲聊
+      const looksLikeFollowUp = String(msg.text ?? '').length <= 30
+        || /链接|视频|BV\s?\w{8}|b23\.tv/i.test(String(msg.text ?? ''))
+      if (fresh && looksLikeFollowUp) {
+        linkContext = '## 刚才那个链接（程序上一轮已经取到了，别再问"又是啥"）\n' + prev.text
       }
     }
     /*
@@ -4724,7 +5371,22 @@ export class QQBridge {
      * 而 `extras` 在 `buildSystemPrompt` 时就用掉了。晚一步的话，
      * 模型会把那张旧图当成"刚发给它的"来评论，答非所问。
      */
-    const imgReferrer = this._pickReferencedImage(mem.recent(8))
+    /*
+     * ⚠️ **主动发言不许附图**（2026-11-04）。
+     *
+     * 主动发言没有"当前消息"，`history` 的最后一条就是**上一条真实消息** ——
+     * `_collectImages` 会把它当成"刚发给你的"附上。实测：
+     * ```
+     * 14:13:12  风堇发了个表情包
+     * 14:34:54  [我主动] 群「（眉头一皱）肥嘟嘟是它，不是我啊」   ← 二十分钟前那张图
+     * ```
+     * 用户看到的就是「她翻出旧表情包开始念」。
+     *
+     * 传 `null`（**不是** undefined）给 `_collectImages` 的 preRef，
+     * 语义就是"这条没有图可看" —— 见那里的 `preRef !== undefined ? preRef : …`。
+     */
+    const proactiveNoImage = !String(msg?.text ?? '').trim() && Boolean(msg?.speakHint)
+    const imgReferrer = proactiveNoImage ? null : this._pickReferencedImage(mem.recent(8))
     // 去掉媒体标记后还剩不剩文字（@ 段也算文字）
     const textPart = lastText
       .replace(/\[表情包(?::[^\]]*)?\]/g, '')
@@ -4834,6 +5496,13 @@ export class QQBridge {
 不是对话内容，绝对不要写进回复里。`)
       : ''
 
+    /*
+     * 触发这一轮生成的那条消息（名字 + 正文）—— 用来把「要接哪一条」钉死，
+     * 见下面 `## 这一轮要接的是` 的说明。
+     */
+    const answeredName = String(msg?.senderName ?? '').trim()
+    const answeredText = String(msg?.text ?? '').replace(/\s+/g, ' ').trim().slice(0, 60)
+
     const system = this.persona.buildSystemPrompt({
       /*
        * ★ **按会话取人格**（2026-11-01）：群聊和私聊可以是不同角色文件。
@@ -4846,7 +5515,8 @@ export class QQBridge {
       scope: msg?.scope,
       // 会话记忆 + 人物档案分两段传：前者是「这里发生过什么」，
       // 后者是「这些人是谁」，混在一起模型容易把两者当同一层事实。
-      memory: [memoryText, peopleText].filter(Boolean).join('\n\n'),
+      // 事件记忆再单列一段 —— 它记的是**具体的事**，不是人设（2026-11-04）。
+      memory: [memoryText, peopleText, eventsText].filter(Boolean).join('\n\n'),
       scene,
       self,
       /* ★ 最近自己说过的话（防八股 —— 见 `_generate` 开头的说明）。 */
@@ -4908,6 +5578,59 @@ export class QQBridge {
          * 把最近十几条的开头列出来要求错开；表情包/QQ 表情
          * 用过一次就不给用（交替开放），避免连着甩图。
          */
+        /*
+         * ★ **QQ 小动作：只写"她真能用的"**（2026-11-04 修）。
+         *
+         * 原来这段是写在人格模块里的**静态文案** —— 结果 signature 关着
+         * （`qq.actions.signature = false`），提示词照样教她「说改了要输出
+         * [签名:…]」：
+         * ```
+         * 19:43:32 他「你看看现在能自己改签名和其他的了吗」
+         * 19:43:35 qq-actions：signature 被开关关掉了
+         * 19:43:44 她「（…手搭上去动了一下）改了，」   ← 做不到还宣称做了
+         * ```
+         * 所以改成**按开关生成**：关着的动作，一个字都不提。
+         */
+        (() => {
+          const a = this.cfg.actions ?? {}
+          const lines = []
+          if (a.emojiLike !== false) {
+            /*
+             * ★ **必须给她具体编号**（2026-11-04 20:xx 修）。
+             *
+             * 原来只写「输出 [回应:表情编号]」—— 结果 `[回应]` 一次都没触发过
+             * （日志里 3 次 `signature 被开关关掉了`，回应/戳 0 次）。
+             * 原因很直白：她不知道编号该写什么，而**猜一个的失败成本是不写**。
+             *
+             * 现在把常用表情连编号一起列出来（见 `buildEmojiHint`），
+             * 并明说「也可以直接写名字」—— 名字那条路由 `resolveEmojiId` 兜住。
+             */
+            const hint = buildEmojiHint()
+            lines.push(
+              '- 想给这条消息**贴个表情**（不打字，就贴一个）→ 输出 [回应:13] 这种写法'
+              + (hint ? `\n  可用编号（挑意思最近的，**别自己编**）：${hint}` : '')
+              + '\n  也可以直接写表情名：[回应:偷笑]、[回应:白眼]。编号只认 0~104。',
+            )
+          }
+          if (a.poke !== false) {
+            /*
+             * ★ 补**使用场景**（2026-11-04 20:xx）：光给标记她不会用 ——
+             * 私聊催人回话、群里打个招呼才是最自然的时机，写清楚才触发得起来。
+             */
+            lines.push(
+              '- 想**戳对方一下**（私聊里催他回话、群里打个招呼、笑他一句没说清）'
+              + '→ 输出 [戳]（群里戳的是发这条消息的人；别连着戳）',
+            )
+          }
+          if (a.recall !== false) lines.push('- 想撤回你刚发出去的那条 → 输出 [撤回]')
+          if (a.signature === true) {
+            lines.push('- 说「签名改了」→ 必须同时输出 [签名:一句话]')
+          }
+          if (lines.length === 0) return ''
+          return '## 你能做的 QQ 小动作\n'
+            + lines.join('\n')
+            + '\n（只能动你自己和当前这条消息；**没有标记 = 什么都没发生**，别嘴上说做到了。）'
+        })(),
         buildVarietyHint(mem.recent(20)),
       /*
        * ★ 告诉模型「你收藏了哪些表情」（2026-10-31）。
@@ -5016,6 +5739,21 @@ export class QQBridge {
          * ⚠️ 保留一个例外：政治 / 人身攻击那种（人格「什么时候闭嘴」里本来就说不接的），
          *    照旧可以不接 —— 别把"被点名必须回"变成"什么都要回"。
          */
+        /*
+         * ★ **这一轮到底要接哪一条**（2026-11-04 加）。
+         *
+         * 实测事故（群里 13:35:56 → 13:36:01）：番茄发了个新视频链接，
+         * 她开口答的却是 **2 分半前**风宝那句「进程奖励」—— 因为上下文里
+         * 那茬还没人接，模型把它当成了"没说完的话"。发链接的人直接回了个「？」。
+         *
+         * 上下文只有"最近 30 条"，没有任何一处说"你要回的是这条"，
+         * 模型只能猜；猜错了就是答非所问。所以这里把触发它的那条**钉死**。
+         */
+        (scene?.kind === 'group' && answeredText)
+          ? `## 这一轮要接的是\n${answeredName || '对方'}：「${answeredText}」\n`
+            + '上面更早的那些是**背景** —— 已经翻篇、没人接的话茬别再回头答，'
+            + '除非有人又把话拉回去。'
+          : '',
         addressedToMe
           ? '## 有人点了你的名\n'
             + '**被点名就得应一声。** 给不了、不知道、不想给，都直接说出来'
@@ -5241,6 +5979,8 @@ export class QQBridge {
         llm: this.gateway,
         candidates,
         request,
+        // 首块最多等 30 秒（见 router.js 里 `firstChunkMs` 的实测依据）
+        firstChunkMs: Number(this.cfg.reply?.firstChunkMs ?? 30_000),
         onAttempt: (a) => {
           if (!a.ok) this.log.debug?.(`bridge：渠道 ${a.provider}/${a.model} 不可用 — ${a.error}`)
         },
@@ -5257,6 +5997,8 @@ export class QQBridge {
         llm: this.gateway,
         candidates,
         request,
+        // 首块最多等 30 秒（见 router.js 里 `firstChunkMs` 的实测依据）
+        firstChunkMs: Number(this.cfg.reply?.firstChunkMs ?? 30_000),
         onAttempt: (a) => {
           if (!a.ok) this.log.debug?.(`bridge：渠道 ${a.provider}/${a.model} 不可用 — ${a.error}`)
         },
@@ -5333,7 +6075,40 @@ export class QQBridge {
     //    前一条的发送流程取走 —— 张冠李戴。
     const cover = pendingCover
     pendingCover = null
-    return { text: cleanModelText(text), cover }
+    const cleaned = cleanModelText(text)
+
+    /*
+     * ★ **正文空、推理一大堆 → 重试一次**（2026-11-04 傍晚，私聊实测）。
+     *
+     * 现场（19:06:33 私聊）：
+     * ```
+     * 决策 → 发言 (p=1.00)
+     * 本次生成非正常结束（stop）—— 正文 0 字、推理 2138 字，正文为空
+     * 生成失败 — 上游只给了 finish_reason(stop) 但没有正文
+     * ```
+     * 然后**一个字都没发出去**，用户看到的就是「她突然不说话了」。
+     *
+     * 这不是 maxTokens 不够（16000 的预算，推理才 2138 字），
+     * 是模型把话全花在"想"上，最后没吐正文。
+     *
+     * 所以：正文空 + 推理不短 → 带一句"直接给正文"重试一次。
+     * 只重试一次（attempt 计数），再空就交给上层按沉默处理。
+     */
+    if (!cleaned && reason.length > 100 && attempt < 1) {
+      this.log.warn?.(
+        `bridge：正文空、推理 ${reason.length} 字 → 重试一次（让它直接给正文）`,
+      )
+      return await this._generate(
+        msg, mem, scene, self, extraBlocks,
+        (extraNote ? extraNote + '\n' : '')
+        + '★ 上一轮你把话全花在"想"上了，最后**一个字都没说出来**。'
+        + '这一轮**直接给正文**：短、口语、一两句就够；'
+        + '不要长篇内心独白，也不要分析自己的处境或能不能做到，张口就说。',
+        attempt + 1,
+      )
+    }
+
+    return { text: cleaned, cover }
   }
 
   /**
@@ -5687,6 +6462,33 @@ export class QQBridge {
     this._nudgeTimer.unref?.()
   }
 
+  /**
+   * 发消息前挂一个「正在输入…」（实验性，`qq.actions.typing` 控制）。
+   *
+   * NapCat 的 `set_input_status` 参数是 `{ user_id, event_type }`（1 = 输入中）。
+   * 这个接口在部分版本/协议实现上会直接报错，所以：
+   *   · **不 await** —— 绝不能为了一个"正在输入"拖慢回复
+   *   · 失败一次就整会话关掉，只 warn 一次（别每条都刷日志）
+   */
+  _typingIndicator(msg) {
+    if (this._typingBroken) return
+    try {
+      const params = { user_id: String(msg?.userId ?? ''), event_type: 1 }
+      if (msg?.groupId) params.group_id = String(msg.groupId)
+      Promise.resolve(this.onebot?._sendPreferHttp?.('set_input_status', params))
+        .then((r) => {
+          const ok = r?.status === 'ok' || r?.retcode === 0 || r?.retcode === undefined
+          if (!ok) throw new Error(JSON.stringify(r)?.slice(0, 80))
+        })
+        .catch((e) => {
+          this._typingBroken = true
+          this.log.warn?.(`bridge：「正在输入」这个协议端不支持，已关掉 — ${String(e?.message ?? e)}`)
+        })
+    } catch {
+      this._typingBroken = true
+    }
+  }
+
   async _send(msg, text, cover = null) {
     const reply = this.cfg.reply ?? {}
     const maxChars = reply.maxChars ?? 500
@@ -5702,6 +6504,19 @@ export class QQBridge {
      */
     const wait = stripWaitMarkers(text)
     text = wait.text
+    /*
+     * ⚠️ 把**剥完标记的正文**记到 msg 上，给调用方写记忆用（2026-11-04）。
+     *
+     * 现场：`[等:10]` 在这里被剥掉（用户看不到），但 `_handle` 写进短期记忆的
+     * 是**剥之前的 text** —— 于是她自己的历史里有 3 条带 `[等:10]`，
+     * 下一轮模型看得见，就继续模仿这个形状，上下文也被自己的标记污染。
+     *
+     * 走 msg 这个属性而不是改返回值：`_send` 的返回值（message_id 数组）
+     * 有 5 个调用点在用，改形状容易漏。
+     */
+    try { msg.__sentText = text } catch { /* 只读对象就跳过，退回旧行为 */ }
+    // 「正在输入…」—— 实验性，默认关（qq.actions.typing）
+    if (this.cfg.actions?.typing === true) void this._typingIndicator(msg)
     if (wait.waits.length) this._scheduleNudge(msg, wait.waits)
 
     // 先按表情标记切分，再做整体分句，最后接上配图。
@@ -5722,6 +6537,17 @@ export class QQBridge {
       } else if (seg.kind === 'mface') {
         const m = await this._pickMface(seg.name)
         if (!m) continue          // 找不到对应表情就跳过，不发乱码
+        /*
+         * ★ 记下**刚发出去的那张收藏表情**（2026-11-04）。
+         *
+         * 用途：`[改标签:…]` 在私聊里可以改"她刚才发的那张" ——
+         * 用户嘴上说「你那标签错了」时，她手上得有个可指的对象。
+         * 只记 URL 和时间戳；私聊只有一个人在用，不需要按人分开。
+         */
+        const file = m?.[0]?.data?.file
+        if (typeof file === 'string' && /^https?:/i.test(file)) {
+          this._lastMface = { scope: String(msg?.scope ?? ''), url: file, at: Date.now() }
+        }
         payload = m
       } else {
         if (!seg.text.trim()) continue
@@ -6405,7 +7231,7 @@ export class QQBridge {
    * ⚠️ 为什么**单独一次调用**，而不是在同一条回复里让她总结：
    *    她的系统提示词有「别一看到图就开始描述」「别总结全文」两条硬规则，
    *    同一条聊天回复里让她总结会被压成只剩情绪反应（2026-11-04 实测）。
-   *    单独一次「私人笔记」调用能拿到真内容，再作为事实注入本轮。
+   *    单独一次「私人笔记」调用能拿到真内容，再作为事实注入下一轮。
    *
    * 失败/超时一律返回空串 —— 总结是加分项，不能拖垮补发那条。
    * @param {{shots?:string[], title?:string, samples?:number}} r readJmPages 的结果
@@ -6669,6 +7495,41 @@ export class QQBridge {
    *
    * @param {object} msg 规范化后的消息
    */
+  /**
+   * `[改标签:…]` 该改哪一张（2026-11-04）。
+   *
+   * ① 对方这条消息里带的表情 —— 下载 → md5 → 在标签库里精确命中。
+   *    （收藏 URL 文件名里那串 32 位十六进制就是图片 md5，实测确认过。）
+   * ② 私聊：退回"她刚发出去的那张"（10 分钟内）。
+   *    群聊**不走** ②：她随手改库会影响到群里的用法。
+   *
+   * @returns {Promise<{url:string, why:string}|null>}
+   */
+  async _tagTarget(msg) {
+    const refs = Array.isArray(msg?.stickerRefs) ? msg.stickerRefs : []
+    for (const ref of refs.slice(0, 3)) {
+      try {
+        const img = await this.onebot?.fetchImage?.(String(ref), {
+          maxBytes: this.cfg.reply?.maxImageBytes ?? DEFAULT_MAX_IMAGE_BYTES,
+        })
+        const mm = /^data:[^;]+;base64,(.*)$/s.exec(String(img?.dataUrl ?? ''))
+        if (!mm) continue
+        const md5 = createHash('md5').update(Buffer.from(mm[1], 'base64')).digest('hex').toUpperCase()
+        const url = this.stickerTags?.findUrlByHash?.(md5)
+        if (url) return { url, why: '对方这条里那张' }
+      } catch { /* 换下一张 */ }
+    }
+
+    const scope = String(msg?.scope ?? '')
+    if (scope.startsWith('private')) {
+      const last = this._lastMface
+      if (last && last.scope === scope && Date.now() - last.at < 10 * 60_000) {
+        return { url: last.url, why: '她刚发出去那张' }
+      }
+    }
+    return null
+  }
+
   async _autoCollectStickers(msg) {
     const cfg = this.cfg ?? {}
     if (cfg.autoCollectStickers === false) return
@@ -6961,6 +7822,17 @@ export class QQBridge {
   }
 
   _maybeSummarize(scope, mem, scene) {
+    /*
+     * ★ 事件记忆的收尾（2026-11-04）：**一进一出都在这里**。
+     *
+     * 之所以挂在 `_maybeSummarize` 上，是因为它本来就已经是
+     * 「这条消息处理完了」的唯一收尾点（`_handle` 里 15 处调用共享），
+     * 再加第 16 个钩子只会让下次改流程时漏掉一个。
+     *
+     * ⚠️ 它必须**先于** `longMemory` 的开关判断 —— 长期记忆关掉时
+     *    事件层照样要工作（两层是独立的）。
+     */
+    this._touchEvents(scope, mem, scene)
     if (!this.longMemory?.enabled) return
     this.longMemory.maybeSummarize(scope, {
       messages: mem.recent(),
@@ -6986,6 +7858,45 @@ export class QQBridge {
     }).catch(() => { })
   }
 
+  /**
+   * 事件记忆的"一进一出"（2026-11-04）。
+   *
+   * ① **出**：刚发出去的那条回复里，如果真用上了上一轮注入的事 → 加一点强度。
+   *    判据是字面重叠（最长公共子串 ≥3 字，见 `usedInReply`）—— 判错只值 0.1，
+   *    不值得为它多跑一次模型。
+   * ② **进**：攒够条数才真抽（节流在 `EventStore#maybeExtract` 里）。
+   *
+   * ⚠️ 两条都是 **fire-and-forget**：`void` 出去，不 await。
+   *    记忆是加分项，绝不能让回复慢哪怕 100ms，更不能让它失败。
+   * ⚠️ 强化只在「我这条回复是刚发的」时才做 —— `_maybeSummarize` 也会在
+   *    "她没说话"的路径上被调用，那时 `recent(1)` 是别人说的话，
+   *    拿它去比就变成了"谁提到就算她用上了"。
+   *
+   * @param {string} scope
+   * @param {object} mem  短期记忆（有 recent/totalPushed）
+   * @param {object} [scene]
+   */
+  _touchEvents(scope, mem, scene) {
+    const ev = this.events
+    if (!ev || ev.enabled === false) return
+    try {
+      const last = mem?.recent?.(1)?.[0]
+      if (last?.isMe && Date.now() - Number(last.at ?? 0) < 60_000) {
+        ev.reinforceFromReply(scope, String(last.text ?? ''))
+      }
+    } catch (e) {
+      this.log.debug?.(`bridge：事件强化跳过 — ${String(e?.message ?? e)}`)
+    }
+    Promise.resolve()
+      .then(() => ev.maybeExtract({
+        scope,
+        messages: mem?.recent?.() ?? [],
+        total: mem?.totalPushed,
+        scene,
+      }))
+      .catch(() => { })
+  }
+
   /** 供 Web UI 的状态。 */
   statsSnapshot() {
     return {
@@ -6996,6 +7907,8 @@ export class QQBridge {
       counters: { ...this.stats },
       memory: this.memory?.stats?.() ?? null,
       longMemory: this.longMemory?.stats?.() ?? null,
+      // 事件记忆（2026-11-04）：总条数 / 还活着的条数 —— 面板能看出"忘没忘"
+      events: this.events?.stats?.() ?? null,
       recent: this.recent.slice(0, 20),
       // 白名单要暴露出来 —— 否则界面上看不出"为什么它不回我"
       // （名单为空 + fail-closed = 所有消息被静默丢弃）。
