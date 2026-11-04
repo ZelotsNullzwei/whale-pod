@@ -509,7 +509,7 @@ export class OneBotClient {
     return {
       id: String(d.message_id),
       sender: senderId,
-      senderName: String(d.sender?.card || d.sender?.nickname || senderId || ''),
+      senderName: String(d.sender?.nickname || d.sender?.card || senderId || ''),
       text: parsed.text,
       at: Number(d.time ? d.time * 1000 : 0),
     }
