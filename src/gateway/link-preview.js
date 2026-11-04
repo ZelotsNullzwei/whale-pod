@@ -43,6 +43,14 @@ export function extractLink(text) {
   return url
 }
 
+/**
+ * 登录 / 风控墙的标题特征 —— 这类"抓到了"其实是假的。
+ *
+ * 实测：微博的 m.weibo.cn 对匿名请求返回 `Sina Visitor System`（游客系统），
+ * 标题能抓到、但没有正文 —— 若当成"读到内容"，模型就会把标题当正文猜。
+ * 所以要**判成失败**，交给渲染兜底再试一次。
+ */
+const WALL_TITLE_RE = /(visitor system|just a moment|安全验证|人机验证|验证码|登录|sign in|access denied|访问(过于)?频繁)/i
 /** HTML 实体解码（够用就行，不引依赖）。 */
 function decodeEntities(s) {
   const MAP = {
@@ -156,6 +164,8 @@ export async function fetchLinkPreview(url, opts = {}) {
     const parsed = parseLinkPreview(html, url, { bodyChars })
     const { title, description, siteName, body } = parsed
     if (!title && !description && !body) return null
+    // ★ 登录/风控墙的标题不是内容（实测微博 "Sina Visitor System"）→ 当抓不到
+    if (!description && !body && WALL_TITLE_RE.test(title)) return null
     return { url, finalUrl: String(res.url ?? url), title, description, siteName, body }
   } catch {
     // 超时 / DNS / 反爬 / 编码炸 —— 一律当"抓不到"
@@ -225,7 +235,7 @@ export function formatLinkContext(preview, opts = {}) {
 export async function fetchLinkPreviewRendered(url, opts = {}) {
   if (!/^https?:\/\//i.test(String(url ?? ''))) return null
   const timeoutMs = opts.timeoutMs ?? 12_000
-  const waitMs = opts.waitMs ?? 1500
+  const waitMs = opts.waitMs ?? 3000
   const bodyChars = opts.bodyChars ?? 600
   let bot = null
   let page = null
@@ -244,7 +254,15 @@ export async function fetchLinkPreviewRendered(url, opts = {}) {
      * 也别把「首页 社区 登录」这种壳喂给模型当"我看过了"。
      */
     if (text.length < 80) return null
-    return { url, finalUrl, title, description: '', siteName: '', body: text.slice(0, bodyChars), rendered: true }
+    // ★ 验证墙（如百度安全验证）：短文本 + 墙标题 —— 别当内容
+    if (WALL_TITLE_RE.test(title) && text.length < 300) return null
+    /*
+     * 去掉正文开头的导航（知乎/微博的正文前会带「关注 推荐 热榜…登录」）：
+     * 如果能找到标题的核心片段，就从它开始截。
+     */
+    const core = title.replace(/\s*[-|–—].*$/, '').trim().slice(0, 12)
+    const body = core && text.includes(core) ? text.slice(text.indexOf(core)) : text
+    return { url, finalUrl, title, description: '', siteName: '', body: body.slice(0, bodyChars), rendered: true }
   } catch (e) {
     opts.log?.('warn', `link-preview：渲染兜底失败 — ${String(e?.message ?? e).slice(0, 80)}`)
     return null
