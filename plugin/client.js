@@ -942,7 +942,10 @@ window.__ModuleLoader__.load({
 /* 一键启停：占满宽度，好点 */
 .gd_btn.wide{flex:1;padding:7px 13px;font-size:13px;font-weight:600;max-width:340px}
 /* ── 后端进程窗口 ─────────────────────────────────────────────── */
-.gd_procbox{border-radius:10px;border:1px solid var(--dsw-alias-border-l1);background:color-mix(in srgb,var(--dsw-alias-bg-layer-1) 45%,transparent);overflow:hidden}
+/* ⚠️ flex:none 不能删：.gd_root 是 flex 列，overflow:hidden 的 flex 子项
+   自动最小高度是 0 —— 展开后整页变高时它会被压扁到只剩表头，进程列表
+   全被裁掉（实测「显示不完」）。让它保持自然高度，交给整页滚动。 */
+.gd_procbox{border-radius:10px;border:1px solid var(--dsw-alias-border-l1);background:color-mix(in srgb,var(--dsw-alias-bg-layer-1) 45%,transparent);overflow:hidden;flex:none}
 .gd_prochead{display:flex;align-items:center;gap:6px;padding:7px 10px;cursor:pointer;user-select:none;min-width:0;font-size:11.5px}
 .gd_prochead:hover{background:color-mix(in srgb,var(--dsw-alias-label-primary) 4%,transparent)}
 .gd_procsum{margin-left:auto;font-size:10px;color:var(--dsw-alias-label-tertiary);flex:none}
