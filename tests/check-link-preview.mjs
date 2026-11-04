@@ -195,6 +195,15 @@ ok('★★ 源码锁：链接预览超时必须给（不许让它拖慢回复）
   assert.ok(Number(m[1]) <= 5000, `默认超时 ${m[1]}ms 太长了 —— 回复会被拖住`)
 })
 
+ok('★ 源码锁：JS 站有渲染兜底（后台 + 24h 内存缓存）', () => {
+  const lp = fs.readFileSync(new URL('../src/gateway/link-preview.js', import.meta.url), 'utf8')
+  assert.match(lp, /export async function fetchLinkPreviewRendered/, '要有渲染兜底函数')
+  const br = fs.readFileSync(new URL('../src/qq/bridge.js', import.meta.url), 'utf8')
+  assert.match(br, /fetchLinkPreviewRendered/, 'bridge 要接上它')
+  assert.match(br, /_scheduleLinkRender\(/, '快路失败要排后台渲染')
+  assert.match(br, /24 \* 3600 \* 1000/, '缓存最多 24 小时（用户要求）')
+})
+
 ok('★★ 源码锁：车牌模块刻意**不生成站点 URL**（不擅自去连成人站）', () => {
   const src = fs.readFileSync(new URL('../src/gateway/codes.js', import.meta.url), 'utf8')
   // 注释里说明"为什么不生成 URL"是可以的，但不能真的拼出 http(s) 链接

@@ -25,7 +25,7 @@ import { makeMessage } from '../memory/short.js'
 import { resolveCandidates, openFirstAvailable, applyFreeOrder, PROVIDER_MODEL_HINTS } from '../gateway/router.js'
 import { deriveRouting } from '../gateway/strategy.js'
 import { needsFreshInfo, webSearch, formatSearchContext, pickCoverImage, checkBalance } from '../gateway/search.js'
-import { fetchLinkPreview, extractLink, formatLinkContext } from '../gateway/link-preview.js'
+import { fetchLinkPreview, fetchLinkPreviewRendered, extractLink, formatLinkContext } from '../gateway/link-preview.js'
 import { detectCode, formatCodeContext } from '../gateway/codes.js'
 import { fetchAlbum, formatAlbumContext, JmHostCache, JmMemoStore } from '../gateway/jm.js'
 import { readJmPages, formatAlbumPagesNote } from '../gateway/jm-read.js'
@@ -4177,6 +4177,62 @@ export class QQBridge {
    * @param {object} [extraBlocks] 外面塞进来的图块（浏览器截图那种，见 `_collectImages`）
    * @param {string} [extraNote]   外面塞进来的注记（"看完车牌内页"补发时用）
    */
+  /**
+   * ★ 链接「渲染兜底」的内存缓存（2026-11-04）。
+   *
+   * 只在内存里、最多留 24 小时、最多 20 条 —— 用户的原话：
+   * 「小黑盒没必要吧，东西都是一次性的，缓存最多也就一天」。
+   */
+  _linkRenderCache() {
+    if (!this._linkRendered) this._linkRendered = new Map()
+    return this._linkRendered
+  }
+
+  _cachedRenderedPreview(url) {
+    const key = String(url ?? '')
+    if (!key) return null
+    const rec = this._linkRenderCache().get(key)
+    if (!rec) return null
+    if (Date.now() - rec.at > 24 * 3600 * 1000) {
+      this._linkRenderCache().delete(key)
+      return null
+    }
+    return rec.preview
+  }
+
+  /**
+   * 后台用无头浏览器渲染一次这个链接（快路失败时调）。
+   * 同一 URL 只跑一份；成功进缓存，下一轮/追问时直接用。
+   */
+  _scheduleLinkRender(url) {
+    const key = String(url ?? '')
+    if (!key) return
+    if (this.cfg.linkPreview?.render === false) return
+    if (this._cachedRenderedPreview(key)) return
+    if (!this._linkJobs) this._linkJobs = new Map()
+    if (this._linkJobs.has(key)) return
+    const job = (async () => {
+      try {
+        const preview = await fetchLinkPreviewRendered(key, { log: (lv, msg) => this.log[lv]?.(msg) })
+        if (preview) {
+          this._linkRenderCache().set(key, { at: Date.now(), preview })
+          while (this._linkRenderCache().size > 20) {
+            this._linkRenderCache().delete(this._linkRenderCache().keys().next().value)
+          }
+          this.log.info?.(`bridge：链接渲染兜底 ✅ ${String(preview.title ?? '').slice(0, 40)} — ${key.slice(0, 60)}`)
+        } else {
+          this.log.info?.(`bridge：链接渲染兜底 ✗ 仍然没内容 — ${key.slice(0, 60)}`)
+        }
+      } catch (e) {
+        this.log.warn?.(`bridge：链接渲染兜底出错 — ${String(e?.message ?? e).slice(0, 80)}`)
+      } finally {
+        this._linkJobs.delete(key)
+      }
+    })()
+    this._linkJobs.set(key, job)
+    void job
+  }
+
   async _generate(msg, mem, scene, self, extraBlocks = null, extraNote = '') {
     const long = this.longMemory?.get(msg.scope)
     const memoryText = long?.toPrompt() ?? ''
@@ -4304,13 +4360,25 @@ export class QQBridge {
     if (!biliContext) {
       const url = extractLink(String(msg.text ?? ''))
       if (url) {
-        try {
-          const preview = await fetchLinkPreview(url)
-          linkContext = formatLinkContext(preview)
-          this.log.info?.(
-            `bridge：链接预览 ${preview ? `✅ ${preview.title.slice(0, 40)}` : '✗ 打不开'} — ${url.slice(0, 60)}`,
-          )
-        } catch { /* 静默：预览是锦上添花 */ }
+        // ★ 先看有没有上次渲染兜底的结果（24h 内），有就直接用
+        const cached = this._cachedRenderedPreview(url)
+        if (cached) {
+          linkContext = formatLinkContext(cached)
+          this.log.info?.(`bridge：链接预览（渲染缓存）✅ ${String(cached.title ?? '').slice(0, 40)} — ${url.slice(0, 60)}`)
+        } else {
+          try {
+            const preview = await fetchLinkPreview(url)
+            linkContext = formatLinkContext(preview)
+            this.log.info?.(
+              `bridge：链接预览 ${preview ? `✅ ${preview.title.slice(0, 40)}` : '✗ 打不开'} — ${url.slice(0, 60)}`,
+            )
+            // 快路拿不到 → 后台开浏览器渲染一次（不阻塞这条回复）
+            if (!preview) this._scheduleLinkRender(url)
+          } catch {
+            /* 静默：预览是锦上添花；同时排一次渲染兜底 */
+            this._scheduleLinkRender(url)
+          }
+        }
       }
     }
     /*

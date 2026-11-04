@@ -28,6 +28,7 @@
  */
 
 import { fetchWithProxyFallback } from '../net.js'
+import { openBrowser, newPage, closePage } from './browser.js'
 
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
   + '(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
@@ -206,4 +207,49 @@ export function formatLinkContext(preview, opts = {}) {
     + '〔提示：上面是**页面的文字**，我读到这儿为止 —— 网页本身我**点不动**：'
     + '要登录、扫码、进房间、跟人一起玩的那些，**我参加不了**。'
     + '别回「来了来了这就进」「带我一把」这种话；想凑热闹就聊它、问战况、起哄。〕'
+}
+/**
+ * ★ 渲染兜底（2026-11-04）：快路拿不到时，开一次无头浏览器把页面真渲染出来。
+ *
+ * 适用：整页由 JS 渲染、HTML 里既没有 og 也没有正文的站（各种 SPA）。
+ * 不适用：登录墙 / 风控（如小黑盒：匿名渲染只有导航壳）—— 一律返回 null，
+ *        由调用方明说"打不开"，不许猜。
+ *
+ * ⚠️ 它**慢**（浏览器启动 + 渲染 2~8 秒），所以**只在后台跑、结果进缓存**，
+ *    绝不阻塞当轮回复。
+ *
+ * @param {string} url
+ * @param {{log?:Function, timeoutMs?:number, waitMs?:number, bodyChars?:number, startTimeoutMs?:number}} [opts]
+ * @returns {Promise<{url:string, finalUrl:string, title:string, description:string, siteName:string, body:string, rendered:true}|null>}
+ */
+export async function fetchLinkPreviewRendered(url, opts = {}) {
+  if (!/^https?:\/\//i.test(String(url ?? ''))) return null
+  const timeoutMs = opts.timeoutMs ?? 12_000
+  const waitMs = opts.waitMs ?? 1500
+  const bodyChars = opts.bodyChars ?? 600
+  let bot = null
+  let page = null
+  try {
+    bot = await openBrowser({ log: opts.log ?? (() => {}), startTimeoutMs: opts.startTimeoutMs ?? 15_000 })
+    page = await newPage(bot.cdp, 'about:blank')
+    const ok = await page.goto(url, timeoutMs)
+    if (!ok) return null
+    await new Promise((r) => setTimeout(r, waitMs))
+    const title = String(await page.eval('document.title || ""') ?? '').trim()
+    const finalUrl = String(await page.eval('location.href') ?? url)
+    const text = String(await page.eval('document.body ? document.body.innerText : ""') ?? '')
+      .replace(/\s+/g, ' ').trim()
+    /*
+     * 短文本 = 没渲染出内容（登录墙 / 只有导航）—— 宁可返回 null，
+     * 也别把「首页 社区 登录」这种壳喂给模型当"我看过了"。
+     */
+    if (text.length < 80) return null
+    return { url, finalUrl, title, description: '', siteName: '', body: text.slice(0, bodyChars), rendered: true }
+  } catch (e) {
+    opts.log?.('warn', `link-preview：渲染兜底失败 — ${String(e?.message ?? e).slice(0, 80)}`)
+    return null
+  } finally {
+    if (page) await closePage(bot.cdp, page).catch(() => {})
+    if (bot) await bot.close().catch(() => {})
+  }
 }
