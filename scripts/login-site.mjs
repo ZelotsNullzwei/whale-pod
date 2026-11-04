@@ -17,7 +17,8 @@ import { openBrowser, newPage, closePage } from '../src/gateway/browser.js'
 const HOME = process.env.WHALE_POD_HOME
   ?? path.join(process.env.USERPROFILE ?? '', '.dsh', 'whale-pod')
 const profileDir = path.join(HOME, 'browser-profile')
-const url = process.argv[2] ?? 'https://www.xiaoheihe.cn/'
+// ⚠️ 参数里可能带 --auto：网址取**第一个不以 -- 开头**的
+const url = process.argv.slice(2).find((a) => !a.startsWith('--')) ?? 'https://www.xiaoheihe.cn/'
 
 console.log(`profile: ${profileDir}`)
 console.log(`打开: ${url}\n`)
@@ -36,8 +37,10 @@ if (!bot) {
 
 let page = null
 try {
-  page = await newPage(bot.cdp, 'about:blank')
+  // ★ 直接带着网址开标签页（headed + 新 profile 时，先开 blank 再 goto 会停在黑页）
+  page = await newPage(bot.cdp, url)
   const ok = await page.goto(url, 30_000)
+  console.log('导航结果:', ok, '| 当前地址:', await page.eval('location.href'))
   if (!ok) console.log('⚠️ 页面加载超时，但窗口还在 —— 你自己刷新一下也行')
   console.log('\n浏览器窗口已打开。请在里面完成登录（扫码/账号密码都行）。')
 
