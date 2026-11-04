@@ -3302,6 +3302,9 @@ export class QQBridge {
     const tStart = Date.now()
     const mem = this.memory.get(msg.scope)
     const now = Date.now()
+    // ★ 用户开口了 → 取消「10 秒没动静」的场景续写，并把连写次数清零
+    this._cancelSceneContinue(msg.scope)
+    if (this._sceneState) this._sceneState.set(String(msg.scope ?? ''), { turns: 0 })
 
     // 0. 这条是不是**在回复我**？
     //
@@ -4145,6 +4148,11 @@ export class QQBridge {
        * 即时回复的延迟必须是 0 —— 后台任务跟这条回复**并行**跑，
        * 谁先完都不互相等。这一句 `void` 就是"派出去，不等"。
        */
+      /*
+       * ★ 私聊暧昧场景：他 10 秒没动静，就让她**自己往下写**（2026-11-04）。
+       *   只排定时器，不 await —— 不影响这条回复。
+       */
+      this._armSceneContinue(msg, mem, scene, self)
       const vjob = this._videoJobs?.get(String(msg.scope ?? ''))
       if (vjob) {
         this._videoJobs.delete(String(msg.scope ?? ''))
@@ -4849,6 +4857,93 @@ export class QQBridge {
     this._linkRenderQueue = job
     this._linkJobs.set(key, job)
     void job
+  }
+
+  /* ── 场景续写（私聊暧昧）─────────────────────────────────────── */
+
+  /** 配置：reply.sceneContinue = { enabled, delayMs, maxTurns }（缺省 5 秒 / 2 次）,）。 */
+  _sceneContinueCfg() {
+    const c = this.cfg.reply?.sceneContinue ?? {}
+    return {
+      enabled: c.enabled !== false,
+      delayMs: Number(c.delayMs) || 5_000,
+      maxTurns: Number.isFinite(Number(c.maxTurns)) ? Number(c.maxTurns) : 2,
+    }
+  }
+
+  _cancelSceneContinue(scope) {
+    const key = String(scope ?? '')
+    const t = this._sceneTimers?.get(key)
+    if (t) { try { clearTimeout(t) } catch { /* ignore */ } ; this._sceneTimers.delete(key) }
+  }
+
+  /** 最近几条像不像"在场景里"：亲密词或她的动作括号。 */
+  _looksIntimate(mem) {
+    const recent = mem?.recent?.(10) ?? []
+    if (recent.length < 2) return false
+    const INTIMATE = /(摸|抱|亲|吻|脱|床|腿|腰|胸|身体|贴|蹭|喘|湿|下面|进来|要我|想要)/
+    const hasBracket = (t) => /[（(][^）)]{2,}[）)]/.test(String(t ?? ''))
+    let hits = 0
+    for (const m of recent) {
+      const t = String(m?.text ?? '')
+      if (INTIMATE.test(t) || (m?.isMe && hasBracket(t))) hits++
+    }
+    return hits >= 2
+  }
+
+  _armSceneContinue(msg, mem, scene, self) {
+    const cfgS = this._sceneContinueCfg()
+    if (!cfgS.enabled) return
+    const scope = String(msg?.scope ?? '')
+    if (!scope.startsWith('private:')) return
+    if (!this._looksIntimate(mem)) return
+    if (!this._sceneState) this._sceneState = new Map()
+    const st = this._sceneState.get(scope) ?? { turns: 0 }
+    if (st.turns >= cfgS.maxTurns) return
+    this._cancelSceneContinue(scope)
+    if (!this._sceneTimers) this._sceneTimers = new Map()
+    const userId = scope.slice('private:'.length)
+    const timer = setTimeout(() => {
+      this._sceneTimers?.delete(scope)
+      // ★ 还在打字就别推进；1.5 秒后再看（QQ 只有「正在输入」推送）
+      if (this._isTyping?.(userId, 2500)) {
+        this._armSceneContinue(msg, mem, scene, self)
+        return
+      }
+      void this._sceneContinue({ msg, mem, scene, self, st })
+    }, cfgS.delayMs)
+    timer.unref?.()
+    this._sceneTimers.set(scope, timer)
+  }
+
+  async _sceneContinue({ msg, mem, scene, self, st }) {
+    try {
+      const note = [
+        '## 他 5 秒没打字了',
+        '你们正停在刚才那一步。用一两句**从你自己的身体/状态写下去**（动作照旧放括号里，但**必须有一句台词**），',
+        '然后**主动把他往下带**（你开口要、你伸手、你催他）——',
+        '不要问他「想干嘛」、不要把球踢回去，也不要重复你上一句。',
+      ].join('\n')
+      const gen = await this._generate(msg, mem, scene, self, null, note)
+      const text = String(gen?.text ?? '').trim()
+      if (!text || /^\s*\[SILENT\]\s*$/i.test(text)) { st.turns = 99; return }
+      await this._send(msg, text, gen?.cover ?? null)
+      this.stats.replied++
+      mem.push(makeMessage({
+        sender: this.selfId ?? '0',
+        senderName: this.selfName,
+        text: msg.__sentText ?? text,
+        at: Date.now(),
+        isMe: true,
+        provider: this._lastRoute?.provider ?? null,
+        model: this._lastRoute?.model ?? null,
+      }))
+      st.turns += 1
+      this.log.info?.(`bridge/scene：他 10 秒没说话 → 她主动续写（第 ${st.turns} 次）「${text.slice(0, 80)}」`)
+      if (st.turns < this._sceneContinueCfg().maxTurns) this._armSceneContinue(msg, mem, scene, self)
+    } catch (e) {
+      this.log.warn?.(`bridge/scene：续写失败 — ${String(e?.message ?? e).slice(0, 80)}`)
+    }
   }
 
   async _generate(msg, mem, scene, self, extraBlocks = null, extraNote = '', attempt = 0) {
