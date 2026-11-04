@@ -40,12 +40,37 @@ try {
   const ok = await page.goto(url, 30_000)
   if (!ok) console.log('⚠️ 页面加载超时，但窗口还在 —— 你自己刷新一下也行')
   console.log('\n浏览器窗口已打开。请在里面完成登录（扫码/账号密码都行）。')
-  console.log('登录完成后，回到这个终端按回车关闭浏览器。\n')
 
-  await new Promise((resolve) => {
-    const rl = readline.createInterface({ input: process.stdin, output: process.stdout })
-    rl.question('登录好了就按回车 > ', () => { rl.close(); resolve() })
-  })
+  if (process.argv.includes('--auto')) {
+    /*
+     * ★ 自动模式：每 2 秒查一次 cookie / 页面文案，登录成功就自动关。
+     *   不用回车（用户可能不在终端前，或者窗口是 agent 帮着开的）。
+     */
+    console.log('（自动模式：检测到登录后会自动关闭，最多等 5 分钟）\n')
+    const t0 = Date.now()
+    for (;;) {
+      if (Date.now() - t0 > 5 * 60_000) { console.log('⚠️ 等太久，先关了（没检测到登录）'); break }
+      try {
+        const got = await bot.cdp.send('Network.getAllCookies', {})
+        const list = Array.isArray(got?.cookies) ? got.cookies : []
+        const hit = list.filter((c) => /xiaoheihe|heybox/i.test(String(c.domain ?? ''))
+          && /id|token|session|auth|login/i.test(String(c.name ?? ''))
+          && String(c.value ?? '').length > 8)
+        if (hit.length > 0) { console.log(`✅ 检测到登录 cookie：${hit.map((c) => c.name).join(', ')}`); break }
+      } catch { /* 下一轮再试 */ }
+      try {
+        const marker = await page.eval('/退出|个人中心|我的主页|消息中心/.test(document.body ? document.body.innerText : "")')
+        if (marker === true) { console.log('✅ 页面出现已登录标记（退出/个人中心）'); break }
+      } catch { /* 下一轮再试 */ }
+      await new Promise((r) => setTimeout(r, 2000))
+    }
+  } else {
+    console.log('登录完成后，回到这个终端按回车关闭浏览器。\n')
+    await new Promise((resolve) => {
+      const rl = readline.createInterface({ input: process.stdin, output: process.stdout })
+      rl.question('登录好了就按回车 > ', () => { rl.close(); resolve() })
+    })
+  }
 
   try {
     const got = await bot.cdp.send('Network.getAllCookies', {})
