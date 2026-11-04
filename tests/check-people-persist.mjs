@@ -176,6 +176,7 @@ await ok('7 天没互动 −2/周，且不会重复扣', () => {
 await ok('★ @ 判定必须走 isAtMe(selfId)（群里好感度 +1.5 靠它）', () => {
   const src = fs.readFileSync(new URL('../src/qq/bridge.js', import.meta.url), 'utf8')
   assert.match(src, /const atMe = Boolean\(msg\.mentionsMe\)\s*\|\|\s*Boolean\(this\.selfId && typeof msg\.isAtMe === 'function' && msg\.isAtMe\(this\.selfId\)\)/, '好感度那段没接 isAtMe')
+  assert.match(src, /who, 0\.5, \{ floor: 20, reason: '群里发言' \}/, '群普通发言要有小档加分')
   assert.ok(!/msg\.atMe \?\? msg\.__atMe/.test(src), '别再读不存在的 atMe/__atMe')
 })
 

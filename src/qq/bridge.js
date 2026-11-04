@@ -2324,6 +2324,14 @@ export class QQBridge {
             this.people?.bumpAffinity?.(who, 2, { floor: 40, reason: '私聊互动' })
           } else if (atMe) {
             this.people?.bumpAffinity?.(who, 1.5, { floor: 20, reason: '群里被 @' })
+          } else {
+            /*
+             * ★ 普通群发言也 +0.5（2026-11-04，用户：「别人的没涨」）。
+             *   原来群里只认「被 @」—— 修好 @ 判定后群里仍没人涨，因为
+             *   大家只是普通聊天。加一小档，靠 60 秒/人的防抖和 ±10/天
+             *   的净值上限兜着，刷屏也刷不快。
+             */
+            this.people?.bumpAffinity?.(who, 0.5, { floor: 20, reason: '群里发言' })
           }
         }
       }
