@@ -2201,6 +2201,8 @@ async function whalePodCompat(o) {  const { sub, method, url, req, res, json, re
         // 侧栏右上角「已活跃 N 天」读这个字段。
         activity: state.activity?.stats?.() ?? null,
         memory: memory?.stats?.() ?? null,
+        // 人物档案：仪表盘「认识的人 · 好感度」读这里（原来只挂在 /memory 上）
+        people: state.people?.stats?.() ?? null,
         /*
          * ★ 人格状态。`activeByScope` / `scopes` 是 2026-11-01 加的：
          *   群和私聊可以是**不同角色**，插件面板要能显示、也要能选范围。

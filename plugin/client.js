@@ -106,6 +106,10 @@ window.__ModuleLoader__.load({
         'dash.autoRefresh': '每 4 秒自动刷新',
       'dash.activeDays': '已活跃',
       'dash.activeDaysUnit': '天',
+      'dash.people': '认识的人',
+      'dash.peopleHint': '好感度 · 聊得越多越熟',
+      'dash.peopleEmpty': '还没有形成印象（多聊几次就会出现）',
+      'dash.affinity': '好感度',
         'dash.refreshHint': '立即刷新状态与消息',
         'dash.backendOff': '后端未运行 —— 点下面「一键启动」',
         'set.backendOffHint': '后端进程还没起来，所以这里读不到配置。回侧栏点「一键启动」，起来后这里会自动刷新。',
@@ -445,6 +449,10 @@ window.__ModuleLoader__.load({
         'dash.autoRefresh': 'Auto-refresh every 4s',
       'dash.activeDays': 'Active',
       'dash.activeDaysUnit': 'd',
+      'dash.people': 'People',
+      'dash.peopleHint': 'Affinity · the more you chat, the closer',
+      'dash.peopleEmpty': 'No impressions yet (chat a few more times and they appear)',
+      'dash.affinity': 'Affinity',
         'dash.refreshHint': 'Refresh status and messages now',
         'dash.backendOff': 'Backend is not running — press Start below',
         'set.backendOffHint': 'The backend process is not up yet, so settings cannot be read here. Go to the sidebar and press Start; this page refreshes once it is running.',
@@ -884,7 +892,7 @@ window.__ModuleLoader__.load({
    · 窄容器（侧栏）→ 两列（4 个格子排 2×2，太高就浪费）
    · 宽容器（整页）→ 四列（一行放完）
    用容器查询切换，不再依赖 auto-fit（那会在中等宽度挤出 3 列这种怪布局）。 */
-.gd_grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+.gd_grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
 @container (min-width:560px){.gd_grid{grid-template-columns:repeat(4,minmax(0,1fr))}}
 /* 用量卡片只有 3 项，宽屏下用三列而不是四列 */
 @container (min-width:560px){.gd_grid.gd_grid3{grid-template-columns:repeat(3,minmax(0,1fr))}}
@@ -1613,6 +1621,50 @@ window.__ModuleLoader__.load({
           h('div', { className: 'gd_count' }, h('b', null, String(counters.silent ?? 0)), h('span', null, t('dash.silent'))),
           h('div', { className: 'gd_count' }, h('b', null, String(counters.failed ?? 0)), h('span', null, t('dash.failed'))))
           : null,
+
+        // ── 认识的人 · 好感度 ─────────────────────────────────────────
+        //
+        // 数据来自 /status 的 people（PeopleStore#stats）。原来它只挂在
+        // /memory 接口上，设置页看得到、仪表盘看不到。侧栏空间有限，
+        // 这里只列前 5 个；完整名单在设置页「记忆管理」。
+        (() => {
+          const ppl = s?.people
+          if (!ppl || (ppl.count ?? 0) === 0) return null
+          const rows = (ppl.people ?? []).slice(0, 5).map((p) => {
+            /* ★ 好感度：没有数据就整行不画，不显示 0/undefined（与设置页一致） */
+            const score = p.affinity == null ? null : Math.round(p.affinity)
+            const bar = score === null ? null : h('span', {
+              style: {
+                display: 'inline-block', width: '64px', height: '5px', borderRadius: '3px',
+                flex: '0 0 64px', overflow: 'hidden',
+                background: 'color-mix(in srgb,var(--dsw-alias-border-l1) 70%,transparent)',
+              },
+            },
+              h('span', {
+                style: {
+                  display: 'block', height: '100%',
+                  width: Math.max(0, Math.min(100, score)) + '%',
+                  background: score > 85 ? '#3fb950' : score >= 70 ? '#d29922' : score >= 40 ? '#8b949e' : '#6e7681',
+                },
+              }))
+            return h('div', {
+              key: p.id,
+              style: { display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0, fontSize: '12px' },
+            },
+              h('b', {
+                style: { minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: '12.5px' },
+                title: p.name || p.id,
+              }, p.name || p.id),
+              score === null ? null : h('span', {
+                style: { marginLeft: 'auto', color: 'var(--dsw-alias-label-secondary)', whiteSpace: 'nowrap', fontSize: '11.5px' },
+              }, `${t('dash.affinity')} ${score}`),
+              bar)
+          })
+          return h(Section, { title: t('dash.people'), hint: t('dash.peopleHint') },
+            rows.length === 0
+              ? h('p', { className: 'gd_note' }, t('dash.peopleEmpty'))
+              : h('div', { style: { display: 'flex', flexDirection: 'column', gap: '8px' } }, rows))
+        })(),
 
         // ── 用量（tokens / 估算费用）─────────────────────────────────
         // 费用按模型官网价折算，与走哪个渠道无关 —— 看的是"这些用量按原价值多少"。
