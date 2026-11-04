@@ -317,3 +317,60 @@ export function formatAlbumContext(album) {
   return '## 对方发的这个车牌，我打开看了\n' + lines.join('\n')
     + '\n（只看到标题和简介，**没有看内页画面** —— 别描述画面里有什么。）'
 }
+
+/**
+ * 「她自己的总结」缓存 —— 读完内页后用第一人称记的那 2~3 句。
+ *
+ * 为什么要落盘（和 JmHostCache 同理）：whale-pod 一天要重启十几次，
+ * 只放内存的话，下次有人提到同一本时她又「没看过」—— 白重看一遍、
+ * 白花一次浏览器 + 一次总结调用的钱。
+ *
+ * 键是车牌编号；entry：{ title, summary, at }。
+ */
+export class JmMemoStore {
+  /** @param {string} home whale-pod 数据目录 */
+  constructor(home) {
+    this.file = home ? path.join(home, 'jm-memo.json') : null
+    this.map = new Map()
+    this.load()
+  }
+
+  load() {
+    if (!this.file) return
+    try {
+      const j = JSON.parse(fs.readFileSync(this.file, 'utf8'))
+      for (const [k, v] of Object.entries(j?.memos ?? {})) {
+        if (v && typeof v.summary === 'string' && v.summary.trim()) {
+          this.map.set(String(k), { title: String(v.title ?? ''), summary: v.summary.trim(), at: Number(v.at ?? 0) })
+        }
+      }
+    } catch { /* 首次运行 / 文件坏了 —— 从空开始 */ }
+  }
+
+  get(id) {
+    return this.map.get(String(id ?? '')) ?? null
+  }
+
+  set(id, entry) {
+    const k = String(id ?? '').trim()
+    if (!k || !entry?.summary) return null
+    const rec = { title: String(entry.title ?? ''), summary: String(entry.summary), at: Date.now() }
+    this.map.set(k, rec)
+    // 只留最近 60 本，别让文件无限长
+    if (this.map.size > 60) {
+      const keep = [...this.map.entries()].sort((a, b) => (b[1].at ?? 0) - (a[1].at ?? 0)).slice(0, 60)
+      this.map = new Map(keep)
+    }
+    this.save()
+    return rec
+  }
+
+  save() {
+    if (!this.file) return
+    try {
+      const memos = {}
+      for (const [k, v] of this.map) memos[k] = v
+      fs.writeFileSync(this.file, JSON.stringify({ version: 1, memos }), 'utf8')
+    } catch { /* 存不下就算了 —— 缓存是加分项，不该拖垮回复 */ }
+  }
+}

@@ -56,6 +56,17 @@ ok('★★★ 必须禁止它编没看到的内容', () => {
   assert.ok(/别编|不许编/.test(note), '★ 没看到的不许编 —— 这条历史上真的发生过')
 })
 
+ok('★ 有「她自己的总结」时：允许说内容、只禁逐页念', () => {
+  const r = { ok: true, title: 'x', shots: ['a'], samples: 6, sampled: true, totalPages: 70, shotPcts: [0, 50, 100] }
+  const withMemo = formatAlbumPagesNote(r, { summary: '前段是日常，中段开始变味。' })
+  assert.ok(withMemo.includes('前段是日常，中段开始变味'), '自己的总结要进注记')
+  assert.ok(!/不是让你交总结/.test(withMemo), '有总结时不该再禁总结')
+  assert.match(withMemo, /可以有情绪|直接表态/, '要允许她带态度')
+  assert.match(withMemo, /别逐页念/)
+  const noMemo = formatAlbumPagesNote(r)
+  assert.match(noMemo, /不是让你交总结/, '没有总结时保持原样')
+})
+
 // ── 没看到：必须明说 ──────────────────────────────────────────
 console.log('\n=== 没看到的时候 ===')
 

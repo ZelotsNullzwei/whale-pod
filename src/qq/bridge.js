@@ -27,7 +27,7 @@ import { deriveRouting } from '../gateway/strategy.js'
 import { needsFreshInfo, webSearch, formatSearchContext, pickCoverImage, checkBalance } from '../gateway/search.js'
 import { fetchLinkPreview, extractLink, formatLinkContext } from '../gateway/link-preview.js'
 import { detectCode, formatCodeContext } from '../gateway/codes.js'
-import { fetchAlbum, formatAlbumContext, JmHostCache } from '../gateway/jm.js'
+import { fetchAlbum, formatAlbumContext, JmHostCache, JmMemoStore } from '../gateway/jm.js'
 import { readJmPages, formatAlbumPagesNote } from '../gateway/jm-read.js'
 import FACE_TABLE from './faces.json' with { type: 'json' }
 import { InteractionTracker, BegState, decideBeg } from './beg.js'
@@ -4366,6 +4366,12 @@ export class QQBridge {
          *    由 `_handle` 在回复发完之后接（见 `_jmFollowUp`）。
          *    跟长视频同一个理由：**即时回复的延迟必须是 0**。
          */
+        // ★ 上次看过同一本 → 把当时的印象带上，不用重新看一遍
+        const memo = code.kind === 'jm' ? this._jmMemo()?.get(code.id) : null
+        if (memo?.summary) {
+          codeContext = [codeContext, `## 这本我上次看过（我自己记的）\n${memo.summary}`].filter(Boolean).join('\n\n')
+        }
+
         if (this.cfg.jmRead?.enabled !== false) {
           const scope = String(msg.scope ?? '')
           if (scope) {
@@ -6311,6 +6317,64 @@ export class QQBridge {
    *   ② `[SILENT]` 只有**整条就是它**才算不说话。
    *   ③ 图一张都没入库时**别硬发** —— 那等于说"我看了"却没有画面。
    */
+  /** 车牌「她自己的总结」缓存（落盘 <home>/jm-memo.json）。 */
+  _jmMemo() {
+    if (!this._jmMemoReady) {
+      this._jmMemoReady = true
+      try { this._jmMemoStore = new JmMemoStore(this.cfg.home ?? '') } catch { this._jmMemoStore = null }
+    }
+    return this._jmMemoStore
+  }
+
+  /**
+   * 让她自己看一遍内页、用第一人称记一句「这章讲了什么」。
+   *
+   * ⚠️ 为什么**单独一次调用**，而不是在同一条回复里让她总结：
+   *    她的系统提示词有「别一看到图就开始描述」「别总结全文」两条硬规则，
+   *    同一条聊天回复里让她总结会被压成只剩情绪反应（2026-11-04 实测）。
+   *    单独一次「私人笔记」调用能拿到真内容，再作为事实注入本轮。
+   *
+   * 失败/超时一律返回空串 —— 总结是加分项，不能拖垮补发那条。
+   * @param {{shots?:string[], title?:string, samples?:number}} r readJmPages 的结果
+   */
+  async _jmSummarize(r) {
+    if (!r?.shots?.length) return ''
+    if (typeof this.gateway?.makeImageBlock !== 'function') return ''
+    const blocks = []
+    for (const [i, b64] of r.shots.entries()) {
+      try {
+        const blk = await this.gateway.makeImageBlock({ base64: b64, mediaType: 'image/jpeg', name: `jm-memo-${i + 1}` })
+        if (blk) blocks.push(blk)
+      } catch { /* 单张失败跳过 */ }
+    }
+    if (blocks.length === 0) return ''
+    const system = [
+      '你在给自己记一条私人笔记（第一人称、口语，像随手写在本子上）。',
+      '任务：用 2~3 句，说清刚才翻的这几页漫画**大概讲了什么**：谁、发生了什么、哪一段开始变味、整体什么调子。',
+      '规则：只写看到的，不脑补；不用分点；别逐页念。',
+      '**可以有情绪、可以直接表态、也可以反问**（嫌弃、火大、觉得离谱都行）—— 这是给自己看的笔记，别写成客观报告。',
+    ].join('\n')
+    const n = Number(r.samples) || r.shots.length
+    const messages = [
+      { role: 'system', content: system },
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: `这是《${r.title || '这本'}》的 ${n} 个采样画面，从左到右、从上到下排列，覆盖整章 0%→100%。` },
+          ...blocks,
+        ],
+      },
+    ]
+    const candidates = await this._candidatesAsync()
+    if (candidates.length === 0) return ''
+    const opened = await openFirstAvailable({ llm: this.gateway, candidates, request: { messages, maxTokens: 400 }, firstChunkMs: 30_000 })
+    let text = ''
+    for await (const ch of opened.stream) {
+      if (ch?.type === 'text-delta' || ch?.type === 'text') text += ch.text ?? ''
+    }
+    return text.trim()
+  }
+
   async _jmFollowUp(job, msg, mem, scene, self) {
     const scope = String(msg.scope ?? '')
     try {
@@ -6350,8 +6414,22 @@ export class QQBridge {
       }
       this.log.info?.(`车牌 ${job.id}：内页看完（${blocks.size} 张）→ 补一句`)
 
+      /*
+       * ★ 先让她自己看一遍、记一句内容总结（2026-11-04）。
+       *
+       * 单独一次「私人笔记」调用（见 _jmSummarize）：这句既注入本轮提示词，
+       * 也按车牌号落盘 —— 下次提到同一本不用重看。
+       */
+      let memo = ''
+      try {
+        memo = await this._jmSummarize(r)
+        if (memo) this._jmMemo()?.set(job.id, { title: r.title ?? '', summary: memo })
+      } catch (e) {
+        this.log.debug?.(`车牌 ${job.id}：自己记总结失败（跳过）— ${String(e?.message ?? e).slice(0, 80)}`)
+      }
+
       // ② 带着截图 + "只看了前面几屏"的注记重新生成
-      const gen = await this._generate(msg, mem, scene, self, blocks, formatAlbumPagesNote(r))
+      const gen = await this._generate(msg, mem, scene, self, blocks, formatAlbumPagesNote(r, { summary: memo }))
       if (typeof gen?.text !== 'string') {
         this.log.warn?.(`车牌 ${job.id}：补发时生成层返回的不是字符串（${typeof gen?.text}），跳过`)
         return
