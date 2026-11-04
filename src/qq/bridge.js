@@ -2150,6 +2150,27 @@ export class QQBridge {
     // 保留 `?? msg.sender` 只是防御：万一别处递进来的对象带 `sender`。
     if (!msg.isMe && (msg.userId || msg.sender)) {
       this.people?.touch(msg.userId ?? msg.sender, msg.senderName)
+      /*
+       * ★ **好感度：来了就算亲近一点**（2026-11-04，1.5 刀）。
+       *
+       * 口径（用户定）：私聊一来一回 +2（地板 40）；**群里被 @ 才 +1.5**（地板 20）。
+       * 群里普通发言**不加** —— 否则"天天在群里刷"就能把所有人都刷成亲近，
+       * 那这个分就不代表关系了。
+       *
+       * 这一刀只加不减；「她主动说了没人接 −2」「7 天没互动 −1/周」在下一刀。
+       * 防抖（单次 ±3 / 每天净 ±10 / 同一人 60 秒内忽略）在 `bumpAffinity` 里。
+       */
+      if (!msg.isMe) {
+        const who = String(msg.userId ?? msg.sender ?? '')
+        if (who) {
+          const atMe = Boolean(msg.atMe ?? msg.__atMe ?? msg.mentionsMe)
+          if (msg.kind === 'private') {
+            this.people?.bumpAffinity?.(who, 2, { floor: 40, reason: '私聊互动' })
+          } else if (atMe) {
+            this.people?.bumpAffinity?.(who, 1.5, { floor: 20, reason: '群里被 @' })
+          }
+        }
+      }
     }
 
     // ⚠️ 重复事件去重（2026-10-23 补）
