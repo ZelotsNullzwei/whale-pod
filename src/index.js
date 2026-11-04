@@ -1132,6 +1132,8 @@ export async function main(argv = process.argv.slice(2)) {
         searchKey: (() => {
           try { return creds.get('DEEPSEEK_API_KEY') ?? null } catch { return null }
         })(),
+        // ★ 设置页「外部调用自动联网」开关：每请求现读配置，改完立刻生效
+        getAutoSearch: () => store.get().gateway?.autoSearch !== false,
       })
       await gw.listen()
       state.gateway = gw

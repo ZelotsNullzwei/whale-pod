@@ -248,7 +248,7 @@ ok('★★ 截图要能进上下文（base64 不走 QQ 那条下载路）', () =
    */
   assert.match(BRIDGE, /_collectImages\(history, imgReferrer, \w+\)/,
     '要真的把"额外图块"传进 _collectImages')
-  assert.match(BRIDGE, /_generate\(msg, mem, scene, self, extraBlocks = null, extraNote = ''\)/,
+  assert.match(BRIDGE, /_generate\(msg, mem, scene, self, extraBlocks = null, extraNote = ''/,
     '_generate 要收 extraBlocks / extraNote')
   // 图块要放进 imageCache
   const at = BRIDGE.indexOf('extraBlocks && typeof extraBlocks[Symbol.iterator]')

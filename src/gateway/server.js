@@ -30,9 +30,9 @@ export function mintKey() {
  * @param {()=>object} [opts.stats] 用量统计回调
  */
 export function createGatewayServer(opts) {
-  const { gateway, llm, log = {}, usage = null, searchKey = null } = opts
+  const { gateway, llm, log = {}, usage = null, searchKey = null, getAutoSearch = null } = opts
   const startedAt = Date.now()
-  const counters = { requests: 0, ok: 0, failed: 0, tokensIn: 0, tokensOut: 0, byProvider: {} }
+  const counters = { requests: 0, ok: 0, failed: 0, tokensIn: 0, tokensOut: 0, byProvider: {}, autoSearch: 0 }
 
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`)
@@ -77,7 +77,7 @@ export function createGatewayServer(opts) {
 
       // ── 对话补全 ────────────────────────────────────────────
       if ((path === '/v1/chat/completions' || path === '/chat/completions') && req.method === 'POST') {
-        return await handleChat(req, res, { gateway, llm, counters, log, usage, searchKey })
+        return await handleChat(req, res, { gateway, llm, counters, log, usage, searchKey, getAutoSearch })
       }
 
       return json(res, 404, { error: { message: `Not found: ${path}`, type: 'invalid_request_error' } })
@@ -180,7 +180,7 @@ async function listModels(llm) {
 
 /** 对话补全。 */
 async function handleChat(req, res, ctx) {
-  const { gateway, llm, counters, log, usage = null, searchKey = null } = ctx
+  const { gateway, llm, counters, log, usage = null, searchKey = null, getAutoSearch = null } = ctx
   const body = await readBody(req)
   counters.requests++
 
@@ -247,7 +247,9 @@ async function handleChat(req, res, ctx) {
   // **只在真的需要新信息时才搜**（一次 5~15 秒，不能每条都搜）。
   //
   // 关掉：请求体里带 `"whale_pod_search": false`。
-  if (searchKey && body.whale_pod_search !== false) {
+  // ★ 网关侧自动联网开关（设置页可关）：每请求现读配置，关掉后外部请求不再搜
+  const autoSearchOn = typeof getAutoSearch !== 'function' || getAutoSearch() !== false
+  if (searchKey && body.whale_pod_search !== false && autoSearchOn) {
     try {
       const lastUser = [...(body.messages ?? [])].reverse().find((m) => m.role === 'user')
       const q = typeof lastUser?.content === 'string'
@@ -309,6 +311,7 @@ async function handleChat(req, res, ctx) {
                 ok: true,
                 ms: r.ms,
               })
+              counters.autoSearch += 1
               log.info?.(
                 `gateway: 搜索用量已记录（in=${u.in} out=${u.out}，搜了 ${u.searches} 次；`
                 + '这条不占 QQ 侧的每日配额）',

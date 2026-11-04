@@ -2220,7 +2220,24 @@ async function whalePodCompat(o) {  const { sub, method, url, req, res, json, re
           strategy: cfg.gateway?.strategy ?? 'self-first',
           host: cfg.gateway?.host ?? '127.0.0.1',
           port: cfg.gateway?.port ?? 18899,
+          // ★ 网关对**外部调用**的自动联网开关（2026-11-04，设置页可关）
+          autoSearch: cfg.gateway?.autoSearch !== false,
         },
+        /*
+         * ★ 搜索的实际花费（估算）—— 设置页「联网搜索」那节单独标出来。
+         *   `today` 是 QQ 侧的每日配额计数（与 bridge 共用 search-usage.json）；
+         *   `gatewaySearches` 是网关侧**本次启动**自动搜的次数（不占 QQ 配额）。
+         */
+        search: (() => {
+          let today = null
+          try { today = new SearchQuota({ home: store.home, log }).usedToday() } catch { /* 读不到就不显示 */ }
+          return {
+            today,
+            limit: Number(cfg.qq?.search?.maxPerDay) || 0,
+            costPerSearchCny: 0.0074,
+            gatewaySearches: state.gateway?.counters?.autoSearch ?? 0,
+          }
+        })(),
       })
     }
 

@@ -278,6 +278,12 @@ window.__ModuleLoader__.load({
         'search.budgetHint': '一次搜索约 ¥0.0074（接口费 ¥0.005 + 处理结果的模型钱）。只是估算，供你对着预算调',
         'search.budgetValue': '约 ¥{per}/天 ≈ ¥{month}/月',
         'search.budgetUnlimited': '不限次数 —— 账单也没有上限，留意点',
+        'search.gatewayAuto': '外部调用自动联网',
+        'search.gatewayAutoHint': '网关 /v1 收到外部请求时也按同一套判断联网。关掉后只有 QQ 里的消息会搜',
+        'search.spent': '今天实际花费（估算）',
+        'search.spentValue': '已搜 {n} 次 ≈ ¥{cny}（每次约 ¥0.0074）',
+        'search.spentZero': '今天还没搜过',
+        'search.spentGw': '网关侧本次启动自动搜了 {n} 次',
         'search.lowBalance': '余额提醒阈值',
         'search.lowBalanceHint': '低于这个数（元）会让它念叨一句',
         /*
@@ -605,6 +611,12 @@ window.__ModuleLoader__.load({
         'search.budgetHint': 'About ¥0.0074 per search (¥0.005 API fee + the model cost of digesting the results). An estimate only — tune against your budget',
         'search.budgetValue': 'about ¥{per}/day ≈ ¥{month}/month',
         'search.budgetUnlimited': 'Unlimited — and so is the bill. Keep an eye on it',
+        'search.gatewayAuto': 'Auto web search for external calls',
+        'search.gatewayAutoHint': 'The /v1 gateway runs the same check for outside requests. Off = only QQ messages search',
+        'search.spent': "Today's estimated spend",
+        'search.spentValue': '{n} searches ≈ ¥{cny} (about ¥0.0074 each)',
+        'search.spentZero': 'No searches today yet',
+        'search.spentGw': 'Gateway auto-searched {n} time(s) since start',
         'search.lowBalance': 'Low-balance threshold',
         'search.lowBalanceHint': 'Below this amount (CNY) it will complain about tokens',
         'section.bili': 'Bilibili videos',
@@ -2752,6 +2764,34 @@ window.__ModuleLoader__.load({
                   .replace('{per}', (sr.maxPerDay * 0.0074).toFixed(2))
                   .replace('{month}', (sr.maxPerDay * 0.0074 * 30).toFixed(2))
                 : t('search.budgetUnlimited'))),
+          /*
+           * ★ 外部调用的自动联网开关 + 今天实际花费（2026-11-04）。
+           *
+           * 为什么单独一档：网关 `/v1/chat/completions` **默认每条都判要不要联网**，
+           * 且那条路**不占 QQ 侧的每日配额**（当"人在屏幕前主动搜"）—— 代价是
+           * 外部工具/探针一多，账单会悄悄涨（实测被实验刷出 ¥0.44）。
+           * 所以别只给"按频率估算"，要把实际次数和钱摆出来，并给一个开关。
+           */
+          h(Row, { label: t('search.gatewayAuto'), hint: t('search.gatewayAutoHint') },
+            h(Toggle, {
+              checked: cfg?.gateway?.autoSearch !== false,
+              disabled: busy,
+              onChange: (v) => apply({ 'gateway.autoSearch': v }),
+            })),
+          (() => {
+            const sd = status.data?.search ?? {}
+            const n = Number(sd.today) || 0
+            const gw = Number(sd.gatewaySearches) || 0
+            return h(Row, { label: t('search.spent'), hint: t('search.budgetHint') },
+              h('span', { style: { display: 'flex', alignItems: 'baseline', gap: '6px', flexWrap: 'wrap' } },
+                h('span', { className: 'gd_cap ok' },
+                  n > 0
+                    ? t('search.spentValue').replace('{n}', String(n)).replace('{cny}', (n * 0.0074).toFixed(2))
+                    : t('search.spentZero')),
+                gw > 0
+                  ? h('span', { style: { fontSize: '11px', color: 'var(--dsw-alias-label-tertiary)' } }, t('search.spentGw').replace('{n}', String(gw)))
+                  : null))
+          })(),
           h(Row, { label: t('search.lowBalance'), hint: t('search.lowBalanceHint') },
             h(TextField, {
               value: sr.lowBalanceCny ?? 2,
