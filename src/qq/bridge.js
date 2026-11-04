@@ -2313,7 +2313,13 @@ export class QQBridge {
       if (!msg.isMe) {
         const who = String(msg.userId ?? msg.sender ?? '')
         if (who) {
-          const atMe = Boolean(msg.atMe ?? msg.__atMe ?? msg.mentionsMe)
+          /*
+           * ⚠️ `atMe` / `__atMe` / `mentionsMe` **都不在消息对象上** ——
+           *    normalizeEvent 只给 `isAtMe(selfId)` 这个函数（2026-11-04 实测：
+           *    群里永远判不出 @ → 好感度只有私聊在涨）。这里现算。
+           */
+          const atMe = Boolean(msg.mentionsMe)
+            || Boolean(this.selfId && typeof msg.isAtMe === 'function' && msg.isAtMe(this.selfId))
           if (msg.kind === 'private') {
             this.people?.bumpAffinity?.(who, 2, { floor: 40, reason: '私聊互动' })
           } else if (atMe) {
@@ -2618,7 +2624,9 @@ export class QQBridge {
     const maxWaitMs = Number(this.cfg.reply?.mergeMaxWaitMs ?? 4500)
     const waited = Date.now() - buf.firstAt
     const capped = waited >= maxWaitMs || buf.msgs.length >= maxCount
-    const atMe = Boolean(msg.atMe ?? msg.__atMe)
+    // ⚠️ 同上去：@ 只能从 isAtMe(selfId) 现算（否则这条窗口永远是普通窗口）
+    const atMe = Boolean(msg.mentionsMe)
+      || Boolean(this.selfId && typeof msg.isAtMe === 'function' && msg.isAtMe(this.selfId))
 
     /*
      * ⚠️ **自适应窗口**（2026-10-30 加）。
