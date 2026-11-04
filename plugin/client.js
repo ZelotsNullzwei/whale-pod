@@ -1662,8 +1662,8 @@ window.__ModuleLoader__.load({
               h('span', {
                 style: {
                   display: 'block', height: '100%',
-                  width: Math.max(0, Math.min(100, score)) + '%',
-                  background: score > 85 ? '#3fb950' : score >= 70 ? '#d29922' : score >= 40 ? '#8b949e' : '#6e7681',
+                  width: Math.max(0, Math.min(100, Math.round(score / 2))) + '%',
+                  background: score > 170 ? '#3fb950' : score >= 140 ? '#d29922' : score >= 80 ? '#8b949e' : '#6e7681',
                 },
               }))
             return h('div', {
@@ -3438,8 +3438,8 @@ window.__ModuleLoader__.load({
                         }, h('span', {
                           style: {
                             display: 'block', height: '100%',
-                            width: Math.max(0, Math.min(100, Math.round(p.affinity))) + '%',
-                            background: p.affinity > 85 ? '#3fb950' : p.affinity >= 70 ? '#d29922' : p.affinity >= 40 ? '#8b949e' : '#6e7681',
+                            width: Math.max(0, Math.min(100, Math.round(p.affinity / 2))) + '%',
+                            background: p.affinity > 170 ? '#3fb950' : p.affinity >= 140 ? '#d29922' : p.affinity >= 80 ? '#8b949e' : '#6e7681',
                           },
                         })),
                       ),

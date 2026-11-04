@@ -1329,7 +1329,11 @@ export class QQBridge {
         if (!mem) return false
         const kind = scope.startsWith('group:') ? 'group' : 'private'
         const id = scope.slice(scope.indexOf(':') + 1)
-        this._lastSpeakScope = String(scope ?? '')   // 供「没人接 −2」用
+        this._lastSpeakScope = String(scope ?? '')   // 兼容旧字段
+        // 按类型各存一份：私聊/群分别结算「没人接」，别互相覆盖（2026-11-04）
+        const kk = scope.startsWith('group:') ? 'group' : 'private'
+        this._lastSpeakScopeByKind = this._lastSpeakScopeByKind ?? {}
+        this._lastSpeakScopeByKind[kk] = String(scope ?? '')
 
         return await this._speakUp({ scope, kind, groupId: kind === 'group' ? id : null, userId: kind === 'private' ? id : null }, mem)
       },
@@ -1351,15 +1355,16 @@ export class QQBridge {
 
         try {
 
-          const scope = this._lastSpeakScope ?? ''
+          const kk = String(kind ?? '').toLowerCase()
+          const scope = this._lastSpeakScopeByKind?.[kk] ?? this._lastSpeakScope ?? ''
 
-          if (!(kind === 'Private' && scope.startsWith('private:'))) return
+          if (!(kk === 'private' && scope.startsWith('private:'))) return
 
           const uid = scope.slice('private:'.length)
 
-          this.people?.bumpAffinity?.(uid, -2, { floor: 40, reason: '主动发言没人接' })
+          this.people?.bumpAffinity?.(uid, -4, { floor: 80, reason: '主动发言没人接' })
 
-        } catch { /* 忽略 */ }
+        } catch (e) { this.log.debug?.('好感度扣分失败（忽略）：' + String(e?.message ?? e)) }
 
       },
       // 静默时长 = 所有候选会话里「距上次有人说话」的最大值
@@ -2194,9 +2199,9 @@ export class QQBridge {
         if (who) {
           const atMe = Boolean(msg.atMe ?? msg.__atMe ?? msg.mentionsMe)
           if (msg.kind === 'private') {
-            this.people?.bumpAffinity?.(who, 2, { floor: 40, reason: '私聊互动' })
+            this.people?.bumpAffinity?.(who, 4, { floor: 80, reason: '私聊互动' })
           } else if (atMe) {
-            this.people?.bumpAffinity?.(who, 1.5, { floor: 20, reason: '群里被 @' })
+            this.people?.bumpAffinity?.(who, 3, { floor: 40, reason: '群里被 @' })
           }
         }
       }

@@ -90,14 +90,19 @@ export class PersonProfile {
     /** @type {number} 说过多少句 */
     this.seen = 0
     /*
-     * ★ **好感度 0~100**（2026-11-04 加）。
+     * ★ **好感度 0~200**（2026-11-04，用户定「满分按 200」）。
      *
-     * 口径（用户定）：初始 50；上下都动；有地板（close 私聊 80 / 普通私聊 40 / 群 20）
-     * 和天花板 100；有防抖（单次 ±3、每天净变化 ±10、同一人 60 秒内第二次忽略）。
-     * close 只是**地板高**，不是不掉 —— 长期冷落照样 100 → 85。
-     * ⚠️ 这一刀只存数，不接主动发言/概率/@ 谁。
+     * 0~200 而不是 0~100：+4 在 200 里 = 2%，刻度和"一眼看出深浅"更细。
+     * 口径：初始 100（中性 50%）；上下都动；地板（close 私聊 80 / 普通私聊 40 / 群 40）；
+     * 天花板 200；防抖：单次 ±6、每天净 ±20、同一人 60 秒内忽略；
+     * 另有「每满 7 天没互动 −2/周」的衰减（decay，下限 20）。
+     * 参考同类做法（koishi-plugin-chatluna-affinity 的长期好感 + 区间映射），
+     * 这里只取最朴素的「长期互动累积 + 冷落衰减」。
      */
-    this.affinity = 50  }
+    this.affinity = 100
+    /** 已经因长期没互动扣过几周（幂等，重启不重复扣） */
+    this.decayWeeks = 0
+  }
 
   /**
    * 记一次出现（每收到一条他的消息就调）。
@@ -163,6 +168,7 @@ export class PersonProfile {
       lastSeen: this.lastSeen,
       seen: this.seen,
       affinity: this.affinity,
+      decayWeeks: this.decayWeeks,
     }
   }
 
@@ -197,6 +203,10 @@ export class PeopleStore {
     /** 日志（可空）。只用来把「落盘失败」这种沉默问题暴露出来。 */
     this.log = opts.log ?? {}
     if (this.file) this.load()
+    /* ★ 每日净值（±20/天）落盘 —— 内存态会被重启清零（见 _loadAff 的注释）。 */
+    this.affFile = opts.home ? path.join(opts.home, 'affinity-state.json') : null
+    this._aff = new Map()
+    this._loadAff()
   }
 
   load() {
@@ -204,6 +214,9 @@ export class PeopleStore {
     try {
       const raw = fs.readFileSync(this.file, 'utf8')
       const data = JSON.parse(raw)
+      // ★ 0~100 → 0~200 迁移（2026-11-04）：按 scale 标记做一次，相对位置不变
+      const legacy = Number(data?.scale) !== 200
+      if (legacy) this._dirty = true
       for (const [key, v] of Object.entries(data?.people ?? {})) {
         if (!v || typeof v !== 'object') continue
         const id = String(v.id ?? key.replace(/^u:/, ''))
@@ -216,7 +229,11 @@ export class PeopleStore {
         if (Number.isFinite(v.lastSeen)) p.lastSeen = v.lastSeen
         if (Number.isFinite(v.seen)) p.seen = v.seen
         if (typeof v.nickname === 'string') p.nickname = v.nickname
-        if (Number.isFinite(v.affinity)) p.affinity = Math.max(0, Math.min(100, v.affinity))
+        if (Number.isFinite(v.affinity)) {
+          // 旧档案是 0~100：×2 换成 0~200，别让"满 100"突然变成半血
+          p.affinity = Math.max(0, Math.min(200, legacy ? v.affinity * 2 : v.affinity))
+        }
+        if (Number.isFinite(v.decayWeeks)) p.decayWeeks = Math.max(0, v.decayWeeks)
         this.people.set(personKey(id), p)
       }
     } catch {
@@ -224,10 +241,10 @@ export class PeopleStore {
     }
   }
 
-  /** 某人的好感度（没见过的按初始 50）。 */
+  /** 某人的好感度（没见过的按初始 100，满分 200）。 */
   affinityOf(id) {
     const p = this.people.get(personKey(String(id ?? "")))
-    return Number.isFinite(p?.affinity) ? p.affinity : 50
+    return Number.isFinite(p?.affinity) ? p.affinity : 100
   }
 
   /**
@@ -242,12 +259,68 @@ export class PeopleStore {
    * @param {{floor?:number, ceil?:number, reason?:string}} [opts]
    * @returns {{before:number, after:number, applied:number}|null}
    */
+  /*
+   * ★ 每日净值落盘（2026-11-04）。
+   *
+   * 原来 `_aff` 只在内存 —— 重启清零，一天能刷出 +38（实测 62→100），
+   * 「每天净 ±20」形同虚设。这里存到 <home>/affinity-state.json，跨重启有效。
+   */
+  _loadAff() {
+    if (!this.affFile) return
+    try {
+      const j = JSON.parse(fs.readFileSync(this.affFile, 'utf8'))
+      const day = new Date(this._now()).toDateString()
+      if (j?.day !== day || !j.entries || typeof j.entries !== 'object') return
+      for (const [k, v] of Object.entries(j.entries)) {
+        if (!v) continue
+        this._aff.set(k, { day, net: Number(v.net) || 0, lastAt: Number(v.lastAt) || 0 })
+      }
+    } catch { /* 首次运行 / 文件坏了 —— 从 0 开始 */ }
+  }
+
+  _saveAff() {
+    if (!this.affFile) return
+    try {
+      const day = new Date(this._now()).toDateString()
+      const entries = {}
+      for (const [k, v] of this._aff) if (v?.day === day) entries[k] = { net: v.net, lastAt: v.lastAt }
+      fs.writeFileSync(this.affFile, JSON.stringify({ day, entries }), 'utf8')
+    } catch { /* 存不下就算了 —— 也不能因此影响回复 */ }
+  }
+
+  /**
+   * ★ 长期不互动衰减（2026-11-04）：每满 7 天 −2（0~200 尺度），下限 20。
+   * `decayWeeks` 记「已扣周数」→ 幂等，重启/多次调用都不会重复扣。
+   * 由 `flush()`（30 秒一次）顺带结算，不额外开定时器。
+   */
+  decay(now = this._now()) {
+    let changed = false
+    const WEEK = 7 * 24 * 60 * 60 * 1000
+    for (const p of this.people.values()) {
+      if (!Number.isFinite(p.lastSeen)) continue
+      const weeks = Math.floor((now - p.lastSeen) / WEEK)
+      const done = Number(p.decayWeeks) || 0
+      if (weeks <= done) continue
+      const before = Number.isFinite(p.affinity) ? p.affinity : 100
+      const after = Math.max(20, before - (weeks - done) * 2)
+      p.decayWeeks = weeks
+      if (after !== before) {
+        p.affinity = after
+        this.log.info?.(`人物：好感度 ${before} → ${after}（${weeks - done} 周没互动）`)
+      }
+      changed = true
+    }
+    if (changed) this._dirty = true
+    return changed
+  }
+
   bumpAffinity(id, delta, opts = {}) {
     const key = personKey(String(id ?? ""))
     const p = this.people.get(key)
     if (!p || !Number.isFinite(delta) || delta === 0) return null
-    const MAX_STEP = 3
-    const MAX_DAY = 10
+    // ★ 0~200 尺度：单次 ±6、每天净 ±20（100 分制那套等比放大）
+    const MAX_STEP = 6
+    const MAX_DAY = 20
     const MIN_GAP_MS = 60_000
     const now = this._now()
     if (!this._aff) this._aff = new Map()
@@ -260,12 +333,13 @@ export class PeopleStore {
     if (room <= 0) return null
     const applied = step > 0 ? Math.min(step, room) : -Math.min(-step, room)
     const floor = Number.isFinite(opts.floor) ? opts.floor : 20
-    const ceil = Number.isFinite(opts.ceil) ? opts.ceil : 100
-    const before = Number.isFinite(p.affinity) ? p.affinity : 50
+    const ceil = Number.isFinite(opts.ceil) ? opts.ceil : 200
+    const before = Number.isFinite(p.affinity) ? p.affinity : 100
     const after = Math.max(floor, Math.min(ceil, before + applied))
     p.affinity = after
     st.net += after - before
     st.lastAt = now
+    this._saveAff()
     this._aff.set(key, st)
     if (after !== before) {
       const d = after - before
@@ -298,7 +372,7 @@ export class PeopleStore {
       for (const [key, p] of this.people) people[key] = p.toJSON()
       const tmp = `${this.file}.tmp`
       fs.mkdirSync(path.dirname(this.file), { recursive: true })
-      fs.writeFileSync(tmp, JSON.stringify({ version: 1, people }), { mode: 0o600 })
+      fs.writeFileSync(tmp, JSON.stringify({ version: 1, scale: 200, people }), { mode: 0o600 })
       fs.renameSync(tmp, this.file)
       this._dirty = false
     } catch (e) {
@@ -482,7 +556,7 @@ export class PeopleStore {
         .filter((p) => p.impression || p.facts.length > 0)
         // 按好感度从高到低（用户口径：认的人「由多到少」）。
         // 同分再按最近说话，避免每次刷新顺序乱跳。
-        .sort((a, b) => (b.affinity ?? 50) - (a.affinity ?? 50) || (b.lastSeen ?? 0) - (a.lastSeen ?? 0))
+        .sort((a, b) => (b.affinity ?? 100) - (a.affinity ?? 100) || (b.lastSeen ?? 0) - (a.lastSeen ?? 0))
         .slice(0, 50)
         .map((p) => ({
           id: p.id,
@@ -491,7 +565,7 @@ export class PeopleStore {
           impression: p.impression,
           facts: p.facts,
           seen: p.seen,
-          affinity: Number.isFinite(p.affinity) ? p.affinity : 50,
+          affinity: Number.isFinite(p.affinity) ? p.affinity : 100,
           lastSeen: p.lastSeen,
         })),
     }
@@ -505,8 +579,9 @@ export class PeopleStore {
     return had
   }
 
-  /** 脏了就写盘（定期调，避免每条消息都写文件）。 */
+  /** 脏了就写盘（定期调，避免每条消息都写文件）；顺带结算长期不互动衰减（幂等）。 */
   flush() {
+    this.decay()
     if (this._dirty) this.save()
   }
 }
