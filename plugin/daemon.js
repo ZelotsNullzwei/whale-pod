@@ -152,6 +152,14 @@ export async function listProcesses() {
 
     for (const p of list) {
       const cmd = String(p.CommandLine ?? '')
+      /*
+       * ★ 排除测试/调试进程（2026-11-04）。
+       *
+       * 这个窗口的判据只有「命令行里含 whale-pod」—— 于是 `node tests/check-poke.mjs`
+       * 也会被收进来，显示成一行「其它」，看着像多了一个后端进程。
+       * 仓库路径落在 tests/ 下的一律不算运行时进程。
+       */
+      if (/[\\/]tests[\\/]/.test(cmd)) continue
       let kind = 'other'
       // 分类标签统一用 whale-pod / napcat，前端据此显示
       if (/whale-pod[\\/]src[\\/]index\.js/.test(cmd)) kind = 'whale-pod'
