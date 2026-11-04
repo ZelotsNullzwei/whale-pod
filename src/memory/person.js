@@ -475,6 +475,7 @@ export class PeopleStore {
           impression: p.impression,
           facts: p.facts,
           seen: p.seen,
+          affinity: Number.isFinite(p.affinity) ? p.affinity : 50,
           lastSeen: p.lastSeen,
         })),
     }
