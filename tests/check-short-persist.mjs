@@ -27,6 +27,20 @@ await ok('makeMessage 保留 provider/model（assistant 必需）', () => {
   assert.equal(m.model, 'flash')
 })
 
+await ok('★ 被点名 / 别人说 3 条时，连说计数归零（修「聊一半卡住」）', () => {
+  const m = new ConversationMemory({ scope: 'g:9' })
+  m.push({ sender: '0', text: 'a', isMe: true })
+  m.push({ sender: '0', text: 'b', isMe: true })
+  assert.equal(m.consecutiveTurns, 2, '连发两轮应为 2')
+  m.push({ sender: '9', text: '那你也是变态', isMe: false, mentionsMe: true })
+  assert.equal(m.consecutiveTurns, 0, '被点名必须归零')
+  m.push({ sender: '0', text: 'c', isMe: true })
+  m.push({ sender: '9', text: '1', isMe: false })
+  m.push({ sender: '9', text: '2', isMe: false })
+  m.push({ sender: '9', text: '3', isMe: false })
+  assert.equal(m.consecutiveTurns, 0, '别人连说 3 条也算没垄断')
+})
+
 await ok('写入后能落盘并重启恢复', () => {
   const a = new MemoryStore({ maxMessages: 30, dir, log })
   a.load()

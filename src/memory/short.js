@@ -151,8 +151,16 @@ export class ConversationMemory {
       this.pendingSinceMyLast = 0
     } else {
       this.pendingSinceMyLast++
-      // 注意：不在这里清零 consecutiveTurns —— 由 maybeCooldown() 按时间决定，
-      // 否则别人插一句话就把我的"连说"状态抹掉，容易变成刷屏。
+      /*
+       * ★ 两种情况下**必须归零**连说计数（2026-11-04 修「聊一半卡住」）。
+       *
+       * 实测群 704291282：她连发 9 轮后，下一句「那你也是变态」（明显在跟她说）
+       * 仍被判「先让别人说」→ 直接不吭声。用户看到的就是"聊到一半突然停了"。
+       *   · 被 @ / 引用了她的话 → 这不是她在垄断话题，该回就回；
+       *   · 别人已经说了 3 条她还没接 → 同样说明没有垄断。
+       * （原来只在"距上次发言 60 秒"时归零，群里聊得密时永远等不到那 60 秒。）
+       */
+      if (m.mentionsMe || this.pendingSinceMyLast >= 3) this.consecutiveTurns = 0
     }
     this._trim()
     // 通知宿主「有变化，该落盘了」（由 MemoryStore 挂上，见 get()）
