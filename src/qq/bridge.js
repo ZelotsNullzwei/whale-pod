@@ -1563,6 +1563,29 @@ export class QQBridge {
   async _speakUp(msg, mem, extraHint = '') {
     try {
       /*
+       * ★ **催话路径没有会话记忆**（2026-11-04 修的真 bug）。
+       *
+       * `_tickNudges` 传的是 `mem = null`（它在定时器里跑，拿不到
+       * startProactive 里那个 `memoryOf(scope)` 闭包）。而提示词拼装里有
+       * 一处直接 `mem.recent(20)` —— 于是每次"约定到点催一句"都在这里崩：
+       * ```
+       * 02:50:43 bridge：约定到点 —— 催一句（今天第 1 次）
+       * 02:50:43 [warn] proactive：主动发言失败 — Cannot read properties of null (reading 'recent')
+       * ```
+       * 用户看到的就是「约定时间好像也没有生效」—— **约定记对了、到点也触发了，
+       * 只是催话这一步炸掉，一个字都没发出去。**
+       *
+       * 修法：先按会话取回记忆（`this._memOf`，startProactive 里注册）；
+       * 取不到就给一个**空壳**（`recent` 返回空数组）—— 让拼装永远有东西可读。
+       * 空壳顶多催得平淡，崩掉是整条消息消失 —— 显然空壳更好。
+       */
+      if (!mem) {
+        try { mem = this._memOf?.(msg?.scope) ?? null } catch { mem = null }
+      }
+      if (!mem) {
+        mem = { recent: () => [], sinceLastMessage: () => Infinity, push: () => {}, tick: () => {} }
+      }
+      /*
        * ★ 主动发言前先确保热点是**新鲜**的（2026-10-31）。
        *
        * 主动发言不走 `_handle`，所以那条路上的 `_ensureHotTopics` 够不着它 ——
