@@ -1362,7 +1362,7 @@ export class QQBridge {
 
           const uid = scope.slice('private:'.length)
 
-          this.people?.bumpAffinity?.(uid, -4, { floor: 80, reason: '主动发言没人接' })
+          this.people?.bumpAffinity?.(uid, -2, { floor: 40, reason: '主动发言没人接' })
 
         } catch (e) { this.log.debug?.('好感度扣分失败（忽略）：' + String(e?.message ?? e)) }
 
@@ -2199,9 +2199,9 @@ export class QQBridge {
         if (who) {
           const atMe = Boolean(msg.atMe ?? msg.__atMe ?? msg.mentionsMe)
           if (msg.kind === 'private') {
-            this.people?.bumpAffinity?.(who, 4, { floor: 80, reason: '私聊互动' })
+            this.people?.bumpAffinity?.(who, 2, { floor: 40, reason: '私聊互动' })
           } else if (atMe) {
-            this.people?.bumpAffinity?.(who, 3, { floor: 40, reason: '群里被 @' })
+            this.people?.bumpAffinity?.(who, 1.5, { floor: 20, reason: '群里被 @' })
           }
         }
       }

@@ -92,14 +92,12 @@ export class PersonProfile {
     /*
      * ★ **好感度 0~200**（2026-11-04，用户定「满分按 200」）。
      *
-     * 0~200 而不是 0~100：+4 在 200 里 = 2%，刻度和"一眼看出深浅"更细。
-     * 口径：初始 100（中性 50%）；上下都动；地板（close 私聊 80 / 普通私聊 40 / 群 40）；
-     * 天花板 200；防抖：单次 ±6、每天净 ±20、同一人 60 秒内忽略；
-     * 另有「每满 7 天没互动 −2/周」的衰减（decay，下限 20）。
-     * 参考同类做法（koishi-plugin-chatluna-affinity 的长期好感 + 区间映射），
-     * 这里只取最朴素的「长期互动累积 + 冷落衰减」。
+     * ⚠️ 只把**天花板**抬到 200，数值本身**不重新缩放**：
+     *    初始仍是 50；私聊 +2 / 群里被 @ +1.5 / 没人接 −2 / 每周 −1。
+     *    之前那版把旧档案 ×2（50→100）是错的 —— 用户一眼看出来"没人涨过却翻倍"，
+     *    已改回绝对值语义（2026-11-04 晚修）。
      */
-    this.affinity = 100
+    this.affinity = 50
     /** 已经因长期没互动扣过几周（幂等，重启不重复扣） */
     this.decayWeeks = 0
   }
@@ -214,9 +212,6 @@ export class PeopleStore {
     try {
       const raw = fs.readFileSync(this.file, 'utf8')
       const data = JSON.parse(raw)
-      // ★ 0~100 → 0~200 迁移（2026-11-04）：按 scale 标记做一次，相对位置不变
-      const legacy = Number(data?.scale) !== 200
-      if (legacy) this._dirty = true
       for (const [key, v] of Object.entries(data?.people ?? {})) {
         if (!v || typeof v !== 'object') continue
         const id = String(v.id ?? key.replace(/^u:/, ''))
@@ -229,10 +224,7 @@ export class PeopleStore {
         if (Number.isFinite(v.lastSeen)) p.lastSeen = v.lastSeen
         if (Number.isFinite(v.seen)) p.seen = v.seen
         if (typeof v.nickname === 'string') p.nickname = v.nickname
-        if (Number.isFinite(v.affinity)) {
-          // 旧档案是 0~100：×2 换成 0~200，别让"满 100"突然变成半血
-          p.affinity = Math.max(0, Math.min(200, legacy ? v.affinity * 2 : v.affinity))
-        }
+        if (Number.isFinite(v.affinity)) p.affinity = Math.max(0, Math.min(200, v.affinity))
         if (Number.isFinite(v.decayWeeks)) p.decayWeeks = Math.max(0, v.decayWeeks)
         this.people.set(personKey(id), p)
       }
@@ -241,10 +233,10 @@ export class PeopleStore {
     }
   }
 
-  /** 某人的好感度（没见过的按初始 100，满分 200）。 */
+  /** 某人的好感度（没见过的按初始 50，满分 200）。 */
   affinityOf(id) {
     const p = this.people.get(personKey(String(id ?? "")))
-    return Number.isFinite(p?.affinity) ? p.affinity : 100
+    return Number.isFinite(p?.affinity) ? p.affinity : 50
   }
 
   /**
@@ -301,8 +293,8 @@ export class PeopleStore {
       const weeks = Math.floor((now - p.lastSeen) / WEEK)
       const done = Number(p.decayWeeks) || 0
       if (weeks <= done) continue
-      const before = Number.isFinite(p.affinity) ? p.affinity : 100
-      const after = Math.max(20, before - (weeks - done) * 2)
+      const before = Number.isFinite(p.affinity) ? p.affinity : 50
+      const after = Math.max(20, before - (weeks - done) * 1)
       p.decayWeeks = weeks
       if (after !== before) {
         p.affinity = after
@@ -318,9 +310,9 @@ export class PeopleStore {
     const key = personKey(String(id ?? ""))
     const p = this.people.get(key)
     if (!p || !Number.isFinite(delta) || delta === 0) return null
-    // ★ 0~200 尺度：单次 ±6、每天净 ±20（100 分制那套等比放大）
-    const MAX_STEP = 6
-    const MAX_DAY = 20
+    // ★ 只抬天花板：步长/净值保持原口径（单次 ±3、每天净 ±10）
+    const MAX_STEP = 3
+    const MAX_DAY = 10
     const MIN_GAP_MS = 60_000
     const now = this._now()
     if (!this._aff) this._aff = new Map()
@@ -334,7 +326,7 @@ export class PeopleStore {
     const applied = step > 0 ? Math.min(step, room) : -Math.min(-step, room)
     const floor = Number.isFinite(opts.floor) ? opts.floor : 20
     const ceil = Number.isFinite(opts.ceil) ? opts.ceil : 200
-    const before = Number.isFinite(p.affinity) ? p.affinity : 100
+    const before = Number.isFinite(p.affinity) ? p.affinity : 50
     const after = Math.max(floor, Math.min(ceil, before + applied))
     p.affinity = after
     st.net += after - before
@@ -372,7 +364,7 @@ export class PeopleStore {
       for (const [key, p] of this.people) people[key] = p.toJSON()
       const tmp = `${this.file}.tmp`
       fs.mkdirSync(path.dirname(this.file), { recursive: true })
-      fs.writeFileSync(tmp, JSON.stringify({ version: 1, scale: 200, people }), { mode: 0o600 })
+      fs.writeFileSync(tmp, JSON.stringify({ version: 1, people }), { mode: 0o600 })
       fs.renameSync(tmp, this.file)
       this._dirty = false
     } catch (e) {
@@ -556,7 +548,7 @@ export class PeopleStore {
         .filter((p) => p.impression || p.facts.length > 0)
         // 按好感度从高到低（用户口径：认的人「由多到少」）。
         // 同分再按最近说话，避免每次刷新顺序乱跳。
-        .sort((a, b) => (b.affinity ?? 100) - (a.affinity ?? 100) || (b.lastSeen ?? 0) - (a.lastSeen ?? 0))
+        .sort((a, b) => (b.affinity ?? 50) - (a.affinity ?? 50) || (b.lastSeen ?? 0) - (a.lastSeen ?? 0))
         .slice(0, 50)
         .map((p) => ({
           id: p.id,
@@ -565,7 +557,7 @@ export class PeopleStore {
           impression: p.impression,
           facts: p.facts,
           seen: p.seen,
-          affinity: Number.isFinite(p.affinity) ? p.affinity : 100,
+          affinity: Number.isFinite(p.affinity) ? p.affinity : 50,
           lastSeen: p.lastSeen,
         })),
     }

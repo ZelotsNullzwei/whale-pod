@@ -152,12 +152,12 @@ await ok('好感度 0~200：初始 100、每天净上限 20、跨重启仍生效
   let t = 1_800_000_000_000
   const ps = new PeopleStore({ home, now: () => t })
   ps.touch('888', '甲', t)
-  assert.equal(ps.get('888').affinity, 100, '初始 100（满分 200）')
-  for (let i = 0; i < 6; i++) { t += 61_000; ps.bumpAffinity('888', 4) }
-  assert.equal(ps.get('888').affinity, 120, '每天净 +20 封顶')
+  assert.equal(ps.get('888').affinity, 50, '初始 50（满分 200，不缩放）')
+  for (let i = 0; i < 6; i++) { t += 61_000; ps.bumpAffinity('888', 2) }
+  assert.equal(ps.get('888').affinity, 60, '每天净 +10 封顶')
   ps.flush()
   const ps2 = new PeopleStore({ home, now: () => t })
-  assert.equal(ps2.bumpAffinity('888', 4), null, '重启后当天上限仍生效（净值已落盘）')
+  assert.equal(ps2.bumpAffinity('888', 2), null, '重启后当天上限仍生效（净值已落盘）')
 })
 
 await ok('7 天没互动 −2/周，且不会重复扣', () => {
@@ -167,9 +167,9 @@ await ok('7 天没互动 −2/周，且不会重复扣', () => {
   ps.touch('999', '乙', t - 15 * 24 * 3600 * 1000)
   ps.get('999').affinity = 140
   ps.decay(t)
-  assert.equal(ps.get('999').affinity, 136, '两周 → −4')
+  assert.equal(ps.get('999').affinity, 138, '两周 → −2')
   ps.decay(t)
-  assert.equal(ps.get('999').affinity, 136, '再调一次不重复扣')
+  assert.equal(ps.get('999').affinity, 138, '再调一次不重复扣')
 })
 
 
