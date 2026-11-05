@@ -249,7 +249,17 @@ export async function runQQMarkers({ items, onebot, msg, mem, cfg = {}, log = {}
        * ⚠️ 带上图（2026-11-05）：他说「把这张发空间」时，图就在这条消息里 ——
        *    NapCat 的 images 收 http(s)/file/base64，QQ 的图片 URL 直接能用。
        */
-      const imgs = (Array.isArray(msg?.images) ? msg.images : []).filter(Boolean).slice(0, 9)
+      let imgs = (Array.isArray(msg?.images) ? msg.images : []).filter(Boolean).slice(0, 9)
+      /*
+       * ⚠️ 图常常在**上一条消息**里（他先发图、再说「发个空间」）—— 这时本条 msg.images 是空的。
+       *    回看最近 8 条，取最近一条带图的（2026-11-05）。
+       */
+      if (!imgs.length) {
+        const recent = mem?.recent?.(8) ?? []
+        const lastWithImg = [...recent].reverse().find((m) => !m?.isMe && Array.isArray(m.images) && m.images.length)
+        if (lastWithImg) imgs = lastWithImg.images.filter(Boolean).slice(0, 9)
+      }
+      log.info?.(`qq-actions：说说带图 ${imgs.length} 张`)
       const payload = { content: content.slice(0, 300), ugc_right: 1 }
       if (imgs.length) payload.images = imgs
       const { ok } = await call('send_qzone_msg', payload)
