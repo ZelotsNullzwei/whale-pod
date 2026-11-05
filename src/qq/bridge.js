@@ -4877,18 +4877,22 @@ export class QQBridge {
     if (t) { try { clearTimeout(t) } catch { /* ignore */ } ; this._sceneTimers.delete(key) }
   }
 
-  /** 最近几条像不像"在场景里"：亲密词或她的动作括号。 */
+  /**
+   * 最近几条像不像"**正在场景里**"。
+   *
+   * ⚠️ 2026-11-05 收紧：原来只要 10 条里有 2 处亲密词/动作括号就放行 ——
+   *    于是她正躺在床上，他随口问一句吃饭/游戏，续写照样触发，
+   *    把日常话题也拽回床上（用户：「她好容易进入状态」）。
+   *    现在要求：**他最后一条自己就带亲密内容**，且最近有她的动作描写。
+   */
   _looksIntimate(mem) {
     const recent = mem?.recent?.(10) ?? []
     if (recent.length < 2) return false
-    const INTIMATE = /(摸|抱|亲|吻|脱|床|腿|腰|胸|身体|贴|蹭|喘|湿|下面|进来|要我|想要)/
+    const INTIMATE = /(摸|抱|亲|吻|脱|床|被|腿|腰|胸|身体|贴|蹭|喘|湿|下面|进来|要我|想要|躺)/
+    const lastUser = [...recent].reverse().find((m) => !m?.isMe)
+    if (!lastUser || !INTIMATE.test(String(lastUser.text ?? ''))) return false
     const hasBracket = (t) => /[（(][^）)]{2,}[）)]/.test(String(t ?? ''))
-    let hits = 0
-    for (const m of recent) {
-      const t = String(m?.text ?? '')
-      if (INTIMATE.test(t) || (m?.isMe && hasBracket(t))) hits++
-    }
-    return hits >= 2
+    return recent.some((m) => m?.isMe && hasBracket(m.text))
   }
 
   _armSceneContinue(msg, mem, scene, self) {
