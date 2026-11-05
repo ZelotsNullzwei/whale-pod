@@ -5079,11 +5079,33 @@ export class QQBridge {
     const isSticker = !t && /\[表情/.test(raw)
     const isPunct = /^[?？!！.。,，、…~～\s]+$/.test(t)
     const isShort = t.length > 0 && t.length <= 4 && !/[?？吗呢吧什么怎么为啥哪谁]/.test(t)
-    if (!isSticker && !isPunct && !isShort) return ''
+    if (!isSticker && !isPunct && !isShort) {
+      // 说了点实的东西 → 解除"停手"
+      this._noiseHold?.delete(String(msg?.scope ?? ''))
+      return ''
+    }
+    /*
+     * ★ 没头没尾的话要"少说、别猜"（2026-11-05 用户三条口径）：
+     *   · 「发一张表情或者莫名其妙的话开场她不用接」
+     *   · 「她就可用扣「?」或者同类的表情」
+     *   · 「她也可以主动问」「不一定要等别人」
+     *   → 第一句可以「？」/表情/**短追问**；2 分钟内再来一句，最多再问一次，
+     *     不猜、不编上下文、不连问。
+     */
+    const scopeKey = String(msg?.scope ?? '')
+    if (!this._noiseHold) this._noiseHold = new Map()
+    const last = this._noiseHold.get(scopeKey) ?? 0
+    if (Date.now() - last < 120_000) {
+      return '## 他这句还是没头没尾\n'
+        + '你已经回过一次了。这次**要么不出声（输出 [SILENT]），要么只问一句很短的**\n'
+        + '（「怎么了？」「啥意思？」「哪件事？」）—— 别猜、别编上下文、别连问两遍。'
+    }
+    this._noiseHold.set(scopeKey, Date.now())
     return '## 他这句没头没尾\n'
       + '（他发的是表情，或者一句没头没尾的话，比如「马上」「。。」「？」）\n'
-      + '**最多回一个「？」或者一个表情**（[表情:数字] / [表情包] 都行）—— '
-      + '一个字都别多。想接话等他说了点实的东西再接。'
+      + '**最多回一个「？」、一个表情（[表情:数字] / [表情包]），或者一句很短的追问**\n'
+      + '（「怎么了？」「啥意思？」「你说的哪件事？」）—— 别展开猜、别写长句、别编上下文。\n'
+      + '★ 说完就停：等他把话说清楚再接；他要是不说，也别追着问第二遍。'
   }
 
   async _generate(msg, mem, scene, self, extraBlocks = null, extraNote = '', attempt = 0) {
