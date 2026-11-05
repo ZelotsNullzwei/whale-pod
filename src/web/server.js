@@ -2673,7 +2673,10 @@ async function whalePodCompat(o) {  const { sub, method, url, req, res, json, re
         eventScopes: events?.listScopes?.() ?? [],
         // 人物档案：按 QQ 号认人，昵称只是别名
         people: state.people?.stats?.() ?? null,
-        // 生成图缓存（侧栏「生成图」卡片，2026-11-05）
+        /*
+         * ★ 生成图缓存（2026-11-05）：侧栏「生成图」卡片拿它渲染缩略图，
+         *   点开就是 /api/whale-pod/images/<key>.png。
+         */
         images: await (async () => {
           try {
             const { ImageCache } = await import('../qq/imageCache.js')
@@ -2820,11 +2823,15 @@ async function whalePodCompat(o) {  const { sub, method, url, req, res, json, re
     */
     /*
      * ★ 生成图缓存列表 / 预览（2026-11-05）。
+     *   `/images`            → JSON 列表（key / 提示词 / 时间 / 大小）
+     *   `/images/<key>.png`  → 直接回 PNG（侧栏 <img src> 用）
      */
     if (sub === '/images' && method === 'GET') {
       try {
         const { ImageCache } = await import('../qq/imageCache.js')
-        const c = new ImageCache({ home: store.home, days: Number(store.get().qq?.actions?.imageCacheDays ?? 3) })
+        // ⚠️ home 不在配置里，是 Store 实例属性（store.get().home 恒为 undefined）
+        const home = store.home ?? process.env.WHALE_POD_HOME ?? ''
+        const c = new ImageCache({ home, days: Number(store.get()?.qq?.actions?.imageCacheDays ?? 3) })
         return json(res, 200, { ok: true, items: c.list() })
       } catch (e) {
         return json(res, 200, { ok: false, error: String(e?.message ?? e), items: [] })
@@ -2833,7 +2840,9 @@ async function whalePodCompat(o) {  const { sub, method, url, req, res, json, re
     if (sub.startsWith('/images/') && method === 'GET') {
       const key = String(sub.slice('/images/'.length)).replace(/[^a-f0-9]/gi, '').slice(0, 32)
       if (!key) return json(res, 400, { ok: false })
-      const file = path.join(store.home, 'generated', `${key}.png`)
+      // ⚠️ 同上：home 是 Store 实例属性，不在配置里
+      const home = store.home ?? process.env.WHALE_POD_HOME ?? ''
+      const file = path.join(home, 'generated', `${key}.png`)
       try {
         const buf = fs.readFileSync(file)
         res.writeHead(200, { 'content-type': 'image/png', 'cache-control': 'private, max-age=86400' })
