@@ -5967,6 +5967,10 @@ export class QQBridge {
           if (a.signature === true) {
             lines.push('- 说「签名改了」→ 必须同时输出 [签名:一句话]')
           }
+          if (a.qzone === true) {
+            lines.push('- 他说「发个说说 / 发空间」→ 输出 [说说:一句话]（一句就够，≤300 字）')
+            lines.push('- ⚠️ 空间是**公开**的（好友/访客都看得到）—— 他没提，你别自己发。')
+          }
           if (lines.length === 0) return ''
           return '## 你能做的 QQ 小动作\n'
             + lines.join('\n')

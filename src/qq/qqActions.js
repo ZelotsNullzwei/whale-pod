@@ -140,10 +140,12 @@ const PATTERNS = [
   { id: 'poke', re: /[\[［]\s*戳\s*(?:[:：]\s*([^\]］]+))?\s*[\]］]/g },
   { id: 'signature', re: /[\[［]\s*签名\s*[:：]\s*([^\]］]*)[\]］]/g },
   { id: 'recall', re: /[\[［]\s*撤回\s*[\]］]/g },
+  // [说说:内容] —— 发一条 QQ 空间说说（2026-11-05 加）
+  { id: 'qzone', re: /[\[［]\s*说说\s*[:：]\s*([^\]］]*)[\]］]/g },
 ]
 
 /** 动作键（和 `qq.actions` 的键一一对应）。 */
-export const ACTION_KEYS = ['emojiLike', 'poke', 'signature', 'recall']
+export const ACTION_KEYS = ['emojiLike', 'poke', 'signature', 'recall', 'qzone']
 
 /** 签名长度上限 —— QQ 个人签名本身就短，超了会被截断，不如先拦。 */
 const MAX_SIGNATURE = 40
@@ -228,6 +230,22 @@ export async function runQQMarkers({ items, onebot, msg, mem, cfg = {}, log = {}
         ? await call('group_poke', { group_id: String(msg.groupId), user_id: target })
         : await call('friend_poke', { user_id: target })
       if (r.ok) notes.push('戳了一下')
+      continue
+    }
+
+    if (it.id === 'qzone') {
+      /*
+       * 发 QQ 空间说说（2026-11-05）。
+       *
+       * ⚠️ 这是**公开动作**：好友、空间访客都看得到。所以：
+       *   · 内容为空 → 跳过；
+       *   · `qq.actions.qzone = false` → 只把标记剥掉、不发；
+       *   · 失败只 warn，不影响这条回复本身。
+       */
+      const content = String(it.arg ?? '').trim()
+      if (!content) { log.warn?.('qq-actions：说说内容为空，跳过'); continue }
+      const { ok } = await call('send_qzone_msg', { message: content.slice(0, 300) })
+      if (ok) notes.push('发空间了')
       continue
     }
 
