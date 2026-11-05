@@ -19,6 +19,7 @@
  */
 
 import fs from 'node:fs'
+import { ImageCache } from './imageCache.js'
 import os from 'node:os'
 import path from 'node:path'
 import { createHash } from 'node:crypto'
@@ -4003,6 +4004,7 @@ export class QQBridge {
              * 自己下完再转 base64，协议端就不用联网了（「找图」那条一直是这么干的）。
              */
             let file = r.url
+            let finalBuf = null
             try {
               const resp = await fetch(r.url, { signal: AbortSignal.timeout(25000) })
               if (resp.ok) {
@@ -4026,6 +4028,7 @@ export class QQBridge {
                   } else {
                     buf = await cropBottom(buf, Number(imgCfg.cropBottom ?? 0.1), this.log)
                   }
+                  finalBuf = buf
                   file = `base64://${buf.toString('base64')}`
                   this.log.info?.(`bridge：生成图已下载 ${Math.round(buf.length / 1024)}KB，按 base64 发`)
                 } else {
@@ -4034,6 +4037,11 @@ export class QQBridge {
               }
             } catch (e) {
               this.log.warn?.(`bridge：下载生成图失败（仍按 URL 发）— ${String(e?.message ?? e)}`)
+            }
+            try {
+              if (finalBuf) this._imageCache().put(drawPrompt, finalBuf, { scope: String(msg.scope ?? ''), ms: r.ms })
+            } catch (e) {
+              this.log.warn?.(`bridge：写图片缓存失败 — ${String(e?.message ?? e).slice(0, 60)}`)
             }
             drawnImage = { url: file }
             this.log.info?.(`bridge：画好了（${Math.round(r.ms / 1000)}s）`)
@@ -7226,6 +7234,16 @@ export class QQBridge {
    * 用户原话：「叫她去群里做事」—— 私聊里让她发一句话到群里。
    * 目标取**最近一条消息最新的群**；一个都没有就返回 null（她要说做不到）。
    */
+  /** 生成图缓存（懒加载；`qq.actions.imageCacheDays` 控制保留天数）。 */
+  _imageCache() {
+    if (!this.__imgCache) {
+      const days = Number(this.cfg.actions?.imageCacheDays ?? 3)
+      this.__imgCache = new ImageCache({ home: this.cfg.home ?? process.env.WHALE_POD_HOME ?? '', days, log: this.log })
+      this.__imgCache.prune()
+    }
+    return this.__imgCache
+  }
+
   _activeGroupTarget() {
     try {
       const keys = (this.memory?.scopes?.() ?? []).filter((k) => String(k).startsWith('group:'))

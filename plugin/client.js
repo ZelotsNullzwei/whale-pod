@@ -109,6 +109,9 @@ window.__ModuleLoader__.load({
       'dash.people': '认识的人',
       'dash.peopleHint': '好感度 · 聊得越多越熟',
       'dash.peopleEmpty': '还没有形成印象（多聊几次就会出现）',
+      'dash.images': '生成图',
+      'dash.imagesHint': '最近画的图 · 点开看大图',
+      'dash.imagesEmpty': '还没画过图',
       'dash.affinity': '好感度',
         'dash.refreshHint': '立即刷新状态与消息',
         'dash.backendOff': '后端未运行 —— 点下面「一键启动」',
@@ -472,6 +475,9 @@ window.__ModuleLoader__.load({
       'dash.activeDaysUnit': 'd',
       'dash.people': 'People',
       'dash.peopleHint': 'Affinity · the more you chat, the closer',
+      'dash.images': 'Generated',
+      'dash.imagesHint': 'Recent pictures · click to enlarge',
+      'dash.imagesEmpty': 'Nothing drawn yet',
       'dash.peopleEmpty': 'No impressions yet (chat a few more times and they appear)',
       'dash.affinity': 'Affinity',
         'dash.refreshHint': 'Refresh status and messages now',
@@ -921,6 +927,10 @@ window.__ModuleLoader__.load({
    · 窄容器（侧栏）→ 两列（4 个格子排 2×2，太高就浪费）
    · 宽容器（整页）→ 四列（一行放完）
    用容器查询切换，不再依赖 auto-fit（那会在中等宽度挤出 3 列这种怪布局）。 */
+.gd_imgrid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
+.gd_imgrid a{display:block;aspect-ratio:3/4;overflow:hidden;border-radius:8px;background:rgba(255,255,255,.06)}
+.gd_imgrid img{width:100%;height:100%;object-fit:cover;display:block}
+.gd_imgrid a:hover{outline:2px solid rgba(120,190,255,.6)}
 .gd_grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
 @container (min-width:560px){.gd_grid{grid-template-columns:repeat(4,minmax(0,1fr))}}
 /* 用量卡片只有 3 项，宽屏下用三列而不是四列 */
@@ -1730,6 +1740,32 @@ window.__ModuleLoader__.load({
               ? h('p', { className: 'gd_note' }, t('dash.peopleEmpty'))
               : h('div', { style: { display: 'flex', flexDirection: 'column', gap: '8px' } }, rows))
         })(),
+
+        /* ── 生成图（缩略图网格；点开预览）──────────────────────── */
+        enabled ? (() => {
+          const items = (status.data?.images ?? []).slice(0, 12)
+          const base = `?token=${encodeURIComponent(token ?? '')}`
+          return h(Fold, {
+            title: t('dash.images'),
+            hint: t('dash.imagesHint'),
+            summary: items.length === 0 ? t('dash.imagesEmpty') : `${items.length} 张`,
+            defaultOpen: false,
+          },
+            items.length === 0
+              ? h('p', { className: 'gd_note' }, t('dash.imagesEmpty'))
+              : h('div', { className: 'gd_imgrid' }, items.map((it) => h('a', {
+                  key: it.key,
+                  href: `/api/whale-pod/images/${it.key}.png${base}`,
+                  target: '_blank',
+                  rel: 'noreferrer',
+                  title: String(it.prompt ?? '').slice(0, 80),
+                }, h('img', {
+                  src: `/api/whale-pod/images/${it.key}.png${base}`,
+                  alt: String(it.prompt ?? '').slice(0, 40),
+                  loading: 'lazy',
+                })))),
+          )
+        })() : null,
 
         // ── 用量（tokens / 估算费用）─────────────────────────────────
         // 费用按模型官网价折算，与走哪个渠道无关 —— 看的是"这些用量按原价值多少"。

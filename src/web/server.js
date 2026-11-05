@@ -2662,6 +2662,14 @@ async function whalePodCompat(o) {  const { sub, method, url, req, res, json, re
         eventScopes: events?.listScopes?.() ?? [],
         // 人物档案：按 QQ 号认人，昵称只是别名
         people: state.people?.stats?.() ?? null,
+        // 生成图缓存（侧栏「生成图」卡片，2026-11-05）
+        images: await (async () => {
+          try {
+            const { ImageCache } = await import('../qq/imageCache.js')
+            const c = new ImageCache({ home: store.home, days: Number(store.get().qq?.actions?.imageCacheDays ?? 3) })
+            return c.list().slice(0, 24)
+          } catch { return [] }
+        })(),
         // 记忆落盘位置：设置页拿它显示当前目录 + 让用户改
         storage: {
           // 实际生效的文件路径（memory.dir 为空时 = <home>/memory-long.json）
@@ -2799,6 +2807,32 @@ async function whalePodCompat(o) {  const { sub, method, url, req, res, json, re
     *    是另一套入口（设置页/调试用）。一开始只加了直连那条，
     *    结果侧栏卡片取不到数据、整块 return null —— 两边"看起来都没做"。
     */
+    /*
+     * ★ 生成图缓存列表 / 预览（2026-11-05）。
+     */
+    if (sub === '/images' && method === 'GET') {
+      try {
+        const { ImageCache } = await import('../qq/imageCache.js')
+        const c = new ImageCache({ home: store.home, days: Number(store.get().qq?.actions?.imageCacheDays ?? 3) })
+        return json(res, 200, { ok: true, items: c.list() })
+      } catch (e) {
+        return json(res, 200, { ok: false, error: String(e?.message ?? e), items: [] })
+      }
+    }
+    if (sub.startsWith('/images/') && method === 'GET') {
+      const key = String(sub.slice('/images/'.length)).replace(/[^a-f0-9]/gi, '').slice(0, 32)
+      if (!key) return json(res, 400, { ok: false })
+      const file = path.join(store.home, 'generated', `${key}.png`)
+      try {
+        const buf = fs.readFileSync(file)
+        res.writeHead(200, { 'content-type': 'image/png', 'cache-control': 'private, max-age=86400' })
+        res.end(buf)
+        return
+      } catch {
+        return json(res, 404, { ok: false })
+      }
+    }
+
     if (sub === '/image/status' && method === 'GET') {
       const q = new URL(url ?? '/', 'http://x').searchParams
       const cfg = store.get()
