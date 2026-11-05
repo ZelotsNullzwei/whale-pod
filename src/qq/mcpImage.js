@@ -26,6 +26,7 @@
  */
 
 import fs from 'node:fs'
+import { singlePanelRef } from './refPanel.js'
 import os from 'node:os'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
@@ -401,7 +402,9 @@ export async function generateOpenAIImage({
    * （同一张脸、同一头蓝发、同一个白蕾丝头饰），服装场景照样能换。
    * 所以：`refImage` 配了就用 edits，没配就还是纯文生图。
    */
-  const refPath = refImage ? String(refImage) : ''
+  let refPath = refImage ? String(refImage) : ''
+  // ★ 三视图只取正面那一幅（2026-11-05）：整张三联画当参考，身形会飘
+  if (refPath) refPath = singlePanelRef(refPath, log)
   const useEdits = refPath && fs.existsSync(refPath)
   const url = String(baseUrl).replace(/\/+$/, '') + (useEdits ? '/images/edits' : '/images/generations')
   try {
