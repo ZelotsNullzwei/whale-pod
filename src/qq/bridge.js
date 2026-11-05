@@ -2038,6 +2038,8 @@ export class QQBridge {
 
   /** 绑定 OneBot 事件。 */
   attach() {
+    // ★ 重连后补历史（2026-11-05）：断连窗口漏掉的消息从 NapCat 拉回来，只进记忆不回复
+    this.onebot.on('open', () => { void this._backfillHistory() })
     this.onebot.on('event', (ev) => { this.onEvent(ev).catch((e) => {
       this.stats.failed++
       this.log.warn?.(`bridge：处理事件失败 — ${String(e?.message ?? e)}`)
@@ -5108,6 +5110,51 @@ export class QQBridge {
       + '**最多回一个「？」、一个表情（[表情:数字] / [表情包]），或者一句很短的追问**\n'
       + '（「怎么了？」「啥意思？」「你说的哪件事？」）—— 别展开猜、别写长句、别编上下文。\n'
       + '★ 说完就停：等他把话说清楚再接；他要是不说，也别追着问第二遍。'
+  }
+
+  /**
+   * 重连补历史：断连那几秒漏掉的消息，从 NapCat 拉回来补进短期记忆。
+   *
+   * ⚠️ **只进记忆、不触发回复** —— 否则重连后会把几条旧消息挨个回一遍。
+   * 用户实测：12:25:56 表情 / 12:26:01「依旧吃面」正好落在重启窗口，鲸舱没收到。
+   */
+  async _backfillHistory(count = 12) {
+    if (this.cfg.reply?.backfillOnOpen === false) return
+    try {
+      const scopes = (this.memory?.scopes?.() ?? []).slice(0, 6)
+      let added = 0
+      for (const sc of scopes) {
+        const isGroup = String(sc).startsWith('group:')
+        const id = isGroup ? String(sc).slice(6) : String(sc).slice('private:'.length)
+        if (!id || !this.onebot?.callHttp) continue
+        try {
+          const action = isGroup ? 'get_group_msg_history' : 'get_friend_msg_history'
+          const params = isGroup ? { group_id: Number(id), count } : { user_id: Number(id), count }
+          const res = await this.onebot.callHttp(action, params, 8000)
+          const list = res?.data?.messages ?? res?.messages ?? []
+          if (!Array.isArray(list) || !list.length) continue
+          const mem = this.memory.get(sc)
+          const known = new Set((mem?.recent?.(40) ?? []).map((m) => String(m.id ?? '')))
+          for (const m of list) {
+            const mid = String(m.message_id ?? m.real_id ?? '')
+            if (!mid || known.has(mid)) continue
+            mem.push(makeMessage({
+              id: mid,
+              sender: String(m.user_id ?? m.sender?.user_id ?? ''),
+              senderName: String(m.sender?.card || m.sender?.nickname || ''),
+              text: String(m.raw_message ?? '').replace(/\[CQ:[^\]]*\]/g, '[图片]'),
+              at: Number(m.time ?? 0) * 1000 || Date.now(),
+              isMe: String(m.user_id ?? m.sender?.user_id ?? '') === String(this.selfId ?? ''),
+            }))
+            known.add(mid)
+            added++
+          }
+        } catch { /* 单个会话失败不影响其它 */ }
+      }
+      if (added) this.log.info?.(`bridge：重连补历史 ${added} 条（只进记忆，不回复）`)
+    } catch (e) {
+      this.log.warn?.(`bridge：补历史失败 — ${String(e?.message ?? e).slice(0, 80)}`)
+    }
   }
 
   async _generate(msg, mem, scene, self, extraBlocks = null, extraNote = '', attempt = 0) {
