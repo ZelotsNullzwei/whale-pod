@@ -5433,6 +5433,41 @@ export class QQBridge {
    *
    * ⚠️ 只给私聊；群里不用（群里本来就在场）。也**不落盘**，纯提示词。
    */
+  /**
+   * 最近私聊里聊了什么 —— 给**群聊**用（2026-11-05）。
+   *
+   * 用户口径：「群和私聊内容打通」「群里的私聊可以看」「私聊的群里不提」。
+   * 所以：**知道**私下聊过什么，但别主动在群里提（那是人格那条规则管的）。
+   *
+   * ⚠️ 只给群；私聊不用（私聊本来就在聊）。也不落盘。
+   */
+  _recentPrivateDigest(maxAgeMs = 30 * 60_000, maxSessions = 2, maxMsgs = 8) {
+    try {
+      const keys = (this.memory?.scopes?.() ?? []).filter((k) => String(k).startsWith('private:'))
+      if (!keys.length) return ''
+      const blocks = []
+      for (const k of keys) {
+        const mem2 = this.memory.get(k)
+        const msgs = (mem2?.recent?.(maxMsgs) ?? [])
+          .filter((m) => Date.now() - Number(m.at ?? 0) <= maxAgeMs)
+        if (!msgs.length) continue
+        const lines = msgs.map((m) => {
+          const who = m.isMe ? '我' : '他'
+          const body = String(m.text ?? '').replace(/\s+/g, ' ').slice(0, 40)
+          return `${who}：${body}`
+        })
+        blocks.push({ key: k, ageMs: Date.now() - Number(msgs[msgs.length - 1].at ?? 0), lines })
+      }
+      if (!blocks.length) return ''
+      blocks.sort((a, b) => a.ageMs - b.ageMs)
+      const head = '## 私下聊过的事（你知道就行，**别在群里主动提**）'
+      return [head, ...blocks.slice(0, maxSessions).map((b) => {
+        const mins = Math.max(1, Math.round(b.ageMs / 60_000))
+        return `私聊（${mins} 分钟前）：` + b.lines.map((l) => `- ${l}`).join('\n')
+      })].join('\n')
+    } catch { return '' }
+  }
+
   _recentGroupDigest(maxAgeMs = 30 * 60_000, maxGroups = 2, maxMsgs = 10) {
     try {
       const keys = (this.memory?.scopes?.() ?? []).filter((k) => String(k).startsWith('group:'))
@@ -6470,6 +6505,8 @@ export class QQBridge {
         (this._balanceWarned = this._balanceLow, ''),
         // ★ 私聊也要知道群里刚发生什么（跨会话同步，2026-11-05）
         msg.kind === 'private' ? this._recentGroupDigest() : '',
+        // ★ 群里也知道私下聊过什么（知道就行，别主动提 —— 见人格那条）
+        msg.kind === 'group' ? this._recentPrivateDigest() : '',
         // ★ 群里没头没尾的开场 → 最多回一个「？」或一个表情（2026-11-05）
         this._groupNoiseHint(msg, mem),
 
