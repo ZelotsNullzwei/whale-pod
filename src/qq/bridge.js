@@ -647,6 +647,8 @@ function hashStr(s) {
  */
 export function cleanModelText(raw) {
   let s = String(raw ?? '')
+  // ★ 剥「停顿旁白」：她把这当舞台指示反复发（2026-11-05）
+  s = s.replace(/[（(]\s*(顿了下|顿了一下|停顿了一下|沉默了几秒|沉默了一下|想了想|停了一下)\s*[）)]/g, '')
 
   // ① 成对的工具调用块（含各种全角竖线/尖括号变体）整块删掉
   //    形如 <｜｜DSML｜｜ calls> … </｜｜DSML｜｜ calls>
