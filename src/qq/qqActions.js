@@ -53,6 +53,8 @@
  *    动画表情在表里是 `{ani, pack}`，`set_msg_emoji_like` 不吃这套 ——
  *    给了她也只会失败。
  */
+import fs from 'node:fs'
+import path from 'node:path'
 import FACE_TABLE from './faces.json' with { type: 'json' }
 
 /** 贴表情允许的编号范围（`faces.json` 里经典小黄脸就是 0~104）。 */
@@ -146,8 +148,21 @@ const PATTERNS = [
   { id: 'qzoneDel', re: /[\[［]\s*删说说\s*[\]］]/g },
 ]
 
-/** 最近一次发出去的说说 tid（[删说说] 用；进程内记忆，重启失效）。 */
-let lastQzone = null
+/**
+ * 最近一次发出去的说说 tid（[删说说] 用）。
+ * ⚠️ 落盘（2026-11-05）：原来只在进程内存里，重启就删不了 —— 存 `<home>/qzone-last.json`。
+ */
+const QZONE_STATE = path.join(process.env.WHALE_POD_HOME ?? path.join(process.env.USERPROFILE ?? '', '.dsh', 'whale-pod'), 'qzone-last.json')
+function readQzoneState() {
+  try { return JSON.parse(fs.readFileSync(QZONE_STATE, 'utf8')) } catch { return null }
+}
+function writeQzoneState(v) {
+  try {
+    if (v) fs.writeFileSync(QZONE_STATE, JSON.stringify(v))
+    else fs.rmSync(QZONE_STATE, { force: true })
+  } catch { /* ignore */ }
+}
+let lastQzone = readQzoneState()
 
 /** 动作键（和 `qq.actions` 的键一一对应）。 */
 export const ACTION_KEYS = ['emojiLike', 'poke', 'signature', 'recall', 'qzone', 'qzoneDel']
@@ -276,7 +291,10 @@ export async function runQQMarkers({ items, onebot, msg, mem, cfg = {}, log = {}
       if (ok) {
         notes.push(imgs.length ? '发空间了' : '发空间了（没图）')
         const tid = String(r?.data?.tid ?? r?.tid ?? '')
-        if (tid) { lastQzone = { tid, at: Date.now() } }
+        if (tid) {
+          lastQzone = { tid, at: Date.now() }
+          writeQzoneState(lastQzone)
+        }
       }
       continue
     }
@@ -289,7 +307,7 @@ export async function runQQMarkers({ items, onebot, msg, mem, cfg = {}, log = {}
        */
       if (!lastQzone?.tid) { log.warn?.('qq-actions：没有可删的说说（进程内没记到 tid）'); continue }
       const { ok } = await call('delete_qzone_msg', { tid: lastQzone.tid })
-      if (ok) { notes.push('删了刚发的说说'); lastQzone = null }
+      if (ok) { notes.push('删了刚发的说说'); lastQzone = null; writeQzoneState(null) }
       continue
     }
 
