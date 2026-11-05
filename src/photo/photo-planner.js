@@ -27,6 +27,12 @@ const HINTS = [
   { re: /(自拍|前置|举着手机|镜头对着自己|看镜头|正脸|脸对镜头)/, mode: 'front_selfie' },
   // 第一人称（俯拍、只有手、桌面、食物）
   { re: /(俯拍|第一人称|手上|手里|桌面|碗里|锅里|台面|脚下|视线里|眼前)/, mode: 'first_person' },
+  /*
+   * ★ 「低头看东西」= 第一人称（2026-11-05）：
+   *   实测「坐在床边看漫画」被判成前置自拍 → 提示词写"镜头朝自己" → 画成第三人称全身照。
+   *   看书/看漫画/看手机/翻页这类，视线落在手里的东西上，本来就该是第一人称。
+   */
+  { re: /(看漫画|看书|翻书|翻页|翻着|低头看|看着书|手上的书|手里的书|刷手机|看手机|翻手机)/, mode: 'first_person' },
   // 拍某个东西（后置）
   { re: /(拍下|拍张照|拍一张|拍给你看|记录一下|给你看这个)/, mode: 'rear_selfie' },
 ]
@@ -40,7 +46,7 @@ const SLOT_BIAS = {
   morning: ['first_person', 'front_selfie'],
   noon: ['first_person', 'front_selfie'],
   afternoon: ['front_selfie', 'first_person'],
-  evening: ['front_selfie', 'first_person'],
+  evening: ['first_person', 'front_selfie'],
   night: ['first_person', 'front_selfie'],
 }
 
