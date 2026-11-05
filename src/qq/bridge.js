@@ -3304,6 +3304,8 @@ export class QQBridge {
     const now = Date.now()
     // ★ 用户开口了 → 取消「10 秒没动静」的场景续写，并把连写次数清零
     this._cancelSceneContinue(msg.scope)
+    // ★ 有人说话了 → 冷场兜底的定时器也作废
+    this._cancelDeadAir(msg.scope)
     if (this._sceneState) this._sceneState.set(String(msg.scope ?? ''), { turns: 0 })
 
     // 0. 这条是不是**在回复我**？
@@ -3521,6 +3523,8 @@ export class QQBridge {
       }
       this.stats.silent++
       this._record(msg, d, null, 'silent')
+      // ★ 判了沉默之后：群里如果 8 秒没人接，她补一句（否则场子就冷了）
+      this._armDeadAir(msg, mem, scene, self)
       // 即使不说话，也可以趁机更新长期记忆
       this._maybeSummarize(msg.scope, mem, scene)
       return
@@ -4949,6 +4953,74 @@ export class QQBridge {
       if (st.turns < this._sceneContinueCfg().maxTurns) this._armSceneContinue(msg, mem, scene, self)
     } catch (e) {
       this.log.warn?.(`bridge/scene：续写失败 — ${String(e?.message ?? e).slice(0, 80)}`)
+    }
+  }
+
+  /* ── 冷场兜底（群）────────────────────────────────────────── */
+
+  /** 配置：reply.deadAir = { enabled, delayMs, minGapMs }（缺省 8s / 5min）。 */
+  _deadAirCfg() {
+    const c = this.cfg.reply?.deadAir ?? {}
+    return {
+      enabled: c.enabled !== false,
+      delayMs: Number(c.delayMs) || 8_000,
+      minGapMs: Number(c.minGapMs) || 300_000,
+    }
+  }
+
+  _cancelDeadAir(scope) {
+    const key = String(scope ?? '')
+    const t = this._deadAirTimers?.get(key)
+    if (t) { try { clearTimeout(t) } catch { /* ignore */ } ; this._deadAirTimers.delete(key) }
+  }
+
+  _armDeadAir(msg, mem, scene, self) {
+    const c = this._deadAirCfg()
+    if (!c.enabled) return
+    if (String(msg?.kind ?? '') !== 'group') return
+    const scope = String(msg?.scope ?? '')
+    if (!this._deadAirTimers) this._deadAirTimers = new Map()
+    if (!this._deadAirLastAt) this._deadAirLastAt = new Map()
+    const last = this._deadAirLastAt.get(scope) ?? 0
+    if (Date.now() - last < c.minGapMs) return
+    this._cancelDeadAir(scope)
+    const baseAt = Number(msg?.at ?? Date.now())
+    const timer = setTimeout(() => {
+      this._deadAirTimers?.delete(scope)
+      // 这期间有人说话了 → 场子没冷，不用她补
+      const lastMsg = (mem?.recent?.(1) ?? [])[0]
+      if (lastMsg && Number(lastMsg.at ?? 0) > baseAt) return
+      this._deadAirLastAt.set(scope, Date.now())
+      void this._deadAirSpeak({ msg, mem, scene, self })
+    }, c.delayMs)
+    timer.unref?.()
+    this._deadAirTimers.set(scope, timer)
+  }
+
+  async _deadAirSpeak({ msg, mem, scene, self }) {
+    try {
+      const note = '## 冷场了\n'
+        + '刚才那句没人接，群里静下来了。你**接一句短的**，把这口气续上：\n'
+        + '- 顺着刚才最后一句往下说，别另起话题；\n'
+        + '- 一两句、口语，可以带一个很短的动作/情绪；\n'
+        + '- 如果刚才那句是别人的私事、工作汇报或者争吵，就别硬接，回 [SILENT]。'
+      const gen = await this._generate(msg, mem, scene, self, null, note)
+      const text = String(gen?.text ?? '').trim()
+      if (!text || /^\s*\[SILENT\]\s*$/i.test(text)) return
+      await this._send(msg, text, gen?.cover ?? null)
+      this.stats.replied++
+      mem.push(makeMessage({
+        sender: this.selfId ?? '0',
+        senderName: this.selfName,
+        text: msg.__sentText ?? text,
+        at: Date.now(),
+        isMe: true,
+        provider: this._lastRoute?.provider ?? null,
+        model: this._lastRoute?.model ?? null,
+      }))
+      this.log.info?.(`bridge/deadair：沉默后 8 秒没人接 → 她补了一句「${text.slice(0, 60)}」`)
+    } catch (e) {
+      this.log.warn?.(`bridge/deadair：补话失败 — ${String(e?.message ?? e).slice(0, 80)}`)
     }
   }
 
