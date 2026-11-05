@@ -41,3 +41,6 @@ docs/icon-candidates/
 # Python 编译缓存（asr.py 跑完会生成）
 __pycache__/
 *.pyc
+
+# 调试脚本/临时产物（不进仓库）
+_scratch/

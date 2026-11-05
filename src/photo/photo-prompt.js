@@ -1,0 +1,137 @@
+/**
+ * 提示词组装（photo-prompt）
+ *
+ * v2.0 方案第六条：把原来的单一模板拆成五个模块，**每个模块只说自己那件事**，
+ * 不重复描述同一特征（重复 = 模型被多份描述互相拉扯）。
+ *
+ *   模块一 人物身份  —— 脸/发/饰品/比例（有参考图时只说"照参考图"）
+ *   模块二 生活状态  —— 时间/天气/服装/头发/情绪
+ *   模块三 摄影方案  —— 拍摄者/设备/相机位置/角度/构图
+ *   模块四 场景与动作 —— 在哪、做什么、手怎么动、视线落哪、周围有什么
+ *   模块五 摄影质量  —— 真实手机摄影质感
+ * 最后附【禁止】。
+ */
+
+import { FRAMINGS } from './photo-composer.js'
+import { renderExpression } from './photo-expression.js'
+
+/**
+ * @param {object} o
+ * @param {object} o.plan       已经过 validator 修正的方案
+ * @param {object} o.framing    composeFraming 的输出
+ * @param {string} o.scene      场景原话（她写的，只当"动作+环境"用）
+ * @param {string} [o.outfit]
+ * @param {string} [o.hair]
+ * @param {string} [o.weather]
+ * @param {string} [o.mood]
+ * @param {string} [o.continuity] 连续性说明
+ * @param {boolean} [o.hasRef]  这次带不带人物参考图
+ * @param {boolean} [o.anime]   插画档
+ * @param {object} [o.character] { faceRef, bodyRef } 参考图文件名（只用于说明"照哪张"）
+ * @returns {string} 完整提示词
+ */
+export function composePhotoPrompt(o = {}) {
+  const {
+    plan = {}, framing = {}, scene = '', outfit = '', hair = '', weather = '', mood = '',
+    continuity = '', hasRef = false, anime = false, character = {}, expression = null,
+  } = o
+
+  const parts = []
+
+  /* ── 模块五（风格先声明，模型最先吃到的调性）──────────────── */
+  if (anime) {
+    parts.push(`【画风】高质量日系二次元插画：清透柔和的蓝白色调，细腻干净的线稿，
+柔和自然的光影，真实布料质感与自然褶皱，避免厚重油腻的厚涂。`)
+  } else {
+    parts.push(`【画风】真实生活摄影：手机随手拍的自然质感，自然光与真实环境光，
+合理的景深与透视，轻微生活噪点；不要插画感、不要3D渲染、不要影棚摆拍感。`)
+  }
+
+  /* ── 模块一：人物身份 ─────────────────────────────────────── */
+  if (hasRef) {
+    /*
+     * 有参考图时**只说"照参考图"**：文字重述外貌会覆盖参考图
+     * （实测：写"两侧对称两只鳍形耳饰"→ 模型拿这句话重画，脸就变了）。
+     */
+    const isFullBody = plan.mode !== 'front_selfie' && plan.mode !== 'mirror_selfie'
+    const which = '参考图'
+    parts.push(`【人物】保持${which}里**这个人${isFullBody ? '的脸和身形' : '的头部特征'}完全不变**：
+脸型与五官比例、眼睛颜色、蓝色长卷发与齐刘海、头顶正中那缕呆毛、
+白色蕾丝女仆头饰、耳侧那对深蓝配白的装饰。
+身形比例也照参考图：身高 165cm、头身比 7.8、肩宽 33cm（窄肩薄背、自然斜肩）、
+胸 82（A~B）／腰 58／臀 85、上臂围 21cm、手腕 13cm、腿直不 O 型。
+**不要重新设计人物，也不要照搬参考图里的姿势和背景。**`)
+  } else if (plan.needsCharacterRef === false) {
+    /* 第一人称/拍物：人不在画面或只露手，不写外貌 */
+    parts.push(`【人物】她本人基本不在画面里（或只出现手/手臂）。
+如果要出现手：手指修长、指节清楚，指甲短而平整（不涂甲油），皮肤偏白有真实质感。`)
+  } else {
+    /* 没有参考图（异常情况）：退回文字描述，至少别画成路人 */
+    parts.push(`【人物】十八九岁的中国女孩子：脸型柔和、下颌线清楚（不要法令纹、不要眼袋）；
+棕色瞳孔；**蓝色长卷发**（发根深蓝渐变到浅蓝、齐刘海、头顶一缕呆毛、过腰）；
+白色蕾丝女仆头饰（一侧蓝蝴蝶结）；耳侧各一组深蓝配白的鳍形装饰（戴上去的饰品，不是长出来的鳍）。
+身高 165cm、头身比 7.8、窄肩薄背、四肢纤细、腿直。`)
+  }
+
+  /* ── 模块二：生活状态 ─────────────────────────────────────── */
+  const life = []
+  if (weather) life.push(`天气：${weather}`)
+  if (mood) life.push(`心情：${mood}`)
+  if (outfit) life.push(`今天穿着：${outfit}（服装完全按这句，从头发到鞋跟，不要另设计）`)
+  if (hair) life.push(`今天的头发：${hair}`)
+  if (life.length) parts.push(`【生活状态】\n${life.join('\n')}`)
+
+  /* ── 模块三：摄影方案（这是 v2.0 的核心）─────────────────── */
+  const shot = [
+    `拍摄者：${plan.shooter}`,
+    `设备：${plan.device}`,
+    `相机位置：${plan.camera}`,
+    `视角高度：${framing.cameraAngle ?? '平视'}`,
+    `构图：${framing.desc ?? '半身'}`,
+    `视线：${plan.look}`,
+  ]
+  if (plan.hidePhone) shot.push('手机不出现（不要画出手机）')
+  parts.push(`【摄影方案】
+${shot.join('\n')}
+${(plan.rules ?? []).map((r) => '- ' + r).join('\n')}
+${(framing.notes ?? []).map((n) => '- ' + n).join('\n')}
+⚠️ **线上陪伴关系**：她在自己家、用**自己的手机**拍，然后发到 QQ 上。
+- **不要虚构现实中的朋友、家人或摄影师**，画面里只有她一个人。
+- **不要假设他在她身边**，也不要生成"从他的视角"拍的照片。
+- 他说"帮你拍/我给你拍"也不代表见面 —— 她只能自拍、对镜拍、架机拍。
+- 要看她的样子，就靠**前置自拍 / 镜子自拍 / 视频通话**这三条路，不靠第三个人。`)
+
+  /* ── 模块四·五：表情与肢体（2026-11-05 加）────────────────── */
+  if (expression && expression.face) {
+    parts.push(renderExpression(expression))
+  }
+
+  /* ── 模块四：场景与动作 ───────────────────────────────────── */
+  /*
+   * ⚠️ 场景原话**只当"动作+环境"用**：
+   * 她经常在场景里写外貌（"蓝黑色长发""只露侧脸"），那会覆盖参考图。
+   */
+  parts.push(`【画面】只管"她在做什么 + 周围有什么 + 光线氛围"
+${scene}
+${continuity ? '\n' + continuity : ''}
+⚠️ 上面这句里如果出现描写她**外貌**的词（发色、发型、头饰、首饰、"蓝黑色长发""只露侧脸"之类），
+**一律作废、不要照画** —— 长相/发色/头饰/耳饰以参考图和【人物】为准。`)
+
+  /* ── 禁止 ───────────────────────────────────────────────── */
+  const bans = [
+    '第三个人 / 现实中的朋友 / 摄影师（她是独居线上陪伴，画面里只有她）',
+    '多余手指、畸形手掌、重复肢体',
+    '水印、文字、界面截图',
+    '二次元/Q版/低龄化（写实档）',
+    '拼贴感：头像贴到另一个身体上、双重打光、局部清晰度不一致',
+  ]
+  if (plan.mode !== 'mirror_selfie') bans.push('镜面反射（这一张没有镜子）')
+  if (plan.hidePhone) bans.push('手机')
+  if (plan.needsCharacterRef === false) bans.push('她自己的完整脸部')
+  if (!framing.feet) bans.push('完整双脚（这一张不拍脚）')
+  parts.push(`【禁止】\n${bans.map((b) => '- ' + b).join('\n')}`)
+
+  parts.push(`【输出】竖版 9:16，单张。`)
+
+  return parts.join('\n\n')
+}

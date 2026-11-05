@@ -39,6 +39,9 @@ import { applyQuestionOverride } from './questionGate.js'
 import { shouldAnswerSticker } from './stickerGate.js'
 import { StickerTagStore, stickerKey, splitTags } from './sticker-tags.js'
 import { extractQQMarkers, runQQMarkers, buildEmojiHint } from './qqActions.js'
+import { generateImage, cropBottom, eraseCornerWatermark } from './mcpImage.js'
+/* 摄影决策链（v2.0）：规划 → 校验 → 构图 → 提示词，见 src/photo/ */
+import { planShot, describeShot } from '../photo/index.js'
 import { hasBiliLink, resolveBvid, fetchVideoInfo, fetchTopComments, fetchDanmaku, fetchAudioCandidates, downloadAudio, formatVideoContext } from './bilibili.js'
 import { transcribeVideoCached, transcribeVideoDetailed } from './asr.js'
 // 梗百科 —— 本地词库（零成本），联网查梗之前先走它；没收录才放行联网
@@ -1160,6 +1163,21 @@ export function stripWaitMarkers(text) {
   })
   // 末尾残缺的约定标记 → 删掉（口径同 repairTruncatedMarkers）
   s = s.replace(/\[等[:：]?\s*\d{0,3}\s*$/, '')
+  /*
+   * ★ **所有内容标记一律剥掉**（2026-11-05 实测漏了）。
+   *
+   * 事故：主动续写（`_sceneContinue`）直接 `_send(text)`，没走标记剥离，
+   * 结果她把自己要用的生图提示词整段念了出来：
+   *   「[画图:侧躺在灰床单上，被子拉到腿边，房间里只开着一盏小灯…]」
+   *
+   * 这里放在**发送漏斗**里（每条出站路径都经过），
+   * 正常回复 / 主动续写 / 主动发言 / B 站补发都不会再漏。
+   * 只剥"标记 + 内容"，不影响正常文字。
+   */
+  const MARKER_RE = /[\[［]\s*(画图|场景图|插画|签名|改标签|表情|表情包|戳一戳|等)\s*[:：][^\]］]*[\]］]/g
+  s = s.replace(MARKER_RE, '')
+  // 残缺的（没有右括号）也从标记处截断
+  s = s.replace(/[\[［]\s*(画图|场景图|插画)\s*[:：][^\]]*$/, '')
   return { text: s, waits }
 }
 
@@ -2071,16 +2089,6 @@ export class QQBridge {
     if (!groupId) return undefined
     if (!this._groupNames) this._groupNames = new Map()
     const now = Date.now()
-    /*
-     * ★ 超过 2 分钟才轮到的消息**直接丢**（2026-11-05）：
-     *   实测有 598s / 2998s 才回一句的，那是积压或补历史残留 ——
-     *   隔这么久再回，对方早忘了自己在说什么。
-     */
-    if (Number(msg.at) && Date.now() - Number(msg.at) > 120_000) {
-      this.stats.silent++
-      this._record(msg, { reply: false, probability: 0, provider: 'stale-age', reason: '超过 2 分钟才轮到 → 丢弃' }, null, 'stale')
-      return
-    }
     const hit = this._groupNames.get(String(groupId))
     if (hit && now - hit.at < 600000) return hit.name
 
@@ -3316,6 +3324,23 @@ export class QQBridge {
      * 把延迟的差别淹没了 —— 用户反馈「随机时间感觉没生效」。
      */
     const tStart = Date.now()
+    /*
+     * ★ **超过 2 分钟才轮到的消息直接丢**（2026-11-05）。
+     *
+     * 实测有 598s / 2998s 才回一句的 —— 那是积压、排队或者补历史残留。
+     * 隔这么久再回，对方早忘了自己在说什么，回一句反而像诈尸。
+     *
+     * ⚠️ 这段原来被错放进了 `groupName(groupId)` 里（那里根本没有 `msg`）——
+     *    结果是**每条群消息都抛 `msg is not defined`**，群里彻底不回话
+     *    （2026-11-05 15:0x 用户报「群里现在不回消息了」）。
+     *    位置必须在这里：`_handle` 开头，`msg` 在作用域里。
+     */
+    if (Number(msg.at) && Date.now() - Number(msg.at) > 120_000) {
+      this.stats.silent++
+      this._record(msg, { reply: false, probability: 0, provider: 'stale-age', reason: '超过 2 分钟才轮到 → 丢弃' }, null, 'stale')
+      this.log.info?.(`bridge：${msg.scope} 这条已经过了 ${Math.round((Date.now() - Number(msg.at)) / 1000)} 秒 → 丢弃（积压/补历史）`)
+      return
+    }
     const mem = this.memory.get(msg.scope)
     const now = Date.now()
     // ★ 用户开口了 → 取消「10 秒没动静」的场景续写，并把连写次数清零
@@ -3539,7 +3564,7 @@ export class QQBridge {
       }
       this.stats.silent++
       this._record(msg, d, null, 'silent')
-      // ★ 判了沉默之后：群里如果 8 秒没人接，她补一句（否则场子就冷了）
+      // ★ 判了沉默之后：群里如果 10 秒没人接，她补一句（否则场子就冷了）
       this._armDeadAir(msg, mem, scene, self)
       // 即使不说话，也可以趁机更新长期记忆
       this._maybeSummarize(msg.scope, mem, scene)
@@ -3641,7 +3666,29 @@ export class QQBridge {
     let text
     let cover = null
     try {
-      const gen = await this._generateGuarded(msg, mem, scene, self, seq)
+      /*
+       * ★ **他在要画面**（2026-11-04）：私聊里「我看看 / 什么样子 / 你在干嘛」
+       * 一律当成求图，逼她用 [画图:] 回答 —— 光靠常驻规则她不听，
+       * 实测连着两条都是纯文字描述（22:30、22:53）。
+       * 群里不加这条：一张图二十多秒，群里等不起。
+       */
+      const wantsPicture = String(msg.scope ?? '').startsWith('private')
+        && /(看看|看一下|什么样|长什么样|在干嘛|在做什么|在干什么|拍一张|拍张)/.test(String(msg.text ?? ''))
+      const picNote = wantsPicture
+        ? '★ 他这条是在**要画面**（看看 / 什么样子 / 你在干嘛）。这一轮**必须**用 '
+          + '[画图:一句话描述画面] 回答，**不要用文字描述** —— 文字他已经会问了。\n'
+          + '画面内容按你「今天的安排」里**当前这一档**在做的事来（见上面那段日程）。\n'
+          + '⚠️ 这一轮**必须发图**，三个标记选一个：'
+          + '· [画图:描述] —— **照片**，画面里有你，走背影 / 过肩 / 侧后方的自然构图，别正面拍头；'
+          + '· [场景图:描述] —— **照片**，只拍眼前的东西，画面里没有人；'
+          + '· [插画:描述] —— **日系插画**那一档，只有他明确要"画一张/二次元的"才用。\n'
+          + '不要用文字描述，文字他已经会问了。\n'
+          + '⚠️ **画面里不要出现手机**（这张就是你手机拍的，拍不到它自己）；'
+          + '日程是"玩手机/看屏幕"的话，就拍桌上、腿上、窗前别的东西。\n'
+          + '⚠️ 他要「看看你本人 / 你的脸」也不画脸（画出来不像你，反而更假）——'
+          + '用文字或一张 POV 图带过，别硬画人像。'
+        : ''
+      const gen = await this._generateGuarded(msg, mem, scene, self, seq, null, picNote)
       // ⚠️ 生成途中就已经过时了 —— 不再往下走（见 `_generateGuarded`）
       if (gen?.__stale) {
         this.stats.superseded = (this.stats.superseded ?? 0) + 1
@@ -3795,6 +3842,208 @@ export class QQBridge {
      * ⚠️ 找图失败**不影响文字回复**：图是锦上添花，
      *    失败了就只发文字，绝不因此整条不发。
      */
+    /*
+     * ── 3c. 画图（`[画图:描述]`）（2026-11-04）──────────────────
+     *
+     * 走 Magpie 的 MCP 工具（`generate_image`），一次约 20 秒。
+     * 只能出图、不能出视频（那是另一条工具，先不做）。
+     * 失败只 warn —— 和"找图"同理：图是锦上添花，绝不能因此丢文字。
+     */
+    let drawnImage = null
+    {
+      const re = /[\[［]\s*画图\s*[:：]\s*([^\]］]+?)\s*[\]］]/g
+      /*
+       * `[场景图:描述]` —— **不出人的纯场景**（2026-11-05 加）。
+       * 生活照不该每张都把自己塞进去：吃饭可以只拍桌子，
+       * 而且纯场景永远不会有"假发感/多一只手"这些风险。
+       */
+      const reScene = /[\[［]\s*场景图\s*[:：]\s*([^\]］]+?)\s*[\]］]/g
+      /*
+       * `[插画:描述]` —— **这一张走日系插画风**（2026-11-05 加）。
+       * 用户原话「photo 和 anime 分开」：写实模型画 cosplay 造型会漂，
+       * 干脆让她自己挑 —— 想要二次元效果就用这个标记，其余一律照片。
+       */
+      const reIll = /[\[［]\s*插画\s*[:：]\s*([^\]］]+?)\s*[\]］]/g
+      const hitScene = reScene.exec(text)
+      const hitIll = hitScene ? null : reIll.exec(text)
+      const hit = hitScene ?? hitIll ?? re.exec(text)
+      const sceneOnly = Boolean(hitScene)
+      const forceAnime = Boolean(hitIll)
+      if (hit) {
+        text = text.replace(hitScene ? reScene : (hitIll ? reIll : re), '').replace(/[ \t]{2,}/g, ' ').trim()
+        if (this.cfg.actions?.draw === false) {
+          this.log.info?.('bridge：画图被开关关掉了（qq.actions.draw = false）')
+        } else {
+          this.log.info?.(`bridge：画图「${String(hit[1]).slice(0, 40)}」`)
+          /*
+           * ★ **垫场**（2026-11-05）：画图要 30 秒上下，别让人干等。
+           *   这里先发一句短的，图出来后再随正文一起发。
+           *   ⚠️ 垫场失败绝不能影响画图本身（图才是主角）。
+           */
+          try {
+            const FILLERS = [
+              '等着，本鱼这就拍一张。',
+              '别催，正找角度呢。',
+              '行，这就来一张，你先坐会儿。',
+              '咔嚓一声的事，等会儿。',
+            ]
+            const filler = FILLERS[Math.floor(Math.random() * FILLERS.length)]
+            await this._send(msg, filler)
+            this.log.info?.(`bridge：画图垫场「${filler}」`)
+          } catch (e) {
+            this.log.warn?.(`bridge：画图垫场失败（不影响画图）— ${String(e?.message ?? e).slice(0, 60)}`)
+          }
+          /*
+           * ★ **画面跟今日日程对齐**（2026-11-04 用户提的「和每日计划日志联动」）。
+           *
+           * 她要画「我现在的样子」时，别凭空编 —— 当前时段她在做什么，
+           * day-plan.json 里写着（例如晚上：煮了番茄土豆汤、坐在桌边）。
+           * 把这一档拼进画图描述，图和日程就一致了；不然图里她在看书、
+           * 日程说她在做饭，下一轮她自己都对不上。
+           */
+          const slotText = (() => {
+            try {
+              const plan = this.dayPlan?.today?.()
+              const v = plan?.[currentSlot().id]
+              return v ? String(v).replace(/\s+/g, ' ').slice(0, 70) : ''
+            } catch { return '' }
+          })()
+          /*
+           * ★ **今天穿什么**（2026-11-05 加）。
+           *
+           * day-plan 里多了 `outfit` 字段，写着今天在家穿的一身。
+           * 生图时把它拼进角色段 —— 服装有据可依，不会每次现编，
+           * 也跟她聊天时说的话对得上（renderDayPlan 会把同一句给她看）。
+           */
+          /** 生图渠道（独立配置，见 config.store.js 的 qq.image）。 */
+          const imgCfg = this.cfg?.image ?? {}
+          const outfitText = (() => {
+            try {
+              const v = this.dayPlan?.today?.()?.outfit
+              return v ? String(v).replace(/\s+/g, ' ').slice(0, 120) : ''
+            } catch { return '' }
+          })()
+          /** 今天头发怎么弄的（2026-11-05 加）—— 发型是生图里最容易漂的一项。 */
+          const hairText = (() => {
+            try {
+              const v = this.dayPlan?.today?.()?.hair
+              return v ? String(v).replace(/\s+/g, ' ').slice(0, 40) : ''
+            } catch { return '' }
+          })()
+          /*
+           * ★ 摄影决策链（v2.0 · 2026-11-05）：
+           * 先规划（谁在拍/用什么/相机在哪）→ 校验物理可行性 → 决定构图 → 组装提示词。
+           * 逻辑全在 src/photo/，这里只调用。
+           */
+          const shot = planShot({
+            scene: String(hit?.[1] ?? '').trim(),
+            slot: currentSlot().id,
+            outfit: outfitText,
+            hair: hairText,
+            weather: (() => { try { return String(this.dayPlan?.today?.()?.weather ?? '') } catch { return '' } })(),
+            mood: (() => { try { return String(this.dayPlan?.today?.()?.mood ?? '') } catch { return '' } })(),
+            request: String(msg.text ?? ''),
+            scope: msg.scope ?? '',
+            sceneOnly: Boolean(hitScene),
+            anime: Boolean(hitIll),
+            imageCfg: imgCfg,
+          })
+          if (shot.skip) {
+            this.log.info?.(`bridge：这一轮不画（${shot.skipReason}）`)
+            return
+          }
+          this.log.info?.(`bridge：拍摄方案 → ${describeShot(shot)}`)
+          const drawPrompt = shot.prompt
+          const useRefPath = shot.refImage
+          const r = await generateImage({
+            prompt: drawPrompt,
+            /*
+             * 生图走**独立渠道**（`qq.image`，2026-11-05）——
+             * 不再写死 endpoint / 比例 / 分辨率，换服务商只改配置。
+             */
+            url: imgCfg.url,
+            /*
+             * 两条通道都从这里分发（见 mcpImage.generateImage）：
+             *   magpie-mcp    → MCP 工具
+             *   openai-images → POST /v1/images/generations
+             */
+            provider: imgCfg.provider ?? 'magpie-mcp',
+            baseUrl: imgCfg.baseUrl,
+            apiKeyEnv: imgCfg.keyEnv,
+            model: imgCfg.model,
+            /*
+             * 全身照要**更高的画布**（2026-11-05 实测）：
+             * 脚在画面最底部，普通 9:16 裁底会连脚带拖鞋一起切掉；
+             * 生成 1024x2048（更长），只裁 6% 去大半水印，剩下的角落再擦 —— 脚能保住。
+             */
+            size: shot.framingInfo?.feet ? (imgCfg.size || '1024x2048') : imgCfg.size,
+            /* 头部基准图：填了就改走 images/edits，长相固定（见 config 的 qq.image.refImage） */
+            refImage: useRefPath,
+            aspect: imgCfg.aspect ?? '9:16',
+            resolution: imgCfg.resolution ?? '2K',
+            /*
+             * ⚠️ **不再带基准图**（2026-11-04 用户定：只保留日常）。
+             * 基准图本来是给"画房间"用的，而房间那一档已经砍掉；
+             * 而且 OSS 链接几小时就过期，留着只会偶尔拖慢/失败。
+             */
+            log: this.log,
+          })
+          if (r.ok) {
+            /*
+             * ⚠️ **先把图下下来，再用 base64 发**（2026-11-04 实测踩到）。
+             *
+             * 直接把这个 OSS 链接交给 NapCat 发，它的 sendMsg 会**超时**：
+             * ```
+             * 23:03:48 HTTP send_private_msg 失败 — This operation was aborted
+             * 23:04:02 image 段发送失败 — retcode 1200
+             *          Timeout: NTEvent serviceAndMethod:NodeIKernelMsgService/sendMsg
+             * ```
+             * 因为协议端要自己去拉那个外链（阿里云，还是签名 URL），
+             * 拉不动就整条图消息失败 —— 最后她一个字都没发出去。
+             * 自己下完再转 base64，协议端就不用联网了（「找图」那条一直是这么干的）。
+             */
+            let file = r.url
+            try {
+              const resp = await fetch(r.url, { signal: AbortSignal.timeout(25000) })
+              if (resp.ok) {
+                let buf = Buffer.from(await resp.arrayBuffer())
+                /*
+                 * ★ **裁掉右下角水印**（2026-11-05 用户定）。
+                 * 那行「MiniMax AI 生成」是平台烧进像素的，提示词去不掉。
+                 * 生成时故意用 9:16（比最终要的高），裁掉底部 10% 后仍是竖屏。
+                 * 裁图失败就原样发 —— 绝不能因为裁图把整条图丢了（见 cropBottom）。
+                 */
+                if (buf.length > 1024 && buf.length < 8 * 1024 * 1024) {
+                  /*
+                   * **全身照：只裁 6% + 擦角落**（2026-11-05 实测最稳的组合）。
+                   *  - 画面生成时用 1024x2048（更长），所以裁 6% 还剩下脚上方的空间；
+                   *  - 剩下一点水印残影用 eraseCornerWatermark 盖掉（补丁只有 14%×3.2%，看不出来）。
+                   * 半身以内仍走原来的 cropBottom（那条 10% 的裁法对全身会把脚切掉）。
+                   */
+                  if (shot.framingInfo?.feet) {
+                    buf = await cropBottom(buf, 0.06, this.log)
+                    buf = await eraseCornerWatermark(buf, this.log)
+                  } else {
+                    buf = await cropBottom(buf, Number(imgCfg.cropBottom ?? 0.1), this.log)
+                  }
+                  file = `base64://${buf.toString('base64')}`
+                  this.log.info?.(`bridge：生成图已下载 ${Math.round(buf.length / 1024)}KB，按 base64 发`)
+                } else {
+                  this.log.warn?.(`bridge：生成图大小异常（${buf.length} 字节）`)
+                }
+              }
+            } catch (e) {
+              this.log.warn?.(`bridge：下载生成图失败（仍按 URL 发）— ${String(e?.message ?? e)}`)
+            }
+            drawnImage = { url: file }
+            this.log.info?.(`bridge：画好了（${Math.round(r.ms / 1000)}s）`)
+          } else {
+            this.log.warn?.(`bridge：画图失败 — ${r.error}`)
+          }
+        }
+      }
+    }
+
     let findImage = null
     if (this.cfg.reply?.findImage !== false) {
       const marks = extractFindImageMarkers(text)
@@ -4120,7 +4369,7 @@ export class QQBridge {
       // 能直接收 URL，也能收 base64，但 URL 更省带宽。
       const coverForSend = findImage
         ? { url: `base64://${findImage.buffer.toString('base64')}` }
-        : cover
+        : (drawnImage ?? cover)
       // 禁言结果附一句说明 —— 当事人得知道发生了什么，别偷偷摸摸的。
       // 没写正文（只给了标记）时，就用这句当正文。
       if (banNote || nickNote || tagNote || qqNotes.length > 0) {
@@ -4556,6 +4805,10 @@ export class QQBridge {
         skip: /主意|想法|计划|行程/,
       },
       { kind: 'recall', need: 'recall', re: /(已经)?撤回了/ },
+      /*
+       * 空间（2026-11-05）：说"发了"但这一轮没跑 [说说] → 谎报；
+       * 说"图带上了/挂上去了"但发出去的那条没图 → 也是谎报。
+       */
       { kind: 'qzone', need: 'qzone', re: /发(空间|说说)(了|好|出去)|说说(发好|发出)了|已经发了/ },
       { kind: 'qzoneImg', need: 'qzoneImage', re: /(图|图片)[^。！？\n]{0,8}(带上|挂上|传上|塞进|放上)(了|去)/ },
       { kind: 'qzoneDel', need: 'qzoneDel', re: /(说说|空间)[^。！？\n]{0,8}(删|撤)(掉|了|好了)/ },
@@ -4889,7 +5142,7 @@ export class QQBridge {
 
   /* ── 场景续写（私聊暧昧）─────────────────────────────────────── */
 
-  /** 配置：reply.sceneContinue = { enabled, delayMs, maxTurns }（缺省 5 秒 / 2 次）,）。 */
+  /** 配置：reply.sceneContinue = { enabled, delayMs, maxTurns }（缺省 5 秒 / 2 次）。 */
   _sceneContinueCfg() {
     const c = this.cfg.reply?.sceneContinue ?? {}
     return {
@@ -4937,13 +5190,18 @@ export class QQBridge {
     const userId = scope.slice('private:'.length)
     const timer = setTimeout(() => {
       this._sceneTimers?.delete(scope)
-      // ★ 还在打字就别推进；1.5 秒后再看（QQ 只有「正在输入」推送）
+      /*
+       * ★ 他**还在打字**就别推进（2026-11-04，用户：「没打字 5 秒才推进」）。
+       *   QQ 只推「正在输入」没有停止事件，用 TTL 推：最后一条 input_status
+       *   在 2.5 秒内 → 当他还在写，1.5 秒后再看一次。
+       */
       if (this._isTyping?.(userId, 2500)) {
         this._armSceneContinue(msg, mem, scene, self)
         return
       }
       void this._sceneContinue({ msg, mem, scene, self, st })
     }, cfgS.delayMs)
+    // 别让定时器把进程吊住（DSH 里这是常驻进程，加不加都行；加了更干净）
     timer.unref?.()
     this._sceneTimers.set(scope, timer)
   }
@@ -4972,6 +5230,7 @@ export class QQBridge {
       }))
       st.turns += 1
       this.log.info?.(`bridge/scene：他 10 秒没说话 → 她主动续写（第 ${st.turns} 次）「${text.slice(0, 80)}」`)
+      // 还静着就再排一次（上限 maxTurns），用户一开口就会被取消
       if (st.turns < this._sceneContinueCfg().maxTurns) this._armSceneContinue(msg, mem, scene, self)
     } catch (e) {
       this.log.warn?.(`bridge/scene：续写失败 — ${String(e?.message ?? e).slice(0, 80)}`)
@@ -5989,6 +6248,20 @@ export class QQBridge {
             )
           }
           if (a.recall !== false) lines.push('- 想撤回你刚发出去的那条 → 输出 [撤回]')
+          if (a.draw !== false) {
+            lines.push(
+              '- 他要**看**某个东西、而那东西现实中不存在（你的房间、你现在的样子、'
+              + '你想到的画面、某个场景）→ 三个标记任选：\n'
+              + '  · [画图:一句话描述画面] —— **照片**，画面里有你（背影 / 过肩 / 侧后方，不露脸）；\n'
+              + '    ⚠️ 描述里**只写"你在做什么、周围有什么、什么光线"**，'
+              + '**不要写你的长相、发色、发型、头饰、首饰**（那些已经定死了，写了反而会画错）；\n'
+              + '  · [场景图:一句话描述] —— **照片**，只拍眼前的东西，画面里没有人；\n'
+              + '  · [插画:一句话描述] —— **日系插画**那一档，只有他明确说"画一张 / 二次元的"才用。\n'
+              + '  ⚠️ 反例：他要看**真实存在的东西**（他自己发的截图、照片）→ **别画**，'
+              + '画出来只会露馅。\n'
+              + '  ⚠️ 一轮最多一张，要等二十多秒 —— 别他每说一句"看看"你就画。',
+            )
+          }
           if (a.signature === true) {
             lines.push('- 说「签名改了」→ 必须同时输出 [签名:一句话]')
           }
@@ -6928,6 +7201,17 @@ export class QQBridge {
      * 一处剥干净，就不会有哪条路漏出「[等:5]」这种字面量。
      */
     const wait = stripWaitMarkers(text)
+    /*
+     * ⚠️ **剥完是空的就别发**（2026-11-05 加）。
+     *
+     * 事故现场：她整段输出只有一个 `[画图:…]`，剥掉标记后变成空字符串 ——
+     * 如果照样发出去，聊天里会出现一条空白消息。
+     * 这里直接返回空数组（调用方按"没发出去"处理）。
+     */
+    if (!String(wait.text ?? '').trim()) {
+      this.log.info?.('bridge：剥掉标记后没有正文，这条不发')
+      return []
+    }
     text = wait.text
     /*
      * ⚠️ 把**剥完标记的正文**记到 msg 上，给调用方写记忆用（2026-11-04）。
