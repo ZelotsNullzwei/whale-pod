@@ -245,7 +245,14 @@ export async function runQQMarkers({ items, onebot, msg, mem, cfg = {}, log = {}
       const content = String(it.arg ?? '').trim()
       if (!content) { log.warn?.('qq-actions：说说内容为空，跳过'); continue }
       // ⚠️ 字段名是 content（NapCat 的 payloadSchema 里写的），不是 message
-      const { ok } = await call('send_qzone_msg', { content: content.slice(0, 300), ugc_right: 1 })
+      /*
+       * ⚠️ 带上图（2026-11-05）：他说「把这张发空间」时，图就在这条消息里 ——
+       *    NapCat 的 images 收 http(s)/file/base64，QQ 的图片 URL 直接能用。
+       */
+      const imgs = (Array.isArray(msg?.images) ? msg.images : []).filter(Boolean).slice(0, 9)
+      const payload = { content: content.slice(0, 300), ugc_right: 1 }
+      if (imgs.length) payload.images = imgs
+      const { ok } = await call('send_qzone_msg', payload)
       if (ok) notes.push('发空间了')
       continue
     }
