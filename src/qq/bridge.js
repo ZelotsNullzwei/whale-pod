@@ -4276,6 +4276,37 @@ export class QQBridge {
      * ⚠️ **必须排在 4f 谎报闸之前**：谎报闸要知道"这一轮到底发生了什么"，
      *    签名/撤回也是动作，得先执行再核对。
      */
+    /*
+     * ★ `[发群:内容]` —— 私聊里替她发到群里（2026-11-05）。
+     *   只在私聊生效（群里用这个标记没意义，直接剥掉）。
+     */
+    let crossGroupNote = ''
+    {
+      const reCross = /[\[［]\s*发群\s*[:：]\s*([^\]］]+?)\s*[\]］]/g
+      const hit = reCross.exec(text)
+      if (hit) {
+        text = text.replace(reCross, '').replace(/[ \t]{2,}/g, ' ').trim()
+        if (String(msg.kind ?? '') !== 'private') {
+          this.log.info?.('bridge：[发群] 在群里无意义，已剥掉')
+        } else if (this.cfg.actions?.crossGroup === false) {
+          this.log.info?.('bridge：[发群] 被开关关掉了')
+        } else {
+          const target = this._activeGroupTarget()
+          if (!target) {
+            this.log.warn?.('bridge：[发群] 找不到目标群')
+          } else {
+            try {
+              await this._send(msg, String(hit[1]).trim(), null, target)
+              crossGroupNote = '发群里了'
+              this.log.info?.(`bridge：发群「${String(hit[1]).slice(0, 40)}」→ ${target.groupId}`)
+            } catch (e) {
+              this.log.warn?.(`bridge：发群失败 — ${String(e?.message ?? e).slice(0, 80)}`)
+            }
+          }
+        }
+      }
+    }
+
     let qqNotes = []
     {
       const marks = extractQQMarkers(text)
@@ -4291,6 +4322,7 @@ export class QQBridge {
           // 改签名必须同时带 nickname（协议端 schema 必填），用当前昵称原样传
           selfName: this.selfName,
         })
+        if (crossGroupNote) qqNotes.push(crossGroupNote)
         if (qqNotes.length > 0) this.log.info?.(`bridge：QQ 动作执行了 — ${qqNotes.join('、')}`)
       }
     }
@@ -6271,6 +6303,7 @@ export class QQBridge {
             lines.push('- ⚠️ 别回「我发不了」「图塞不进去」这种话 —— 你有这个能力，写标记就行')
             lines.push('- ⚠️ 空间是**公开**的（好友/访客都看得到）—— 他没提，你别自己发。')
             lines.push('- 他说「删掉刚发的那条说说」→ 输出 [删说说]（只能删最近一条；重启后记不得）')
+            lines.push('- 私聊里他说「去群里说一句/发群里」→ 输出 [发群:那句话]（目标自动取最近活跃的群）')
           }
           if (lines.length === 0) return ''
           return '## 你能做的 QQ 小动作\n'
@@ -7187,7 +7220,27 @@ export class QQBridge {
     return rest || text
   }
 
-  async _send(msg, text, cover = null) {
+  /**
+   * 最近有聊天记录的群（`[发群]` 的目标）。
+   *
+   * 用户原话：「叫她去群里做事」—— 私聊里让她发一句话到群里。
+   * 目标取**最近一条消息最新的群**；一个都没有就返回 null（她要说做不到）。
+   */
+  _activeGroupTarget() {
+    try {
+      const keys = (this.memory?.scopes?.() ?? []).filter((k) => String(k).startsWith('group:'))
+      let best = null
+      for (const k of keys) {
+        const mem = this.memory.get(k)
+        const last = mem?.recent?.(1)?.[0]
+        const at = Number(last?.at ?? 0)
+        if (!best || at > best.at) best = { at, groupId: String(k).slice(6) }
+      }
+      return best?.groupId ? { groupId: best.groupId } : null
+    } catch { return null }
+  }
+
+  async _send(msg, text, cover = null, target = null) {
     const reply = this.cfg.reply ?? {}
     const maxChars = reply.maxChars ?? 500
     /** @type {string[]} */
@@ -7290,9 +7343,12 @@ export class QQBridge {
         payload = [{ type: 'text', data: { text: '' } }, payload[0]]
       }
 
-      const res = msg.kind === 'group'
-        ? await this.onebot.sendGroup(msg.groupId, payload)
-        : await this.onebot.sendPrivate(msg.userId, payload)
+      // ★ target：跨会话发送（私聊里替她发到群里，2026-11-05）
+      const toGroup = target?.groupId ?? (msg.kind === 'group' ? msg.groupId : null)
+      const toUser = target?.userId ?? (msg.kind === 'private' ? msg.userId : null)
+      const res = toGroup
+        ? await this.onebot.sendGroup(toGroup, payload)
+        : await this.onebot.sendPrivate(toUser, payload)
 
       if (res?.status === 'failed' || (typeof res?.retcode === 'number' && res.retcode !== 0)) {
         // 图片发失败（外链失效、被反盗链拦）不影响文字回复已经发出的事实，
