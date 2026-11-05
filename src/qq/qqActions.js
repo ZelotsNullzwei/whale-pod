@@ -142,10 +142,15 @@ const PATTERNS = [
   { id: 'recall', re: /[\[［]\s*撤回\s*[\]］]/g },
   // [说说:内容] —— 发一条 QQ 空间说说（2026-11-05 加）
   { id: 'qzone', re: /[\[［]\s*说说\s*[:：]\s*([^\]］]*)[\]］]/g },
+  // [删说说] —— 删掉她刚发的那条说说（2026-11-05 加）
+  { id: 'qzoneDel', re: /[\[［]\s*删说说\s*[\]］]/g },
 ]
 
+/** 最近一次发出去的说说 tid（[删说说] 用；进程内记忆，重启失效）。 */
+let lastQzone = null
+
 /** 动作键（和 `qq.actions` 的键一一对应）。 */
-export const ACTION_KEYS = ['emojiLike', 'poke', 'signature', 'recall', 'qzone']
+export const ACTION_KEYS = ['emojiLike', 'poke', 'signature', 'recall', 'qzone', 'qzoneDel']
 
 /** 签名长度上限 —— QQ 个人签名本身就短，超了会被截断，不如先拦。 */
 const MAX_SIGNATURE = 40
@@ -267,8 +272,24 @@ export async function runQQMarkers({ items, onebot, msg, mem, cfg = {}, log = {}
       log.info?.(`qq-actions：说说内容「${content.slice(0, 60)}」`)
       const payload = { content: content.slice(0, 300), ugc_right: 1 }
       if (imgs.length) payload.images = imgs
-      const { ok } = await call('send_qzone_msg', payload)
-      if (ok) notes.push('发空间了')
+      const { ok, r } = await call('send_qzone_msg', payload)
+      if (ok) {
+        notes.push('发空间了')
+        const tid = String(r?.data?.tid ?? r?.tid ?? '')
+        if (tid) { lastQzone = { tid, at: Date.now() } }
+      }
+      continue
+    }
+
+    if (it.id === 'qzoneDel') {
+      /*
+       * 删掉**刚发的那条**说说（2026-11-05）。
+       * ⚠️ 这个 NapCat 没有 get_qzone_msg_list，拿不到历史 tid ——
+       *    所以只能删"本轮进程记下的最近一条"，重启后失效。
+       */
+      if (!lastQzone?.tid) { log.warn?.('qq-actions：没有可删的说说（进程内没记到 tid）'); continue }
+      const { ok } = await call('delete_qzone_msg', { tid: lastQzone.tid })
+      if (ok) { notes.push('删了刚发的说说'); lastQzone = null }
       continue
     }
 

@@ -1196,6 +1196,21 @@ export function parseMessage(raw) {
         }
         return '[图片]'
       }
+      /*
+       * ★ `file` 段里的图片也收（2026-11-05）：
+       *    实测他把图当**文件**发过来（`[CQ:file,file=her-head-3vi…]`），
+       *    只认 image 段的话这张图在鲸舱里等于不存在（说说带图 0 张）。
+       */
+      if (type === 'file') {
+        const f = String(data?.file ?? data?.name ?? data?.url ?? '')
+        if (/\.(png|jpe?g|gif|webp|bmp)$/i.test(f) || /image/i.test(String(data?.name ?? ''))) {
+          const u = data?.url ?? data?.file ?? ''
+          if (u) images.push(String(u))
+          return '[图片]'
+        }
+        return '[文件]'
+      }
+
       // 表情包（原创表情）：NapCat 会给 emoji_id / emoji_package_id，
       // 以及（多数情况下）一个可直接下载的 url。当成图片收下来 ——
       // 否则模型只看到 "[表情]"，没法理解对方发了什么。
