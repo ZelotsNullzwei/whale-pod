@@ -2301,6 +2301,17 @@ async function whalePodCompat(o) {  const { sub, method, url, req, res, json, re
         // 活跃天数：真正有消息往来的日子（关机那天不算）。
         // 侧栏右上角「已活跃 N 天」读这个字段。
         activity: state.activity?.stats?.() ?? null,
+        /*
+         * ★ 生成图缓存（2026-11-05）：侧栏「生成图」卡片用它渲染缩略图，
+         *   点开是 /api/whale-pod/images/<key>.png。
+         */
+        images: await (async () => {
+          try {
+            const { ImageCache } = await import('../qq/imageCache.js')
+            const c = new ImageCache({ home: store.home, days: Number(store.get().qq?.actions?.imageCacheDays ?? 3) })
+            return c.list().slice(0, 24)
+          } catch { return [] }
+        })(),
         memory: memory?.stats?.() ?? null,
         // 人物档案：仪表盘「认识的人 · 好感度」读这里（原来只挂在 /memory 上）
         people: state.people?.stats?.() ?? null,
