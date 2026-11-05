@@ -114,6 +114,19 @@ ${(framing.notes ?? []).map((n) => '- ' + n).join('\n')}
     parts.push(renderExpression(expression))
   }
 
+  /*
+   * ★ 洗掉"拍摄设备"那半句（2026-11-05 实测三次翻车）：
+   *   用户说「手机架在茶几上」→ 这句原样进了提示词 → 模型把手机画出来。
+   *   写禁令反而更明显（否定式提示词会召唤物体）。
+   *   做法：**按逗号切段，丢掉含设备词的段**，只留"她在做什么 + 环境"。
+   */
+  const sceneClean = (() => {
+    const raw = String(scene ?? '')
+    const DEVICE = /(手机|相机|平板|支架|三脚架|自拍杆|定时拍|定时摄影|拍摄中)/
+    const kept = raw.split(/[，,。；;]/).map((x) => x.trim()).filter((x) => x && !DEVICE.test(x))
+    const out = kept.join('，').trim()
+    return out || raw
+  })()
   /* ── 模块四：场景与动作 ───────────────────────────────────── */
   /*
    * ⚠️ 场景原话**只当"动作+环境"用**：
@@ -125,7 +138,7 @@ ${(framing.notes ?? []).map((n) => '- ' + n).join('\n')}
      *   实测：场景写「她坐在床边吃饭」，模型就画了第三人称全身照。
      */
     parts.push(`【画面】第一人称：镜头就是她的眼睛，看到的是**她眼前的东西**。
-场景内容：${scene}
+场景内容：${sceneClean}
 ${continuity ? '\n' + continuity : ''}
 ⚠️ **硬性要求（第一人称）**：
 - **画面里不能出现她整个人、也不能出现她的脸** —— 镜头在她眼睛位置，看不到自己。
@@ -136,7 +149,7 @@ ${continuity ? '\n' + continuity : ''}
 ⚠️ 场景里如果出现描写她**外貌**的词，一律作废、不要照画。`)
   } else {
     parts.push(`【画面】只管"她在做什么 + 周围有什么 + 光线氛围"
-${scene}
+${sceneClean}
 ${continuity ? '\n' + continuity : ''}
 ⚠️ 上面这句里如果出现描写她**外貌**的词（发色、发型、头饰、首饰、"蓝黑色长发""只露侧脸"之类），
 **一律作废、不要照画** —— 长相/发色/头饰/耳饰以参考图和【人物】为准。`)
@@ -151,6 +164,15 @@ ${continuity ? '\n' + continuity : ''}
     '拼贴感：头像贴到另一个身体上、双重打光、局部清晰度不一致',
   ]
   if (plan.mode !== 'mirror_selfie') bans.push('镜面反射（这一张没有镜子）')
+  /*
+   * ★ 支架定时拍：手机/支架**绝对不能入画**（2026-11-05 用户指正）。
+   *   手机就是正在拍这张照片的设备，出现在画面里 = 变成第三人称视角。
+   *   写在 mode.rules 里模型不听（实测右下角还是出现手机），所以提到禁令段。
+   */
+  /*
+   * ⚠️ timer_shot **不写"不要手机"**（2026-11-05 实测两次翻车）：
+   *   否定式提示词反而把手机/三脚架召唤出来。改由 photo-modes 的机位描述正面约束。
+   */
   if (plan.hidePhone) bans.push('手机')
   if (plan.needsCharacterRef === false) bans.push('她自己的完整脸部')
   if (!framing.feet) bans.push('完整双脚（这一张不拍脚）')

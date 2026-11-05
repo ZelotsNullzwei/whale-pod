@@ -3880,6 +3880,7 @@ export class QQBridge {
           /*
            * ★ 同一会话 10 分钟内只画一张（2026-11-05）：
            *   用户连发「？」时，她每轮都重画一张（22~28 秒、每次花钱）。
+           *   已经画过就跳过，直接把标记剥掉。
            */
           if (!this._drawRecent) this._drawRecent = new Map()
           const drawKey = String(msg.scope ?? '')
@@ -4059,6 +4060,10 @@ export class QQBridge {
             } catch (e) {
               this.log.warn?.(`bridge：写图片缓存失败 — ${String(e?.message ?? e).slice(0, 60)}`)
             }
+            /*
+             * ★ 生成后审核（2026-11-05）：多手/多指/脸崩 → 重画一次。
+             *   审核那十几秒也要像在拍照 —— 先垫一句"重来一张"。
+             */
             if (this.cfg.actions?.imageReview !== false && finalBuf) {
               try {
                 const small = await shrinkForReview(finalBuf, 640, this.log)
@@ -4073,7 +4078,7 @@ export class QQBridge {
                   this.log.warn?.(`bridge：图不合格（${rv.why || '多手/脸崩'}）→ 重拍一张`)
                   try {
                     await this._send(msg, '刚才那张不行，重来一张。')
-                  } catch { /* ignore */ }
+                  } catch { /* 垫场失败不影响重画 */ }
                   const retry = await generateImage({
                     prompt: drawPrompt,
                     url: imgCfg.url,

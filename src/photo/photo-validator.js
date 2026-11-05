@@ -25,11 +25,15 @@ export function validatePhotoPlan(plan, ctx = {}) {
   const fix = {}
   const text = String(ctx.scene ?? '')
 
-  /* ① 镜子自拍：场景里必须真有镜子 */
-  if (plan.mode === 'mirror_selfie' && !ctx.hasMirror && !/(镜子|照镜子|穿衣镜|镜前|对着镜子|镜子里)/.test(text)) {
-    issues.push({ code: 'no_mirror', msg: '镜子自拍但场景里没有镜子', level: 'high' })
-    fix.mode = 'front_selfie'          // 退成前置自拍（半身以内仍成立）
-    fix.reason = '没有镜子 → 改成前置自拍'
+  /*
+   * ① 镜子：**默认就有**（2026-11-05 用户口径）——
+   *   「要露脸可以通过镜子，大镜子小镜子都可以，女孩子有镜子很正常」。
+   *   所以不再因为"场景里没写镜子"就退成前置自拍（那会让模型画成两条自拍臂+多手）。
+   */
+  if (plan.mode === 'mirror_selfie' && ctx.noMirror === true) {
+    issues.push({ code: 'no_mirror', msg: '明确说了没有镜子', level: 'high' })
+    fix.mode = 'front_selfie'
+    fix.reason = '明确没有镜子 → 改成前置自拍'
   }
 
   /* ③ 视频通话：场景里必须真的在通话，否则退成前置自拍
