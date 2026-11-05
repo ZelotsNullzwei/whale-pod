@@ -244,7 +244,8 @@ export async function runQQMarkers({ items, onebot, msg, mem, cfg = {}, log = {}
        */
       const content = String(it.arg ?? '').trim()
       if (!content) { log.warn?.('qq-actions：说说内容为空，跳过'); continue }
-      const { ok } = await call('send_qzone_msg', { message: content.slice(0, 300) })
+      // ⚠️ 字段名是 content（NapCat 的 payloadSchema 里写的），不是 message
+      const { ok } = await call('send_qzone_msg', { content: content.slice(0, 300), ugc_right: 1 })
       if (ok) notes.push('发空间了')
       continue
     }
