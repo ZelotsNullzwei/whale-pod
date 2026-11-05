@@ -3875,6 +3875,17 @@ export class QQBridge {
         if (this.cfg.actions?.draw === false) {
           this.log.info?.('bridge：画图被开关关掉了（qq.actions.draw = false）')
         } else {
+          /*
+           * ★ 同一会话 10 分钟内只画一张（2026-11-05）：
+           *   用户连发「？」时，她每轮都重画一张（22~28 秒、每次花钱）。
+           */
+          if (!this._drawRecent) this._drawRecent = new Map()
+          const drawKey = String(msg.scope ?? '')
+          const lastDraw = this._drawRecent.get(drawKey) ?? 0
+          if (Date.now() - lastDraw < 600_000) {
+            this.log.info?.('bridge：画图跳过 —— 这个会话 10 分钟内刚画过')
+          } else {
+          this._drawRecent.set(drawKey, Date.now())
           this.log.info?.(`bridge：画图「${String(hit[1]).slice(0, 40)}」`)
           /*
            * ★ **垫场**（2026-11-05）：画图要 30 秒上下，别让人干等。
@@ -4048,6 +4059,7 @@ export class QQBridge {
           } else {
             this.log.warn?.(`bridge：画图失败 — ${r.error}`)
           }
+          }   // ← 10 分钟闸门 else 闭合
         }
       }
     }
@@ -4310,9 +4322,18 @@ export class QQBridge {
                *   不需要额外的 [发群图] 标记。画了图就带图，没画就只发文字。
                */
               const cover = drawnImage ?? null
+              /*
+               * ★ 同一句话 5 分钟内别重发（2026-11-05）：
+               *   用户连发几个「？」时，她每轮都把同一句配文再发一遍。
+               */
+              if (this._groupSendDup(target.groupId, hit[1])) {
+                this.log.info?.(`bridge：发群跳过 —— 「${String(hit[1]).slice(0, 30)}」5 分钟内刚发过`)
+                crossGroupNote = ''
+              } else {
               await this._send(msg, String(hit[1]).trim(), cover, target)
               crossGroupNote = cover ? '发群里了（带图）' : '发群里了'
               this.log.info?.(`bridge：发群「${String(hit[1]).slice(0, 40)}」${cover ? '（带图）' : ''}→ ${target.groupId}`)
+              }
             } catch (e) {
               this.log.warn?.(`bridge：发群失败 — ${String(e?.message ?? e).slice(0, 80)}`)
             }
@@ -7250,6 +7271,23 @@ export class QQBridge {
       this.__imgCache.prune()
     }
     return this.__imgCache
+  }
+
+  /**
+   * 同一个群 5 分钟内发过同样的话 → 不再重发（2026-11-05）。
+   * 实测用户连发「？」时，她每轮都重发一遍同样的配文。
+   */
+  _groupSendDup(groupId, text) {
+    const key = `${groupId}|${String(text ?? '').trim().slice(0, 60)}`
+    const now = Date.now()
+    if (!this._groupSent) this._groupSent = new Map()
+    const at = this._groupSent.get(key) ?? 0
+    if (now - at < 300_000) return true
+    this._groupSent.set(key, now)
+    if (this._groupSent.size > 60) {
+      for (const [k, v] of this._groupSent) if (now - v > 300_000) this._groupSent.delete(k)
+    }
+    return false
   }
 
   _activeGroupTarget() {
