@@ -2708,6 +2708,25 @@ export class QQBridge {
    * 由 `_coalesceInbound` 的定时器触发。
    */
   _flushCoalesce(key) {
+    /*
+     * ★ **去抖：300ms 内同一会话只处理一次**（2026-11-05 修）。
+     *
+     * 现场：日志里同一秒出现两条
+     *   「还在打字 —— 继续等（已等 4s / 上限 20s）」
+     * 说明有**两个 timer 在跑同一份缓冲** —— 一个是被覆盖后没清掉的孤儿
+     * （`_pendingTimers.get(key)` 只清得到 map 里那一个，旧的已经成孤儿）。
+     *
+     * 两个循环各自"继续等"，每个都刷一行日志，看起来就像"被触发了很多次"。
+     * 正常重排是 700ms，所以 300ms 的去抖不会影响它，只挡重复触发。
+     */
+    try {
+      if (!this._lastFlushAt) this._lastFlushAt = new Map()
+      const prev = this._lastFlushAt.get(key) ?? 0
+      const now = Date.now()
+      if (now - prev < 300) return
+      this._lastFlushAt.set(key, now)
+    } catch { /* 记录失败不影响主流程 */ }
+
     const buf = this._pending?.get(key)
     /*
      * ⚠️ **先取缓冲、但别急着删**（2026-10-30 修）。
@@ -4383,11 +4402,32 @@ export class QQBridge {
                * ★ 同一句话 5 分钟内别重发（2026-11-05）：
                *   用户连发几个「？」时，她每轮都把同一句配文再发一遍。
                */
-              if (this._groupSendDup(target.groupId, hit[1])) {
+              /*
+               * ★★ **按次数节流**（2026-11-05 修：光按内容去重不够）。
+               *
+               * 事故现场：他在私聊里说「给他们分享一下你的美颜」，
+               * 她第一轮发群是对的；但接着**每一轮私聊回复都配一句 [发群]**，
+               * 四轮下去群里被刷了四条（内容各不一样，所以内容去重拦不住）。
+               *
+               * 现在：同一个私聊会话 **30 分钟内最多往群里发 1 次**。
+               * 真想说更多，只能等他下一轮明确再要求。
+               */
+              const crossKey = String(msg.scope ?? 'private:?')
+              const lastCross = this._crossGroupAt?.get?.(crossKey) ?? 0
+              const crossGapMs = Number(this.cfg.actions?.crossGroupMinGapMs ?? 30 * 60 * 1000)
+              if (lastCross && Date.now() - lastCross < crossGapMs) {
+                const mins = Math.round((Date.now() - lastCross) / 60000)
+                this.log.info?.(`bridge：发群跳过 —— 这个私聊 ${mins} 分钟前刚发过（间隔要 ${Math.round(crossGapMs / 60000)} 分钟）`)
+                crossGroupNote = ''
+              } else if (this._groupSendDup(target.groupId, hit[1])) {
                 this.log.info?.(`bridge：发群跳过 —— 「${String(hit[1]).slice(0, 30)}」5 分钟内刚发过`)
                 crossGroupNote = ''
               } else {
               await this._send(msg, String(hit[1]).trim(), cover, target)
+              try {
+                if (!this._crossGroupAt) this._crossGroupAt = new Map()
+                this._crossGroupAt.set(crossKey, Date.now())
+              } catch {}
               crossGroupNote = cover ? '发群里了（带图）' : '发群里了'
               this.log.info?.(`bridge：发群「${String(hit[1]).slice(0, 40)}」${cover ? '（带图）' : ''}→ ${target.groupId}`)
               }
