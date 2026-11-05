@@ -136,6 +136,16 @@ function pickRefImage(plan, framing, cfg = {}) {
   const face3 = String(cfg.faceRefImage || '')
   const body = String(cfg.bodyRefImage || '')
 
+  /*
+   * ★ 露脸就优先用**头像那张**（2026-11-05）：
+   *   三视图里的脸太小，模型参考不到就自己编一张脸（用户：「主要是脸不对」）。
+   *   身材靠提示词里的尺寸段压，不靠三视图。
+   */
+  const faceVisible = plan.mode === 'front_selfie' || plan.mode === 'mirror_selfie' || plan.mode === 'video_call'
+  if (faceVisible && (face3 || head)) {
+    // 全身照也先给头像（脸最重要）；确实要全身时三视图只能当补充，这里不选
+    return face3 || head
+  }
   if (framing.feet) return body || head || face3
   if (framing.framing === '面部特写' || framing.framing === '头肩') return face3 || head
   if (framing.framing === '半身') return head || face3
