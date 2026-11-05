@@ -5150,6 +5150,15 @@ export class QQBridge {
           for (const m of list) {
             const mid = String(m.message_id ?? m.real_id ?? '')
             if (!mid || known.has(mid)) continue
+            /*
+             * ⚠️ **图也要补**（2026-11-05）：原来只补文本，断连窗口里发的图
+             *    就永远丢了 —— 之后她发说说想带图，`说说带图 0 张`。
+             *    NapCat 历史里的 image 段带 `data.url`，直接取回来存进记忆。
+             */
+            const segs = Array.isArray(m.message) ? m.message : []
+            const imgs = segs.filter((x) => x?.type === 'image')
+              .map((x) => String(x?.data?.url ?? x?.data?.file ?? ''))
+              .filter(Boolean)
             mem.push(makeMessage({
               id: mid,
               sender: String(m.user_id ?? m.sender?.user_id ?? ''),
@@ -5157,6 +5166,7 @@ export class QQBridge {
               text: String(m.raw_message ?? '').replace(/\[CQ:[^\]]*\]/g, '[图片]'),
               at: Number(m.time ?? 0) * 1000 || Date.now(),
               isMe: String(m.user_id ?? m.sender?.user_id ?? '') === String(this.selfId ?? ''),
+              images: imgs,
             }))
             known.add(mid)
             added++
