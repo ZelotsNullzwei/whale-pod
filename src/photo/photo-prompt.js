@@ -77,7 +77,15 @@ export function composePhotoPrompt(o = {}) {
   const life = []
   if (weather) life.push(`天气：${weather}`)
   if (mood) life.push(`心情：${mood}`)
-  if (outfit) life.push(`今天穿着：${outfit}（服装完全按这句，从头发到鞋跟，不要另设计）`)
+  /*
+   * ★ 第一人称不写"从头发到鞋跟"（2026-11-05）：
+   *   那句会让模型把整个人画出来 —— 第一人称只看得到手和眼前的东西。
+   */
+  if (outfit) {
+    life.push(plan.mode === 'first_person'
+      ? `今天穿着：${outfit}（**只画画面里看得到的那部分**：袖口/裤腿/袜脚；不要画整套、不要画出人）`
+      : `今天穿着：${outfit}（服装完全按这句，从头发到鞋跟，不要另设计）`)
+  }
   if (hair) life.push(`今天的头发：${hair}`)
   if (life.length) parts.push(`【生活状态】\n${life.join('\n')}`)
 
