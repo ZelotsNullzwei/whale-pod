@@ -4064,6 +4064,9 @@ export class QQBridge {
         // QQ 动作的结果也算"真的做了"（见 4g 的 notes 文案）
         signature: qqNotes.some((n) => String(n).startsWith('签名改成')),
         recall: qqNotes.some((n) => String(n).includes('撤回')),
+        qzone: qqNotes.some((n) => String(n).includes('发空间')),
+        qzoneImage: qqNotes.some((n) => String(n).includes('发空间了') && !String(n).includes('没图')),
+        qzoneDel: qqNotes.some((n) => String(n).includes('删了刚发的说说')),
       }
       const claim = this._falseClaim(text, did, msg?.text)
       if (claim) {
@@ -4553,6 +4556,9 @@ export class QQBridge {
         skip: /主意|想法|计划|行程/,
       },
       { kind: 'recall', need: 'recall', re: /(已经)?撤回了/ },
+      { kind: 'qzone', need: 'qzone', re: /发(空间|说说)(了|好|出去)|说说(发好|发出)了|已经发了/ },
+      { kind: 'qzoneImg', need: 'qzoneImage', re: /(图|图片)[^。！？\n]{0,8}(带上|挂上|传上|塞进|放上)(了|去)/ },
+      { kind: 'qzoneDel', need: 'qzoneDel', re: /(说说|空间)[^。！？\n]{0,8}(删|撤)(掉|了|好了)/ },
     ]
     for (const r of rules) {
       const m = r.re.exec(s)
