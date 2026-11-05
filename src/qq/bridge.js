@@ -4304,9 +4304,15 @@ export class QQBridge {
             this.log.warn?.('bridge：[发群] 找不到目标群')
           } else {
             try {
-              await this._send(msg, String(hit[1]).trim(), null, target)
-              crossGroupNote = '发群里了'
-              this.log.info?.(`bridge：发群「${String(hit[1]).slice(0, 40)}」→ ${target.groupId}`)
+              /*
+               * ★ 和正常对话一样（2026-11-05 用户口径）：
+               *   这条回复有什么（文字 / 图），群里就收到什么 ——
+               *   不需要额外的 [发群图] 标记。画了图就带图，没画就只发文字。
+               */
+              const cover = drawnImage ?? null
+              await this._send(msg, String(hit[1]).trim(), cover, target)
+              crossGroupNote = cover ? '发群里了（带图）' : '发群里了'
+              this.log.info?.(`bridge：发群「${String(hit[1]).slice(0, 40)}」${cover ? '（带图）' : ''}→ ${target.groupId}`)
             } catch (e) {
               this.log.warn?.(`bridge：发群失败 — ${String(e?.message ?? e).slice(0, 80)}`)
             }
