@@ -155,6 +155,8 @@ export const PROMPT_NOTE_TEXTS = [
     + '⚠️ **别描述图里画了什么**（谁、在干什么、举着什么、什么姿势、什么表情）—— '
     + '对方自己看得见，念一遍等于废话。写完自查：这句话单独拎出来像在给盲人描述这张图，'
     + '那就是写错了。\n'
+    + '⚠️ **更不许评价这张图**（「丑」「比例歪了」「画得不像」「眼睛瞪那儿」）—— '
+    + '表情包是情绪，不是作品，没人发表情是为了听你点评画功。\n'
     + '⚠️ 也别老回同一张（连着几条都是震惊、无语，看着像你只有两张脸）。',
   // 上一版（2026-11-04 上午）的原文，老记录里可能还留着，一并擦
   '有字的梗图：懂意思就用自己的话接一句；'
@@ -5060,21 +5062,6 @@ export class QQBridge {
     } catch { return '' }
   }
 
-  /**
-   * 他**明确叫停**某个话题时给一句硬提示。
-   *
-   * 实测（2026-11-05 群）：「老逮着青蛙不放干嘛」→ 她回「谁逮着了，是你刷了九遍」，
-   * 下一句又「你自己数数去」—— 叫停了还在争"到底谁提的"。
-   * 这种时候要的是**放手**，不是辩解。
-   */
-  _topicStopHint(text) {
-    const s = String(text ?? '')
-    if (!/(别聊|别再说|别老|老提|别总提|换个话题|不聊这个|别逮着|别揪着)/.test(s)) return ''
-    return '## 他叫停了这个话题\n'
-      + '他明确表示不想再聊这个。**别再辩解、别反问「谁提的」「是你先」**，也别数他怎么刷的；\n'
-      + '换一句短的接住，或者干脆收住。'
-  }
-
   async _generate(msg, mem, scene, self, extraBlocks = null, extraNote = '', attempt = 0) {
     const long = this.longMemory?.get(msg.scope)
     const memoryText = long?.toPrompt() ?? ''
@@ -5949,8 +5936,7 @@ export class QQBridge {
         (this._balanceWarned = this._balanceLow, ''),
         // ★ 私聊也要知道群里刚发生什么（跨会话同步，2026-11-05）
         msg.kind === 'private' ? this._recentGroupDigest() : '',
-        // ★ 他明确叫停某个话题 → 别辩解（2026-11-05）
-        this._topicStopHint(msg.text ?? ''),
+
         /*
          * ⚠️ 这里曾经是「你来就负责说，别再纠结说不说」（2026-10-29 改）。
          *
