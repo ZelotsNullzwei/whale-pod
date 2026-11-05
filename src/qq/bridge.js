@@ -5024,6 +5024,42 @@ export class QQBridge {
     }
   }
 
+  /**
+   * 最近群里发生了什么 —— 给**私聊**用。
+   *
+   * 私聊和群聊各存一份短期记忆，所以她私下说话时完全不知道群里刚才聊了啥
+   * （用户：「私聊的她不知道群聊发生了什么」）。这里把最近 30 分钟、
+   * 最多 2 个群的 10 条消息压成几行挂进私聊提示词。
+   *
+   * ⚠️ 只给私聊；群里不用（群里本来就在场）。也**不落盘**，纯提示词。
+   */
+  _recentGroupDigest(maxAgeMs = 30 * 60_000, maxGroups = 2, maxMsgs = 10) {
+    try {
+      const keys = (this.memory?.scopes?.() ?? []).filter((k) => String(k).startsWith('group:'))
+      if (!keys.length) return ''
+      const blocks = []
+      for (const k of keys) {
+        const mem2 = this.memory.get(k)
+        const msgs = (mem2?.recent?.(maxMsgs) ?? [])
+          .filter((m) => Date.now() - Number(m.at ?? 0) <= maxAgeMs)
+        if (!msgs.length) continue
+        const lines = msgs.map((m) => {
+          const who = m.isMe ? '我' : String(m.senderName || m.sender || '某人')
+          const body = String(m.text ?? '').replace(/\s+/g, ' ').slice(0, 40)
+          return `${who}：${body}`
+        })
+        blocks.push({ key: k, ageMs: Date.now() - Number(msgs[msgs.length - 1].at ?? 0), lines })
+      }
+      if (!blocks.length) return ''
+      blocks.sort((a, b) => a.ageMs - b.ageMs)
+      const head = '## 群里刚发生的事（你也在群里；私下说话时知道就行，别主动搬过去）'
+      return [head, ...blocks.slice(0, maxGroups).map((b) => {
+        const mins = Math.max(1, Math.round(b.ageMs / 60_000))
+        return `群 ${String(b.key).slice(6)}（${mins} 分钟前）：` + b.lines.map((l) => `- ${l}`).join('\n')
+      })].join('\n')
+    } catch { return '' }
+  }
+
   async _generate(msg, mem, scene, self, extraBlocks = null, extraNote = '', attempt = 0) {
     const long = this.longMemory?.get(msg.scope)
     const memoryText = long?.toPrompt() ?? ''
@@ -5866,9 +5902,14 @@ export class QQBridge {
           if (s?.label) slot = `（**${s.label}**）`
         } catch { /* 时段算不出来就不写，不影响其它 */ }
         const gap = mem.sinceMyLast?.()
-        return `## 现在
+        return `## 现在（**唯一准的时钟，报时间只照这里念**）
 现在是 ${new Date().toLocaleString('zh-CN', { hour12: false })}${slot}。
-⚠️ 说时间、说"该吃饭了/该睡了/中午了"这类话之前**先看这一行**，别按感觉猜。
+
+⚠️ **报钟点只能照上面那串念。** 11:21 就是「十一点二十一」或「刚过十一点」，
+  **不许四舍五入、不许推算成「十二点多」「快一点」**。${slot ? `
+  ⚠️ 括号里的「${slot.replace(/[（）]/g, '')}」只是**时段粗分类**（早上/中午/下午/晚上），不是钟点 ——
+  看到「中午」不许自己脑补成 12 点。` : ''}
+⚠️ 说"该吃饭了/该睡了/中午了"这类话之前**先看这一行**；拿不准就别说钟点。
 距你上次说话：${Number.isFinite(gap) ? Math.round(gap / 1000) + ' 秒' : '很久/还没说过'}
 你已连续发言：${mem.consecutiveTurns} 轮`
       })(),
@@ -5891,6 +5932,8 @@ export class QQBridge {
           cny: this._balance?.cny ?? 0,
         }),
         (this._balanceWarned = this._balanceLow, ''),
+        // ★ 私聊也要知道群里刚发生什么（跨会话同步，2026-11-05）
+        msg.kind === 'private' ? this._recentGroupDigest() : '',
         /*
          * ⚠️ 这里曾经是「你来就负责说，别再纠结说不说」（2026-10-29 改）。
          *
