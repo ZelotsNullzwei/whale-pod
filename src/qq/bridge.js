@@ -2071,6 +2071,16 @@ export class QQBridge {
     if (!groupId) return undefined
     if (!this._groupNames) this._groupNames = new Map()
     const now = Date.now()
+    /*
+     * ★ 超过 2 分钟才轮到的消息**直接丢**（2026-11-05）：
+     *   实测有 598s / 2998s 才回一句的，那是积压或补历史残留 ——
+     *   隔这么久再回，对方早忘了自己在说什么。
+     */
+    if (Number(msg.at) && Date.now() - Number(msg.at) > 120_000) {
+      this.stats.silent++
+      this._record(msg, { reply: false, probability: 0, provider: 'stale-age', reason: '超过 2 分钟才轮到 → 丢弃' }, null, 'stale')
+      return
+    }
     const hit = this._groupNames.get(String(groupId))
     if (hit && now - hit.at < 600000) return hit.name
 
