@@ -509,7 +509,12 @@ export class OneBotClient {
     return {
       id: String(d.message_id),
       sender: senderId,
-      senderName: String(d.sender?.nickname || d.sender?.card || senderId || ''),
+      /*
+       * ★ 显示名：**群名片优先**（2026-11-05，用户：「群聊不认真实 QQ 名字」）。
+       *   私聊没有名片，自然回落到真实昵称。
+       *   真实昵称仍单独放在 `nickname`（人物档案/面板用），互不干扰。
+       */
+      senderName: String(d.sender?.card || d.sender?.nickname || senderId || ''),
       text: parsed.text,
       at: Number(d.time ? d.time * 1000 : 0),
     }
