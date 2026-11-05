@@ -5159,6 +5159,15 @@ export class QQBridge {
             const imgs = segs.filter((x) => x?.type === 'image')
               .map((x) => String(x?.data?.url ?? x?.data?.file ?? ''))
               .filter(Boolean)
+            /*
+             * ⚠️ 这条**已经在记忆里**但图是空的（旧版本补的）→ 把图补上（2026-11-05）。
+             *    否则按 id 去重会跳过它，"说说带图 0 张"永远修不好。
+             */
+            if (known.has(mid) && imgs.length) {
+              const old = (mem?.recent?.(40) ?? []).find((x) => String(x?.id ?? '') === mid)
+              if (old && !(Array.isArray(old.images) && old.images.length)) old.images = imgs
+              continue
+            }
             mem.push(makeMessage({
               id: mid,
               sender: String(m.user_id ?? m.sender?.user_id ?? ''),
