@@ -5060,6 +5060,32 @@ export class QQBridge {
     } catch { return '' }
   }
 
+  /**
+   * 群里「没头没尾的开场」提示：纯标点、≤4 字且不是问句、纯表情。
+   *
+   * 用户原话：「发一张表情或者莫名其妙的话开场她不用接」
+   * 「就比如说我刚刚发的马上」「她就可用扣「?」或者同类的表情」。
+   * 所以不是禁回，而是**只回一个「？」或一个表情**，别写正文。
+   */
+  _groupNoiseHint(msg, mem) {
+    if (String(msg?.kind ?? '') !== 'group') return ''
+    const selfId = this.selfId ?? ''
+    if (selfId && typeof msg.isAtMe === 'function' && msg.isAtMe(selfId)) return ''
+    const raw = String(msg.text ?? '')
+    if (/鱼|鲸|大肥鱼|本鱼|本鲸/.test(raw)) return ''
+    const recentAll = mem?.recent?.(6) ?? []
+    if (msg.replyTo && recentAll.some((m) => m?.isMe && String(m.id ?? '') === String(msg.replyTo))) return ''
+    const t = raw.replace(/\[[^\]]*\]/g, '').trim()
+    const isSticker = !t && /\[表情/.test(raw)
+    const isPunct = /^[?？!！.。,，、…~～\s]+$/.test(t)
+    const isShort = t.length > 0 && t.length <= 4 && !/[?？吗呢吧什么怎么为啥哪谁]/.test(t)
+    if (!isSticker && !isPunct && !isShort) return ''
+    return '## 他这句没头没尾\n'
+      + '（他发的是表情，或者一句没头没尾的话，比如「马上」「。。」「？」）\n'
+      + '**最多回一个「？」或者一个表情**（[表情:数字] / [表情包] 都行）—— '
+      + '一个字都别多。想接话等他说了点实的东西再接。'
+  }
+
   async _generate(msg, mem, scene, self, extraBlocks = null, extraNote = '', attempt = 0) {
     const long = this.longMemory?.get(msg.scope)
     const memoryText = long?.toPrompt() ?? ''
@@ -5934,6 +5960,8 @@ export class QQBridge {
         (this._balanceWarned = this._balanceLow, ''),
         // ★ 私聊也要知道群里刚发生什么（跨会话同步，2026-11-05）
         msg.kind === 'private' ? this._recentGroupDigest() : '',
+        // ★ 群里没头没尾的开场 → 最多回一个「？」或一个表情（2026-11-05）
+        this._groupNoiseHint(msg, mem),
 
         /*
          * ⚠️ 这里曾经是「你来就负责说，别再纠结说不说」（2026-10-29 改）。
