@@ -20,6 +20,8 @@
 
 import fs from 'node:fs'
 import { ImageCache } from './imageCache.js'
+import { reviewImage } from './imageReview.js'
+import { shrinkForReview } from './imageShrink.js'
 import os from 'node:os'
 import path from 'node:path'
 import { createHash } from 'node:crypto'
@@ -3898,6 +3900,9 @@ export class QQBridge {
               '别催，正找角度呢。',
               '行，这就来一张，你先坐会儿。',
               '咔嚓一声的事，等会儿。',
+              '这张角度不对，重来一张。',
+              '等一下，手放得不对，重拍。',
+              '刚才那张不行，修一下再发。',
             ]
             const filler = FILLERS[Math.floor(Math.random() * FILLERS.length)]
             await this._send(msg, filler)
@@ -4053,6 +4058,53 @@ export class QQBridge {
               if (finalBuf) this._imageCache().put(drawPrompt, finalBuf, { scope: String(msg.scope ?? ''), ms: r.ms })
             } catch (e) {
               this.log.warn?.(`bridge：写图片缓存失败 — ${String(e?.message ?? e).slice(0, 60)}`)
+            }
+            if (this.cfg.actions?.imageReview !== false && finalBuf) {
+              try {
+                const small = await shrinkForReview(finalBuf, 640, this.log)
+                const gw = `http://127.0.0.1:${this.cfg.gateway?.port ?? 18899}/v1`
+                const rv = await reviewImage({
+                  buf: small,
+                  gateway: gw,
+                  key: this.cfg.gateway?.key ?? null,
+                  log: this.log,
+                })
+                if (!rv.ok) {
+                  this.log.warn?.(`bridge：图不合格（${rv.why || '多手/脸崩'}）→ 重拍一张`)
+                  try {
+                    await this._send(msg, '刚才那张不行，重来一张。')
+                  } catch { /* ignore */ }
+                  const retry = await generateImage({
+                    prompt: drawPrompt,
+                    url: imgCfg.url,
+                    provider: imgCfg.provider ?? 'magpie-mcp',
+                    baseUrl: imgCfg.baseUrl,
+                    apiKeyEnv: imgCfg.keyEnv,
+                    model: imgCfg.model,
+                    size: shot.framingInfo?.feet ? (imgCfg.size || '1024x2048') : imgCfg.size,
+                    refImage: useRefPath,
+                    aspect: imgCfg.aspect ?? '9:16',
+                    resolution: imgCfg.resolution ?? '2K',
+                    log: this.log,
+                  })
+                  if (retry?.ok && retry.url) {
+                    const resp2 = await fetch(retry.url, { signal: AbortSignal.timeout(25000) })
+                    if (resp2.ok) {
+                      let buf2 = Buffer.from(await resp2.arrayBuffer())
+                      if (buf2.length > 1024 && buf2.length < 8 * 1024 * 1024) {
+                        buf2 = await cropBottom(buf2, Number(imgCfg.cropBottom ?? 0.1), this.log)
+                        finalBuf = buf2
+                        file = `base64://${buf2.toString('base64')}`
+                        this.log.info?.('bridge：重拍完成，用新的这张')
+                      }
+                    }
+                  }
+                } else {
+                  this.log.info?.('bridge：图审核通过')
+                }
+              } catch (e) {
+                this.log.warn?.(`bridge：审核/重拍出错（用原图）— ${String(e?.message ?? e).slice(0, 60)}`)
+              }
             }
             drawnImage = { url: file }
             this.log.info?.(`bridge：画好了（${Math.round(r.ms / 1000)}s）`)
