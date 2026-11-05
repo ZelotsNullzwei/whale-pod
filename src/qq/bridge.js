@@ -5441,6 +5441,31 @@ export class QQBridge {
    *
    * ⚠️ 只给群；私聊不用（私聊本来就在聊）。也不落盘。
    */
+  /**
+   * 别的会话的**长期摘要**（跨群/私聊共享背景，2026-11-05）。
+   *
+   * 私聊 → 带群聊的长期摘要；群聊 → 带私聊的长期摘要。
+   * 只取一个、截到 600 字，避免提示词膨胀。取不到返回空串。
+   */
+  _crossLongSummary(scope) {
+    try {
+      const self = String(scope ?? '')
+      if (!self || !this.longMemory?.get) return ''
+      const isGroup = self.startsWith('group:')
+      const want = isGroup ? 'private:' : 'group:'
+      const keys = (this.longMemory.scopes?.() ?? []).filter((k) => String(k).startsWith(want))
+      if (!keys.length) return ''
+      const picked = []
+      for (const k of keys.slice(0, 1)) {
+        const lm = this.longMemory.get(k)
+        const text = String(lm?.summary ?? '').replace(/\s+/g, ' ').trim()
+        if (text) picked.push(text.slice(0, 600))
+      }
+      if (!picked.length) return ''
+      const label = isGroup ? '私下聊过（长期）' : '群里聊过（长期）'
+      return [`## ${label}（你知道就行，别主动搬到另一个地方说）`, ...picked.map((t) => `- ${t}`)].join('\n')
+    } catch { return '' }
+  }
   _recentPrivateDigest(maxAgeMs = 30 * 60_000, maxSessions = 2, maxMsgs = 8) {
     try {
       const keys = (this.memory?.scopes?.() ?? []).filter((k) => String(k).startsWith('private:'))
@@ -5609,7 +5634,8 @@ export class QQBridge {
 
   async _generate(msg, mem, scene, self, extraBlocks = null, extraNote = '', attempt = 0) {
     const long = this.longMemory?.get(msg.scope)
-    const memoryText = long?.toPrompt() ?? ''
+    const memoryText = [long?.toPrompt() ?? '', this._crossLongSummary(msg.scope)]
+      .filter(Boolean).join('\n\n')
 
     /*
      * ★ **我最近说过的话**（2026-11-01，参考 dsh-bili-scroll 的章程）。
