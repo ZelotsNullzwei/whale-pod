@@ -4104,6 +4104,8 @@ export class QQBridge {
         const notes = [banNote, nickNote, tagNote, ...qqNotes].filter(Boolean).join('；')
         text = text.trim() ? `${text}（${notes}）` : `${notes}。`
       }
+      // ★ 同一个括号起手式别复读（2026-11-05）：实测群里连着 3 条都是「（撇嘴）」
+      text = this._stripRepeatedOpener(text, mem)
       // ★ 节奏控制：生成已经花了多少，就只补剩下的（见 `_waitForPace`）
       await this._waitForPace(tStart, d)
       const sentIds = await this._send(msg, text, coverForSend)
@@ -6632,6 +6634,25 @@ export class QQBridge {
     } catch {
       this._typingBroken = true
     }
+  }
+
+  /**
+   * 同一条回复的**括号起手式**如果和最近 3 条自己发过的重复，就把这次的去掉。
+   *
+   * 实测（2026-11-05 群）：连续三条都以「（撇嘴）」开头 —— 用户
+   * 「群里那样就很好」之后紧跟着就是这个复读，所以代码兜一层，
+   * 不指望提示词每次都听话。去掉后如果正文空了，就原样保留。
+   */
+  _stripRepeatedOpener(text, mem) {
+    const s = String(text ?? '')
+    const m = /^（([^）]{1,12})）/.exec(s)
+    if (!m) return text
+    const opener = `（${m[1]}）`
+    const mine = (mem?.recent?.(8) ?? []).filter((x) => x?.isMe)
+    const repeated = mine.some((x) => String(x.text ?? '').trim().startsWith(opener))
+    if (!repeated) return text
+    const rest = s.slice(m[0].length).trim()
+    return rest || text
   }
 
   async _send(msg, text, cover = null) {
