@@ -260,6 +260,7 @@ export async function runQQMarkers({ items, onebot, msg, mem, cfg = {}, log = {}
         if (lastWithImg) imgs = lastWithImg.images.filter(Boolean).slice(0, 9)
       }
       log.info?.(`qq-actions：说说带图 ${imgs.length} 张`)
+      log.info?.(`qq-actions：说说内容「${content.slice(0, 60)}」`)
       const payload = { content: content.slice(0, 300), ugc_right: 1 }
       if (imgs.length) payload.images = imgs
       const { ok } = await call('send_qzone_msg', payload)
