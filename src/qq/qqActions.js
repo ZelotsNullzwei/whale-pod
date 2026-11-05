@@ -254,10 +254,14 @@ export async function runQQMarkers({ items, onebot, msg, mem, cfg = {}, log = {}
        * ⚠️ 图常常在**上一条消息**里（他先发图、再说「发个空间」）—— 这时本条 msg.images 是空的。
        *    回看最近 8 条，取最近一条带图的（2026-11-05）。
        */
-      if (!imgs.length) {
+      if (imgs.length < 2) {
+        /*
+         * ⚠️ 多图（2026-11-05）：他可能把几张图分几条发 —— 只取"最后一条带图的消息"
+         *    就永远只有一张。这里把最近 8 条里别人发的图都收起来，去重后最多 9 张。
+         */
         const recent = mem?.recent?.(8) ?? []
-        const lastWithImg = [...recent].reverse().find((m) => !m?.isMe && Array.isArray(m.images) && m.images.length)
-        if (lastWithImg) imgs = lastWithImg.images.filter(Boolean).slice(0, 9)
+        const all = recent.filter((m) => !m?.isMe).flatMap((m) => (Array.isArray(m.images) ? m.images : []))
+        imgs = [...new Set([...imgs, ...all.filter(Boolean)])].slice(0, 9)
       }
       log.info?.(`qq-actions：说说带图 ${imgs.length} 张`)
       log.info?.(`qq-actions：说说内容「${content.slice(0, 60)}」`)
