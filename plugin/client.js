@@ -266,6 +266,9 @@ window.__ModuleLoader__.load({
         'model.llm': 'LLM（纯文本）',
         'model.vlm': 'VLM（能看图）',
         'model.current': '当前模型',
+        // 侧栏两排各用一个标签（2026-11-05：对话和生图分开显示）
+        'model.chat': '对话模型',
+        'model.draw': '生图模型',
         'model.auto': 'auto（按下方顺序自动选）',
         'model.backToAuto': '切回自动选择',
         'section.search': '联网搜索',
@@ -607,6 +610,8 @@ window.__ModuleLoader__.load({
         'model.llm': 'LLM (text)',
         'model.vlm': 'VLM (vision)',
         'model.current': 'Current model',
+        'model.chat': 'Chat model',
+        'model.draw': 'Image model',
         'model.auto': 'auto (pick by the order below)',
         'model.backToAuto': 'Back to automatic',
         'section.search': 'Web search',
@@ -1730,8 +1735,8 @@ window.__ModuleLoader__.load({
         // 费用按模型官网价折算，与走哪个渠道无关 —— 看的是"这些用量按原价值多少"。
         enabled ? h(UsageCards, { t }) : null,
 
-        // ── 当前模型（只读一行，点它跳设置页改）─────────────────────
-        enabled ? h(CurrentModelRow, { t }) : null,
+        /* ── 模型 / 画图（两排：上排只显示，下排可点；画图不可用就整排不出现）── */
+        enabled ? h(ModelDrawRows, { t }) : null,
 
         // ── 最近消息流（可折叠；默认展开 —— 这是常看的部分）───────────
         enabled ? h(Fold, {
@@ -1775,6 +1780,224 @@ window.__ModuleLoader__.load({
      * 侧栏不提供修改 —— 只显示"现在用的是什么"，改去设置页。
      * 这样侧栏保持短，且不会因为误点改了线上行为。
      */
+    /**
+     * 对话模型选择（2026-11-05）。
+     *
+     * 用户要求「顺便带上模型选择」。原来那行（CurrentModelRow）是只读的，
+     * 点了要跳 web 设置页 —— 而用户明确说过「不用 web」。
+     * 所以这里给一个能直接换模型的下拉，写 `/models/settings` 的 qqModel。
+     *
+     * ⚠️ 这是**对话**模型，跟画图渠道（qq.image）完全两回事，别混。
+     */
+    /**
+     * 侧栏「模型 / 画图」两排（2026-11-05）。
+     *
+     * 用户要求：
+     *   · 「上面做当前发言和生图模型显示，下面做选择」
+     *   · 「没有的侧栏就不显示」—— 生图不可用时**整块不出现**（不占位、不显示灰字）
+     *   · 「具体配置在设置页，侧栏只是可调」—— 这里只有下拉和两个胶囊，
+     *     渠道 / baseUrl / model 这些都在设置页的「生图」段里
+     *
+     * ⚠️ 模型 id 是三段式 `<渠道>/<provider>/<模型>`（实测 `magpie/magpie/workbuddy/...`）。
+     *    只拼 `provider/id` 会少一段，下拉就跟实际配置对不上（踩过）。
+     *    目录没就绪时 `/models` 可能为空 → 当前值不在选项里 → 补一个选项兜底。
+     */
+    function ModelDrawRows({ t }) {
+      const data = usePoll(() => api('/models'), [], 20000)
+      const status = usePoll(() => api('/image/status'), [], 60000)
+      const [busy, setBusy] = useState(false)
+      const d = data.data
+      const s = status.data
+      if (!d?.settings) return null
+      const cur = d.settings.qqModel ?? 'auto'
+      const list = d.models ?? []
+      const canDraw = s?.available === true
+      const style = s?.drawStyle === 'anime' ? 'anime' : 'photo'
+      const channel = cur !== 'auto' && cur.split('/').length >= 3 ? cur.split('/')[0] : ''
+      const idOf = (m) => (
+        m.channel ? `${m.channel}/${m.provider}/${m.id}`
+          : channel ? `${channel}/${m.provider}/${m.id}`
+            : `${m.provider}/${m.id}`
+      )
+      const post = (body, after) => {
+        if (busy) return
+        setBusy(true)
+        api('/models/settings', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(body),
+        }).then(after).catch(() => {}).finally(() => setBusy(false))
+      }
+      const ids = list.map(idOf)
+
+      /*
+       * ★ **两排分开**（2026-11-05 用户反馈：「对话模型一排，生图模型一排，
+       *   这样混着好乱」）。
+       *
+       * 原来上排是只读的「当前模型 + 生图 照片 · xxx」，下排是
+       * 「对话模型下拉 + 照片/插画胶囊」—— 对话和画图**混在同一行**，
+       * 看着像"这俩是一个东西的两个控制项"。
+       *
+       * 现在：
+       *   第一排  `对话模型`  [下拉]
+       *   第二排  `生图模型`  [照片] [插画]  · 模型名
+       * 画图不可用时**第二排整个不出现**（老规矩：没有的就不占位）。
+       */
+
+      // ── 第一排：对话模型 ───────────────────────────────────
+      const opts = [h('option', { key: 'auto', value: 'auto' }, t('model.auto'))]
+      if (cur !== 'auto' && !ids.includes(cur)) opts.push(h('option', { key: 'cur', value: cur }, cur))
+      list.forEach((m, i) => opts.push(h('option', { key: ids[i], value: ids[i] }, m.label ?? m.id)))
+
+      const chatRow = h('div', { className: 'gd_modelrow' },
+        h('span', { className: 'gd_modelrowlabel' }, t('model.chat')),
+        h('select', {
+          value: cur,
+          title: cur,
+          onChange: (e) => post({ qqModel: e.target.value }, () => data.reload()),
+          style: {
+            flex: '1 1 160px', minWidth: 0, fontSize: '12px', padding: '2px 4px',
+            background: 'transparent', color: 'inherit',
+            border: '1px solid rgba(120,120,120,.35)', borderRadius: '6px',
+          },
+        }, opts))
+
+      const pill = (key, label) => h('button', {
+        key,
+        onClick: () => { if (!busy && key !== style) post({ drawStyle: key }, () => status.reload()) },
+        disabled: busy,
+        style: {
+          padding: '2px 10px', fontSize: '12px', borderRadius: '999px',
+          border: '1px solid ' + (style === key ? 'rgba(59,130,246,.9)' : 'rgba(120,120,120,.35)'),
+          background: style === key ? 'rgba(59,130,246,.18)' : 'transparent',
+          color: 'inherit', cursor: busy ? 'default' : 'pointer',
+        },
+      }, label)
+
+      // ── 第二排：生图模型（不可用就整排不出现）──────────────
+      const drawRow = canDraw
+        ? h('div', { className: 'gd_modelrow', style: { marginTop: '6px' } },
+          h('span', { className: 'gd_modelrowlabel' }, t('model.draw')),
+          pill('photo', '照片'),
+          pill('anime', '插画'),
+          /* 模型名跟随 Magpie 的 settings.json（imageGen），只显示最后一段，太长会挤爆这行 */
+          h('span', {
+            className: 'gd_note',
+            title: s.model || '',
+            style: { marginLeft: '6px', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+          }, s.model ? String(s.model).split('/').pop() : ''))
+        : null
+
+      return h('div', null, chatRow, drawRow)
+    }
+
+    function ChatModelSelect({ t }) {
+      const data = usePoll(() => api('/models'), [], 20000)
+      const d = data.data
+      if (!d?.settings) return null
+      const cur = d.settings.qqModel ?? 'auto'
+      const list = d.models ?? []
+      const save = (next) => api('/models/settings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ qqModel: next }),
+      }).then(() => data.reload()).catch(() => {})
+      return h('div', { className: 'gd_modelrow' },
+        h('span', { className: 'gd_modelrowlabel' }, t('model.current')),
+        h('select', {
+          value: cur,
+          title: cur,
+          onChange: (e) => save(e.target.value),
+          style: {
+            flex: 1, minWidth: 0, fontSize: '12px', padding: '2px 4px',
+            background: 'transparent', color: 'inherit',
+            border: '1px solid rgba(120,120,120,.35)', borderRadius: '6px',
+          },
+        },
+          /*
+           * ⚠️ 模型 id 的拼接方式（2026-11-05 实测踩到）：
+           *   左下角显示的当前模型是 `magpie/magpie/workbuddy/deepseek-v4.1-flash`
+           *   = `<渠道>/<provider>/<模型>`。我一开始只拼了 `provider/id`，
+           *   于是下拉里成了 `magpie/workbuddy/...` —— 少一段，跟实际配置对不上，
+           *   下拉框显示成空白/错位。
+           *   而且目录没就绪时 `/models` 会返回空数组，选项里没有当前值，
+           *   select 就会显示成第一个（auto）—— 看起来像"模型被改了"。
+           *   所以：① 优先用 m.channel；② 当前值不在列表里也补一个选项。
+           */
+          (function () {
+            const ids = list.map((m) => (m.channel ? `${m.channel}/${m.provider}/${m.id}` : `${m.provider}/${m.id}`))
+            const opts = [h('option', { key: 'auto', value: 'auto' }, t('model.auto'))]
+            if (cur !== 'auto' && !ids.includes(cur)) {
+              opts.push(h('option', { key: 'cur', value: cur }, cur))
+            }
+            list.forEach((m, i) => {
+              const id = ids[i]
+              opts.push(h('option', { key: id, value: id }, m.label ?? m.id))
+            })
+            return opts
+          })()))
+    }
+
+    /**
+     * 画图风格切换（2026-11-05）。
+     *
+     * 用户提醒过「不一定有用户用 magpie」—— 所以**没装生图渠道的人不该看到这个开关**：
+     * 先问 `/image/status`（WhalePod 侧探一次 MCP，缓存 5 分钟）。
+     *   · available=false → 只显示一行灰字说明，不显示按钮
+     *   · available=true  → 显示「照片 / 插画」两个胶囊
+     *
+     * 生图模型本身由渠道决定（默认 Magpie 的 minimax），这里只切风格档
+     * （`qq.actions.drawStyle`），不碰模型。
+     */
+    function DrawSettings({ t }) {
+      const status = usePoll(() => api('/image/status'), [], 60000)
+      const s = status.data
+      const [busy, setBusy] = useState(false)
+      if (!s) return null
+      if (!s.available) {
+        return h('div', { className: 'gd_note' },
+          '画图不可用' + (s.reason ? '：' + s.reason : '') + '（需要 Magpie 的 magpie-image / minimax 插件）')
+      }
+      const style = s.drawStyle === 'anime' ? 'anime' : 'photo'
+      const apply = (next) => {
+        if (busy || next === style) return
+        setBusy(true)
+        api('/models/settings', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ drawStyle: next }),
+        }).then(() => status.reload()).catch(() => {}).finally(() => setBusy(false))
+      }
+      const pill = (key, label) => h('button', {
+        key,
+        onClick: () => apply(key),
+        disabled: busy,
+        style: {
+          padding: '2px 10px', fontSize: '12px', borderRadius: '999px',
+          border: '1px solid ' + (style === key ? 'rgba(59,130,246,.9)' : 'rgba(120,120,120,.35)'),
+          background: style === key ? 'rgba(59,130,246,.18)' : 'transparent',
+          color: 'inherit', cursor: busy ? 'default' : 'pointer',
+        },
+      }, label)
+      return h('div', null,
+        h('div', {
+          className: 'gd_modelrow',
+          style: { display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' },
+        },
+          h('span', { className: 'gd_modelrowlabel' }, '画图'),
+          pill('photo', '照片'),
+          pill('anime', '插画')),
+        /*
+         * 生图模型**不在这里选**（2026-11-05 说明）。
+         * 接口层 `generate_image` 只收 prompt/aspect/resolution/input_urls，
+         * 没有 model 参数 —— 用的是 Magpie 里配的那张图模型。
+         * 与其放一个点了没用的下拉，不如把话说清楚。
+         */
+        h('div', { className: 'gd_note', style: { marginTop: '2px' } },
+          '生图渠道：' + (s.provider === 'magpie-mcp' ? 'Magpie 插件' : String(s.provider)) +
+          ' · 具体模型在 Magpie 里选（Settings → Images）'))
+    }
+
     function CurrentModelRow({ t }) {
       const data = usePoll(() => api('/models'), [], 20000)
       const d = data.data
@@ -1867,6 +2090,173 @@ window.__ModuleLoader__.load({
      *
      * ⚠️ 数据未就绪时返回 null，绝不在下面 map —— 整棵 React 树会崩（白屏）。
      */
+    /**
+     * 生图渠道（设置页用，2026-11-05）。
+     *
+     * 用户要求「画图 api 应该有单独渠道」「photo 和 anime 分开」「侧栏和设置页都放」。
+     * 这里放在「模型与渠道」正下方 —— 跟 LLM / VLM 平级，但明确是另一条链路：
+     *
+     *   · 渠道：Magpie 插件（magpie-mcp）/ 不启用（none）
+     *   · 风格：照片 / 插画
+     *   · 生图模型**不在这里选** —— 接口层没有 model 参数，
+     *     模型在 Magpie 的 Settings → Images 里配
+     */
+    /**
+     * 生图渠道的**详细配置表单**（设置页，2026-11-05）。
+     *
+     * 用户分工：「具体配置在设置页，侧栏只是可调」。
+     * 这里能填的是**渠道参数**（换服务商不用改代码）：
+     *   provider: magpie-mcp（MCP 工具）/ openai-images（兼容 /v1/images/generations）/ none
+     *   · magpie-mcp   → url、keyEnv
+     *   · openai-images→ baseUrl、keyEnv、model、size
+     *   共用：aspect、resolution、cropBottom
+     *
+     * key 只填**凭据名**（DSH 凭据库里的键 / 同名环境变量），绝不存明文 key。
+     */
+    function DrawChannelForm({ t }) {
+      const data = usePoll(() => api('/models'), [], 20000)
+      const [form, setForm] = useState(null)
+      const [busy, setBusy] = useState(false)
+      const [flash, setFlash] = useState(null)
+      const img = data.data?.settings?.image
+      useEffect(() => {
+        if (img && form === null) setForm({ ...img })
+      }, [img, form])
+      useEffect(() => {
+        if (!flash) return undefined
+        const timer = setTimeout(() => setFlash(null), 2500)
+        return () => clearTimeout(timer)
+      }, [flash])
+      if (!img || !form) return null
+
+      const set = (k, v) => setForm((f) => ({ ...f, [k]: v }))
+      const input = (label, key, placeholder) => h('label', {
+        key,
+        style: { display: 'flex', flexDirection: 'column', gap: '2px', flex: '1 1 180px', minWidth: 0 },
+      },
+        h('span', { className: 'gd_note' }, label),
+        h('input', {
+          value: form[key] ?? '',
+          placeholder: placeholder ?? '',
+          onChange: (e) => set(key, e.target.value),
+          style: {
+            fontSize: '12px', padding: '3px 6px', background: 'transparent', color: 'inherit',
+            border: '1px solid rgba(120,120,120,.35)', borderRadius: '6px', minWidth: 0,
+          },
+        }))
+      const save = () => {
+        if (busy) return
+        setBusy(true)
+        api('/models/settings', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ image: form }),
+        }).then(() => { setFlash('已保存'); return data.reload() })
+          .catch(() => setFlash('保存失败'))
+          .finally(() => setBusy(false))
+      }
+      const isMCP = form.provider === 'magpie-mcp'
+      const isAPI = form.provider === 'openai-images'
+      /*
+       * ⚠️ 间距坑（2026-11-05）：这里外层是**纵向** flex（flexDirection: column）。
+       *    在 column 容器里 `flex-basis: 180px` 设的是**高度** —— 于是一个下拉框
+       *    下面凭空空了 180px。用户两次说「间隔不对」都是这个。
+       *    规则：**column 里的项不要给 flex-basis**；横排字段用 flex:'1 1 140px' 且只放在 row 里。
+       */
+      return h('div', { style: { marginTop: '8px', display: 'flex', flexDirection: 'column', gap: '8px' } },
+        h('label', { style: { display: 'flex', flexDirection: 'column', gap: '2px', minWidth: 0 } },
+          h('span', { className: 'gd_note' }, '渠道类型'),
+          h('select', {
+            value: form.provider,
+            onChange: (e) => set('provider', e.target.value),
+            style: {
+              fontSize: '12px', padding: '3px 6px', background: 'transparent', color: 'inherit',
+              border: '1px solid rgba(120,120,120,.35)', borderRadius: '6px',
+            },
+          },
+            h('option', { value: 'magpie-mcp' }, 'Magpie 插件（MCP 工具）'),
+            h('option', { value: 'openai-images' }, '兼容 API（/v1/images/generations）'),
+            h('option', { value: 'none' }, '不启用'))),
+        h('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap' } },
+          isMCP ? input('MCP 地址', 'url', 'http://127.0.0.1:3425/mcp/magpie/tools/minimax') : null,
+          isAPI ? input('服务地址 baseUrl', 'baseUrl', 'https://api.openai.com/v1') : null,
+          isAPI ? input('模型 model', 'model', 'gpt-image-1') : null),
+        h('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap' } },
+          input('凭据名 keyEnv', 'keyEnv', 'MAGPIE_GATEWAY_KEY'),
+          isAPI ? input('尺寸 size（可留空）', 'size', '1024x1792') : null),
+        h('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap' } },
+          input('比例 aspect', 'aspect', '9:16'),
+          input('分辨率 resolution', 'resolution', '2K'),
+          input('裁底部 cropBottom', 'cropBottom', '0.1')),
+        h('div', { style: { display: 'flex', gap: '8px', alignItems: 'center' } },
+          h('button', {
+            onClick: save,
+            disabled: busy,
+            style: {
+              padding: '4px 14px', fontSize: '13px', borderRadius: '8px',
+              border: '1px solid rgba(59,130,246,.9)', background: 'rgba(59,130,246,.18)',
+              color: 'inherit', cursor: busy ? 'default' : 'pointer',
+            },
+          }, busy ? '保存中…' : '保存'),
+          h('span', { className: 'gd_note' },
+            'key 只填凭据名（DSH 凭据库 / 同名环境变量），不会存明文'),
+          flash ? h('span', { className: 'gd_note' }, flash) : null))
+    }
+
+    function DrawChannelCard({ t }) {
+      const status = usePoll(() => api('/image/status'), [], 60000)
+      const [busy, setBusy] = useState(false)
+      const [flash, setFlash] = useState(null)
+      useEffect(() => {
+        if (!flash) return undefined
+        const timer = setTimeout(() => setFlash(null), 2500)
+        return () => clearTimeout(timer)
+      }, [flash])
+      const s = status.data
+      if (!s) return null
+      const style = s.drawStyle === 'anime' ? 'anime' : 'photo'
+      const provider = s.provider === 'none' ? 'none' : 'magpie-mcp'
+      const save = (body) => {
+        if (busy) return
+        setBusy(true)
+        api('/models/settings', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(body),
+        }).then(() => { setFlash('已保存'); return status.reload() })
+          .catch(() => setFlash('保存失败'))
+          .finally(() => setBusy(false))
+      }
+      const seg = (on, label, onClick) => h('button', {
+        key: label,
+        onClick,
+        disabled: busy,
+        style: {
+          padding: '4px 12px', fontSize: '13px', borderRadius: '8px',
+          border: '1px solid ' + (on ? 'rgba(59,130,246,.9)' : 'rgba(120,120,120,.35)'),
+          background: on ? 'rgba(59,130,246,.18)' : 'transparent',
+          color: 'inherit', cursor: busy ? 'default' : 'pointer',
+        },
+      }, label)
+      return h('section', { style: { marginTop: '18px' } },
+        h('h3', { style: { fontSize: '14px', margin: '0 0 8px' } }, '生图'),
+        /*
+         * 只有**一块**：风格放在最上，渠道与参数交给下面的表单。
+         * 之前这里还有一个「渠道 Magpie|不启用」的胶囊行，跟表单里的
+         * 「渠道类型」下拉重复，中间还空了一大段 —— 用户原话「设置页间隔不对」。
+         */
+        h('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' } },
+          h('span', { className: 'gd_note', style: { minWidth: '64px' } }, '风格'),
+          seg(style === 'photo', '照片', () => save({ drawStyle: 'photo' })),
+          seg(style === 'anime', '插画', () => save({ drawStyle: 'anime' }))),
+        h(DrawChannelForm, { t }),
+        h('p', { className: 'gd_note', style: { marginTop: '6px' } },
+          s.available
+            ? '生图模型跟随 Magpie「图像」里选的那个（现在是 ' + (s.model || 'Magpie 里配的模型') + '）；在 Magpie 换模型，这边自动跟上。'
+            : ('当前不可用' + (s.reason ? '：' + s.reason : ''))),
+        flash ? h('p', { className: 'gd_note' }, flash) : null)
+    }
+
     function ModelCards({ t }) {
       const data = usePoll(() => api('/models'), [], 15000)
       const [busy, setBusy] = useState(false)
@@ -2640,6 +3030,9 @@ window.__ModuleLoader__.load({
 
         // ── 模型与渠道（配置在这里；侧栏只显示一行当前模型）──────────────
         h(ModelCards, { t }),
+
+        // ── 生图渠道（2026-11-05，跟对话渠道完全分开）──────────────────
+        h(DrawChannelCard, { t }),
 
         // ── 启动行为 ────────────────────────────────────────────────────
         //
