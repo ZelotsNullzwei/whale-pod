@@ -18,6 +18,7 @@ import { fileURLToPath } from 'node:url'
 import { CLIENT_CSS, CLIENT_JS } from './assets.js'
 import { ICONS } from './icons.js'
 import * as fallbackMod from '../gateway/fallback.js'
+import { probeImage, probeOpenAI, readMagpieSettings } from '../qq/mcpImage.js'
 import { resolveCandidates, openFirstAvailable, applyFreeOrder, PROVIDER_MODEL_HINTS } from '../gateway/router.js'
 // 搜索限额（每天最多几次）—— 和 QQ 那侧共用同一份计数文件
 import { SearchQuota } from '../gateway/search.js'
@@ -720,6 +721,22 @@ export function createWebServer(opts) {
             disabledProviders: disabled,
             qqModel: cfg.qq?.model ?? 'auto',
             maxTokens: cfg.qq?.maxTokens ?? 1024,
+            /** 生图风格：'photo'（写实照片）/ 'anime'（日系插画）。两档完全分开。 */
+            drawStyle: cfg.qq?.actions?.drawStyle === 'anime' ? 'anime' : 'photo',
+            imageProvider: cfg.qq?.image?.provider ?? 'magpie-mcp',
+            image: {
+              provider: cfg.qq?.image?.provider ?? 'magpie-mcp',
+              url: cfg.qq?.image?.url ?? '',
+              keyEnv: cfg.qq?.image?.keyEnv ?? '',
+              baseUrl: cfg.qq?.image?.baseUrl ?? '',
+              model: cfg.qq?.image?.model ?? '',
+              size: cfg.qq?.image?.size ?? '',
+              aspect: cfg.qq?.image?.aspect ?? '9:16',
+              resolution: cfg.qq?.image?.resolution ?? '2K',
+              cropBottom: cfg.qq?.image?.cropBottom ?? 0.1,
+              refImage: cfg.qq?.image?.refImage ?? '',
+              bodyRefImage: cfg.qq?.image?.bodyRefImage ?? '',
+            },
             threshold: cfg.decision?.threshold ?? 0.5,
             fallback: cfg.gateway?.fallback ?? null,
           },
@@ -730,6 +747,42 @@ export function createWebServer(opts) {
           latency: state.latency ?? [],
           latencyProbe: state.latencyProbe ?? null,
           enabledCount: orderDetail.filter((d) => d.enabled).length,
+        })
+      }
+
+      /*
+       * 生图可用性（2026-11-05）。
+       *
+       * 侧栏面板靠它决定：**没装 Magpie 的人不该看到「照片/插画」那个开关**。
+       * 探针本身缓存 5 分钟；`?refresh=1` 强制重探（用户手动点了"重试"）。
+       */
+      if (p === '/api/image/status' && req.method === 'GET') {
+        const q = new URL(req.url ?? '/', 'http://x').searchParams
+        const cfgNow = store.get()
+        const img = cfgNow.qq?.image ?? {}
+        const provider = img.provider === 'none' ? 'none' : (img.provider === 'openai-images' ? 'openai-images' : 'magpie-mcp')
+        const ms = readMagpieSettings()
+        const base = {
+          provider,
+          model: String(img.model || '').trim() || ms.imageGen || '',
+          vision: ms.vision,
+          draw: cfgNow.qq?.actions?.draw !== false,
+          drawStyle: cfgNow.qq?.actions?.drawStyle === 'anime' ? 'anime' : 'photo',
+        }
+        if (provider === 'none') {
+          return json(res, 200, { ...base, available: false, reason: '画图渠道被设成 none（不启用）', url: img.url })
+        }
+        const probe = provider === 'openai-images'
+          ? await probeOpenAI({ baseUrl: img.baseUrl, apiKeyEnv: img.keyEnv })
+          : await probeImage({ url: img.url, force: q.get('refresh') === '1' })
+        return json(res, 200, {
+          ...base,
+          available: probe.ok,
+          reason: probe.ok ? '' : (probe.reason ?? ''),
+          checkedAt: probe.checkedAt,
+          cached: probe.cached,
+          url: img.url,
+          baseUrl: img.baseUrl ?? '',
         })
       }
 
@@ -754,6 +807,41 @@ export function createWebServer(opts) {
           patch.gateway = { ...(patch.gateway ?? {}), disabledProviders: next }
         }
         if (typeof body.qqModel === 'string') patch.qq = { ...(patch.qq ?? {}), model: body.qqModel }
+        /*
+         * 生图风格（2026-11-05）：photo / anime 两档完全分开。
+         * bridge 每次生图现读 `cfg.qq.actions.drawStyle`，所以改完立即生效、不用重启。
+         */
+        if (body.drawStyle === 'photo' || body.drawStyle === 'anime') {
+          const curActions = store.get().qq?.actions ?? {}
+          patch.qq = { ...(patch.qq ?? {}), actions: { ...curActions, drawStyle: body.drawStyle } }
+        }
+        /*
+         * 生图渠道（2026-11-05）——**完整可配**，因为它是一条独立渠道：
+         *   provider: 'magpie-mcp' | 'openai-images' | 'none'
+         *   baseUrl / keyEnv / model / size  → 兼容 API 那条用
+         *   url                              → MCP 那条用
+         *   aspect / resolution / cropBottom → 两条共用
+         * 跟对话渠道完全分开：关掉只是"她不会画"，对话照常。
+         */
+        if (typeof body.imageProvider === 'string' || body.image && typeof body.image === 'object') {
+          const curImg = store.get().qq?.image ?? {}
+          const patchImg = { ...curImg }
+          const pick = (k, v) => {
+            if (v === undefined) return
+            if (typeof v === 'string') patchImg[k] = v.trim()
+            else if (typeof v === 'number' && Number.isFinite(v)) patchImg[k] = v
+          }
+          pick('provider', body.imageProvider)
+          const src = body.image && typeof body.image === 'object' ? body.image : {}
+          for (const k of ['provider', 'url', 'keyEnv', 'baseUrl', 'model', 'size', 'aspect', 'resolution', 'refImage', 'bodyRefImage']) {
+            pick(k, src[k] ?? (body['image' + k[0].toUpperCase() + k.slice(1)]))
+          }
+          if (src.cropBottom !== undefined || body.cropBottom !== undefined) {
+            const v = Number(src.cropBottom ?? body.cropBottom)
+            if (Number.isFinite(v)) patchImg.cropBottom = Math.max(0, Math.min(0.4, v))
+          }
+          patch.qq = { ...(patch.qq ?? {}), image: patchImg }
+        }
         // maxTokens：**0 = 不限制**（默认）。
         // 不要用 Math.max(64, …) 兜底 —— 把 0 抬成 64 会让"无限"变成"只能回 64 token"，
         // 推理模型直接就空回复了。只对正数做范围钳制。
@@ -2703,6 +2791,44 @@ async function whalePodCompat(o) {  const { sub, method, url, req, res, json, re
     //
     // 顺序算法与 /api/models 完全一致（applyFreeOrder + 启用优先分区），
     // 否则侧栏显示的顺序会和实际路由不一致 —— 那是最容易误导人的 bug。
+    /*
+    * 生图可用性（2026-11-05）。
+    *
+    * ⚠️ **兼容层也必须实现这条**：侧栏的 `api('/image/status')` 走的是
+    *    `/api/whale-pod/image/status`，落到这里；直连 `/api/image/status`
+    *    是另一套入口（设置页/调试用）。一开始只加了直连那条，
+    *    结果侧栏卡片取不到数据、整块 return null —— 两边"看起来都没做"。
+    */
+    if (sub === '/image/status' && method === 'GET') {
+      const q = new URL(url ?? '/', 'http://x').searchParams
+      const cfg = store.get()
+      const img = cfg.qq?.image ?? {}
+      const provider = img.provider === 'none' ? 'none' : (img.provider === 'openai-images' ? 'openai-images' : 'magpie-mcp')
+      const ms = readMagpieSettings()
+      const base = {
+        provider,
+        /* 模型名：配置里没写就跟随 Magpie 的 settings.json（imageGen）。 */
+        model: String(img.model || '').trim() || ms.imageGen || '',
+        vision: ms.vision,
+        draw: cfg.qq?.actions?.draw !== false,
+        drawStyle: cfg.qq?.actions?.drawStyle === 'anime' ? 'anime' : 'photo',
+      }
+      if (provider === 'none') {
+        return json(res, 200, { ...base, available: false, reason: '画图渠道被设成 none（不启用）' })
+      }
+      const probe = provider === 'openai-images'
+        ? await probeOpenAI({ baseUrl: img.baseUrl, apiKeyEnv: img.keyEnv })
+        : await probeImage({ url: img.url, force: q.get('refresh') === '1' })
+      return json(res, 200, {
+        ...base,
+        available: probe.ok,
+        reason: probe.ok ? '' : (probe.reason ?? ''),
+        checkedAt: probe.checkedAt,
+        cached: probe.cached,
+        baseUrl: img.baseUrl ?? '',
+      })
+    }
+
     if (sub === '/models' && method === 'GET') {
       const cfg = store.get()
       const providers = llm?.providers ?? []
@@ -2866,6 +2992,27 @@ async function whalePodCompat(o) {  const { sub, method, url, req, res, json, re
           qqModel: cfg.qq?.model ?? 'auto',
           maxTokens: cfg.qq?.maxTokens ?? 0,
           effort: cfg.qq?.effort ?? '',
+          /*
+           * 生图两档（2026-11-05）：侧栏 / 设置页都靠这两个字段渲染
+           * 「画图 照片|插画」和「生图渠道」。**必须在这条兼容层里也带上** ——
+           * 侧栏走的是 /api/whale-pod/*，跟直连 /api/* 是两套入口。
+           */
+          drawStyle: cfg.qq?.actions?.drawStyle === 'anime' ? 'anime' : 'photo',
+          imageProvider: cfg.qq?.image?.provider === 'none' ? 'none' : (cfg.qq?.image?.provider ?? 'magpie-mcp'),
+          /** 生图渠道的完整参数（设置页表单用）。 */
+          image: {
+            provider: cfg.qq?.image?.provider ?? 'magpie-mcp',
+            url: cfg.qq?.image?.url ?? '',
+            keyEnv: cfg.qq?.image?.keyEnv ?? '',
+            baseUrl: cfg.qq?.image?.baseUrl ?? '',
+            model: cfg.qq?.image?.model ?? '',
+            size: cfg.qq?.image?.size ?? '',
+            aspect: cfg.qq?.image?.aspect ?? '9:16',
+            resolution: cfg.qq?.image?.resolution ?? '2K',
+            cropBottom: cfg.qq?.image?.cropBottom ?? 0.1,
+              refImage: cfg.qq?.image?.refImage ?? '',
+              bodyRefImage: cfg.qq?.image?.bodyRefImage ?? '',
+          },
         },
         defaultOrder: effectiveOrder,
         orderDetail,
@@ -2905,6 +3052,30 @@ async function whalePodCompat(o) {  const { sub, method, url, req, res, json, re
       }
       if (typeof body.strategy === 'string') {
         patch.gateway = { ...(patch.gateway ?? {}), strategy: body.strategy }
+      }
+      // 生图风格 / 渠道（2026-11-05）：侧栏和设置页都走这条兼容层。
+      if (body.drawStyle === 'photo' || body.drawStyle === 'anime') {
+        const curActions = store.get().qq?.actions ?? {}
+        patch.qq = { ...(patch.qq ?? {}), actions: { ...curActions, drawStyle: body.drawStyle } }
+      }
+      if (typeof body.imageProvider === 'string' || body.image && typeof body.image === 'object') {
+        const curImg = store.get().qq?.image ?? {}
+        const patchImg = { ...curImg }
+        const pick = (k, v) => {
+          if (v === undefined) return
+          if (typeof v === 'string') patchImg[k] = v.trim()
+          else if (typeof v === 'number' && Number.isFinite(v)) patchImg[k] = v
+        }
+        pick('provider', body.imageProvider)
+        const src = body.image && typeof body.image === 'object' ? body.image : {}
+        for (const k of ['provider', 'url', 'keyEnv', 'baseUrl', 'model', 'size', 'aspect', 'resolution', 'refImage', 'bodyRefImage']) {
+          pick(k, src[k] ?? body['image' + k[0].toUpperCase() + k.slice(1)])
+        }
+        if (src.cropBottom !== undefined || body.cropBottom !== undefined) {
+          const v = Number(src.cropBottom ?? body.cropBottom)
+          if (Number.isFinite(v)) patchImg.cropBottom = Math.max(0, Math.min(0.4, v))
+        }
+        patch.qq = { ...(patch.qq ?? {}), image: patchImg }
       }
       if (Object.keys(patch).length === 0) return json(res, 400, { error: '没有可更新的字段' })
       store.update(patch)

@@ -448,6 +448,69 @@ export const DEFAULTS = {
       signatureAllow: {},
       recall: true,
       /**
+       * `[画图:描述]` —— 走 Magpie 的 MCP 工具生图（2026-11-04 接上）。
+       * 一次约 20 秒，只在明确要图时才用；失败不影响文字。
+       */
+      draw: true,
+      /**
+       * 画图风格（2026-11-05，用户从 GPT 拿的六段式模板落地时加的开关）：
+       *   'photo'（默认）—— 写实手机随手拍；**不带耳鳍**（照片里那两片鳍会变怪东西）
+       *   'anime'         —— 日系二次元插画；带上耳鳍、深蓝女仆装那套完整角色设定
+       * 提示词见 `src/qq/bridge.js` 的 `drawPrompt`。
+       */
+      drawStyle: 'photo',
+    /**
+     * **生图的独立渠道**（2026-11-05 用户要求：「画图 api 应该有单独渠道」）。
+     *
+     * 生图跟对话模型是两条完全不同的链路，不该共用一个 channel：
+     *   · 没有 Magpie 的人可以换成别的生图 API，只要它有「给 prompt、返回图 URL」的接口
+     *   · 面板上也是分开的两项（对话模型 / 画图渠道），谁也不影响谁
+     *
+     * `provider`：
+     *   'magpie-mcp'（默认）—— Magpie 插件暴露的 MCP 工具（minimax 那台的 generate_image）
+     *   'none'              —— 不启用（她就不会画，标记照样被剥掉）
+     */
+    image: {
+      /**
+       * 'magpie-mcp'      —— Magpie 插件暴露的 MCP 工具（minimax 的 generate_image）
+       * 'openai-images'   —— 任何兼容 POST /v1/images/generations 的服务
+       * 'none'            —— 不画（标记照样被剥掉，不会漏成文字）
+       */
+      provider: 'magpie-mcp',
+      /** MCP endpoint（provider=magpie-mcp 用）。Magpie 默认 3425。 */
+      url: 'http://127.0.0.1:3425/mcp/magpie/tools/minimax',
+      /** 认证用哪个凭据名（DSH 凭据库 / 同名环境变量）。留空 = 不认证。 */
+      keyEnv: 'MAGPIE_GATEWAY_KEY',
+      /** provider=openai-images 用：服务地址（例如 https://api.openai.com/v1）。 */
+      baseUrl: '',
+      /** provider=openai-images 用：模型名（各家不一样，如 gpt-image-1）。 */
+      model: '',
+      /** provider=openai-images 用：输出尺寸。留空 = 按 aspect/resolution 自动推。 */
+      size: '',
+      /**
+       * **头部基准图**（2026-11-05 用户要「保住头部特征」）。
+       *
+       * 填一张本地图片路径（建议：正面头部特写）。填了就改走
+       * `POST /v1/images/edits`（参考图 + 指令），模型会保住这**一张脸**：
+       * 同样的脸型/五官/发色/头饰，服装和场景照样能换。
+       * 留空 = 纯文生图（每次重新发明一张脸）。
+       */
+      refImage: '',
+      /**
+       * **全身基准图**（2026-11-05 加：解决"头是头、身体是身体"）。
+       *
+       * 只给一张头当参考时，模型会自己造身体 —— 肤色/光线/比例全对不上。
+       * 填一张**全身图**（同一个人、贴身衣物、能看清身形），
+       * 全身照就改用它当参考，脸和身体一起锁。
+       */
+      bodyRefImage: '',
+      /** 输出的比例与分辨率：9:16 + 2K（底部要裁掉一条去水印，所以故意拉高）。 */
+      aspect: '9:16',
+      resolution: '2K',
+      /** 出图后从底部裁掉的比例（去「MiniMax AI 生成」水印）。0 = 不裁。 */
+      cropBottom: 0.1,
+    },
+      /**
        * 发消息前挂「正在输入…」（2026-11-04 用户要求打开）。
        *
        * 实现是**不 await 的 fire-and-forget**：失败一次就整会话自动禁用，
