@@ -6150,6 +6150,15 @@ export class QQBridge {
     // 用量：优先用上游返回的 usage（准确），拿不到就按字符估算。
     let usage = null
     try {
+      /*
+       * ★ 整体上限（2026-11-05）：流卡死时**不能永远等**。
+       *   实测私聊「插话」那次生成再也没返回 → 同会话队列被堵死，
+       *   后面所有消息都发不出去（用户原话：「不回我消息了」）。
+       *   超时就用已经收到的部分（通常为空，上层按沉默/失败处理）。
+       */
+      const genMaxMs = Number(this.cfg.reply?.genMaxMs ?? 45_000)
+      let genTimedOut = false
+      const consumeStream = async () => {
       for await (const chunk of opened.stream) {
         const t = chunk?.type
         // 首字延迟：用户感知的"反应快不快"。推理模型可能先吐几百字思考，
@@ -6167,6 +6176,20 @@ export class QQBridge {
             throw new Error(chunk.reason.failure?.message ?? '模型返回错误')
           }
         }
+      }
+      }
+      await Promise.race([
+        consumeStream(),
+        new Promise((resolve) => {
+          const tm = setTimeout(() => { genTimedOut = true; resolve() }, genMaxMs)
+          tm.unref?.()
+        }),
+      ])
+      if (genTimedOut) {
+        this.log.warn?.(
+          `bridge：生成超过 ${Math.round(genMaxMs / 1000)}s 还没结束 —— 不再等（正文 ${text.length} 字 / 推理 ${reason.length} 字）`
+            + '；这条按已收到的内容处理，队列继续'
+        )
       }
     } finally {
       // ⚠️ 无论成功失败都要记 —— 失败的调用同样消耗了上游 token
