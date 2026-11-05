@@ -1744,7 +1744,12 @@ window.__ModuleLoader__.load({
         /* ── 生成图（缩略图网格；点开预览）──────────────────────── */
         enabled ? (() => {
           const items = (status.data?.images ?? []).slice(0, 12)
-          const base = `?token=${encodeURIComponent(token ?? '')}`
+          /*
+           * ⚠️ 不要在这里拼 token —— 这个作用域里**没有** token 变量，
+           *    写了会在渲染时抛 ReferenceError，整个面板直接黑掉（2026-11-05 实测）。
+           *    同源请求，鉴权由外层统一带上。
+           */
+          const base = ''
           return h(Fold, {
             title: t('dash.images'),
             hint: t('dash.imagesHint'),
