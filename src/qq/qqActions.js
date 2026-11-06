@@ -200,7 +200,7 @@ export function extractQQMarkers(text) {
  * @param {object} [o.log]    日志
  * @returns {Promise<string[]>} 给用户看的说明（会像禁言那样附在正文后面）
  */
-export async function runQQMarkers({ items, onebot, msg, mem, cfg = {}, log = {}, selfName = '' }) {
+export async function runQQMarkers({ items, onebot, msg, mem, cfg = {}, log = {}, selfName = '', selfPhoto = null }) {
   const notes = []
   const enabled = (k) => cfg?.[k] !== false
 
@@ -266,24 +266,48 @@ export async function runQQMarkers({ items, onebot, msg, mem, cfg = {}, log = {}
       if (!content) { log.warn?.('qq-actions：说说内容为空，跳过'); continue }
       // ⚠️ 字段名是 content（NapCat 的 payloadSchema 里写的），不是 message
       /*
-       * ⚠️ 带上图（2026-11-05）：他说「把这张发空间」时，图就在这条消息里 ——
-       *    NapCat 的 images 收 http(s)/file/base64，QQ 的图片 URL 直接能用。
+       * ★★ **只发她自己的照片，绝不把对方的表情包带出去**（2026-11-06 修）。
+       *
+       * 用户原话：「她会把我表情包带出去而不是自己的照片」。
+       *
+       * 原来这里收图的顺序是：
+       * ```js
+       * let imgs = msg.images                       // 当前这条（**对方发的**）
+       * if (imgs.length < 2) imgs = 最近 8 条里别人发的图  // 还是对方的
+       * ```
+       * 也就是说：**两条路都只收别人的图**，她自己的照片一条都不看。
+       * 于是「发个空间」= 把他的表情包原样贴到她的 QQ 空间 —— 公开动作，
+       * 发出去就收不回。
+       *
+       * 现在：
+       *   ① 优先 `msg.selfPhoto`（她自己刚生成/刚拍的那张，由 bridge 传入）
+       *   ② 其次她自己在最近消息里发过的图（`m.isMe`）
+       *   ③ **都没有就不带图**（只发文字）—— 宁可是纯文字说说，
+       *      也不能把他的表情包发到她空间
        */
-      let imgs = (Array.isArray(msg?.images) ? msg.images : []).filter(Boolean).slice(0, 9)
-      /*
-       * ⚠️ 图常常在**上一条消息**里（他先发图、再说「发个空间」）—— 这时本条 msg.images 是空的。
-       *    回看最近 8 条，取最近一条带图的（2026-11-05）。
-       */
-      if (imgs.length < 2) {
-        /*
-         * ⚠️ 多图（2026-11-05）：他可能把几张图分几条发 —— 只取"最后一条带图的消息"
-         *    就永远只有一张。这里把最近 8 条里别人发的图都收起来，去重后最多 9 张。
-         */
-        const recent = mem?.recent?.(8) ?? []
-        const all = recent.filter((m) => !m?.isMe).flatMap((m) => (Array.isArray(m.images) ? m.images : []))
-        imgs = [...new Set([...imgs, ...all.filter(Boolean)])].slice(0, 9)
+      let imgs = []
+      const own = selfPhoto ?? msg?.selfPhoto
+      if (own) {
+        const u = typeof own === 'string' ? own : String(own?.url ?? own?.file ?? '')
+        if (u) imgs.push(u)
       }
-      log.info?.(`qq-actions：说说带图 ${imgs.length} 张`)
+      if (imgs.length === 0) {
+        // 她自己在最近消息里发过的图（isMe）—— 这才是"她的照片"
+        const recent = mem?.recent?.(8) ?? []
+        const mine = recent.filter((m) => m?.isMe).flatMap((m) => (Array.isArray(m.images) ? m.images : []))
+        imgs = [...new Set(mine.filter(Boolean))].slice(0, 9)
+      }
+      /*
+       * ⚠️ 只在她**明确要求**把对方那张发出去时才收对方的图。
+       *    判据：正文里有「这张/这张图/刚才那张/发这个」这类指代。
+       *    没有就不收 —— 默认不带别人的东西出门。
+       */
+      const wantsTheirPic = /(这张|那张|这张图|刚才那张|刚发的|发这个|这个图)/.test(content)
+      if (wantsTheirPic && imgs.length < 9) {
+        const theirs = (Array.isArray(msg?.images) ? msg.images : []).filter(Boolean)
+        imgs = [...new Set([...imgs, ...theirs])].slice(0, 9)
+      }
+      log.info?.(`qq-actions：说说带图 ${imgs.length} 张${wantsTheirPic ? '（含对方明确要求的那张）' : '（只带她自己的）'}`)
       log.info?.(`qq-actions：说说内容「${content.slice(0, 60)}」`)
       const payload = { content: content.slice(0, 300), ugc_right: 1 }
       if (imgs.length) payload.images = imgs

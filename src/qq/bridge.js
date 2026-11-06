@@ -4788,6 +4788,12 @@ export class QQBridge {
           mem,
           cfg: this.cfg.actions ?? {},
           log: this.log,
+          /*
+           * ★ **她自己的照片**（这一轮刚生成的那张）——
+           *   发说说时只能用这个，绝不能把对方的表情包带出去
+           *   （2026-11-06 用户实测：「她会把我表情包带出去而不是自己的照片」）。
+           */
+          selfPhoto: drawnImage ?? null,
           // 改签名必须同时带 nickname（协议端 schema 必填），用当前昵称原样传
           selfName: this.selfName,
         })
@@ -5936,6 +5942,8 @@ export class QQBridge {
     try {
       const scopes = (this.memory?.scopes?.() ?? []).slice(0, 6)
       let added = 0
+      /** 补历史时已经识过图的条数（上限 3，别拖慢启动） */
+      let describedCount = 0
       for (const sc of scopes) {
         const isGroup = String(sc).startsWith('group:')
         const id = isGroup ? String(sc).slice(6) : String(sc).slice('private:'.length)
@@ -5961,6 +5969,33 @@ export class QQBridge {
               .map((x) => String(x?.data?.url ?? x?.data?.file ?? ''))
               .filter(Boolean)
             /*
+             * ★★ **转发里的图不在本条消息里**（2026-11-06 修）。
+             * 现场：13:44:51 重启后补历史，那条是「[转发了聊天记录·6条]」——
+             *   m.message 里只有一个 type:'forward' 段，一张 image 都没有，
+             *   所以 imgs 是空的，下面的识图分支根本不会触发。
+             * 解决：展开转发（get_forward_msg），从每个节点的 message 里挖 image。
+             * ⚠️ id 必须字符串原样传（19 位超安全整数，转 Number 丢精度）。
+             * ⚠️ 失败吞掉：展开不了就当没图，不能因此不补历史。
+             */
+            const fwdId = String(segs.find((x) => x?.type === 'forward')?.data?.id ?? '').trim()
+            if (fwdId && imgs.length === 0) {
+              try {
+                const fw = await this.onebot.callHttp('get_forward_msg', { message_id: fwdId, id: fwdId }, 6000)
+                const nodes = fw?.data?.messages ?? fw?.messages ?? []
+                for (const n of (Array.isArray(nodes) ? nodes : [])) {
+                  const ns = Array.isArray(n?.message) ? n.message : (Array.isArray(n?.content) ? n.content : [])
+                  for (const sg of ns) {
+                    if (sg?.type !== 'image') continue
+                    const u = String(sg?.data?.url ?? sg?.data?.file ?? '')
+                    if (u) imgs.push(u)
+                  }
+                }
+                if (imgs.length) this.log.info?.(`bridge：补历史展开转发，取到 ${imgs.length} 张图`)
+              } catch (e) {
+                this.log.debug?.(`bridge：补历史展开转发失败（跳过图）— ${String(e?.message ?? e).slice(0, 60)}`)
+              }
+            }
+            /*
              * ⚠️ 这条**已经在记忆里**但图是空的（旧版本补的）→ 把图补上（2026-11-05）。
              *    否则按 id 去重会跳过它，"说说带图 0 张"永远修不好。
              */
@@ -5969,7 +6004,7 @@ export class QQBridge {
               if (old && !(Array.isArray(old.images) && old.images.length)) old.images = imgs
               continue
             }
-            mem.push(makeMessage({
+            const one = makeMessage({
               id: mid,
               sender: String(m.user_id ?? m.sender?.user_id ?? ''),
               senderName: String(m.sender?.card || m.sender?.nickname || ''),
@@ -5977,7 +6012,45 @@ export class QQBridge {
               at: Number(m.time ?? 0) * 1000 || Date.now(),
               isMe: String(m.user_id ?? m.sender?.user_id ?? '') === String(this.selfId ?? ''),
               images: imgs,
-            }))
+            })
+            mem.push(one)
+            /*
+             * ★★ **补进来的图也要"看"一遍**（2026-11-06 修）。
+             *
+             * 现场（13:44:51 重启那次）：
+             *   13:44:41  转发图已转成文字（42 字）   ← 重启前，她看见了
+             *   13:44:51  WhalePod 启动
+             *   13:44:54  重连补历史 3 条            ← 只补文字，图没解析
+             *   13:45:06  「看到图片了吧」→ 她：没收到图
+             * 用户的原话：「聊天记录不是有吗」—— 有，但她补历史时没看过。
+             *
+             * 只处理**最近 3 条带图的**：启动时识图是要花钱的，
+             * 补 12 条全解析会拖慢启动、也没必要（越新越可能被提起）。
+             * 失败一律吞掉 —— 补历史不能因为识图挂了就不补。
+             */
+            if (imgs.length && describedCount < 3) {
+              describedCount++
+              try {
+                const img = await this.onebot.fetchImage(imgs[0], {
+                  maxBytes: this.cfg.reply?.maxImageBytes ?? 8 * 1024 * 1024,
+                })
+                const mm = /^data:([^;]+);base64,(.*)$/s.exec(String(img?.dataUrl ?? ''))
+                if (mm) {
+                  const block = await this.gateway?.makeImageBlock({
+                    base64: mm[2], mediaType: mm[1], name: 'backfill',
+                  })
+                  if (block) {
+                    const desc = await this._describeForwardImages([block])
+                    if (desc) {
+                      one.text = `${one.text}（图里的内容：${String(desc).slice(0, 200)}）`
+                      this.log.info?.(`bridge：补历史的图已转成文字（${String(desc).length} 字）`)
+                    }
+                  }
+                }
+              } catch (e) {
+                this.log.debug?.(`bridge：补历史识图失败（跳过）— ${String(e?.message ?? e).slice(0, 60)}`)
+              }
+            }
             known.add(mid)
             added++
           }
