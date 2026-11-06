@@ -22,7 +22,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { QQBridge } from '../src/qq/bridge.js'
+import { QQBridge, classifyDrawIntent } from '../src/qq/bridge.js'
 import { setWearing, wearingFor, clearWearing } from '../src/memory/wearing.js'
 
 const p = QQBridge.prototype
@@ -194,17 +194,13 @@ ok('★ 拦下之后要补一句真的问话（否则这条什么都没发）', 
 })
 
 ok('★ 判据覆盖"？"这种没内容的（不能算 go-ahead）', () => {
-  const src = fs.readFileSync(new URL('../src/qq/bridge.js', import.meta.url), 'utf8')
-  const m = /const wantsPic = (\/.*?\/)\.test/.exec(src)
-  assert.ok(m, '找不到 wantsPic 正则')
-  const re = eval(m[1]) // 同一条正则
-  assert.equal(re.test('？'), false, '「？」不该算要拍')
-  assert.equal(re.test(''), false, '空消息不该算要拍')
-  assert.equal(re.test('拍一张'), true)
-  assert.equal(re.test('全身'), true)
-  assert.equal(re.test('对镜'), true)
+  // 2026-11-06：换成短语表 + classifyDrawIntent，直接断言行为
+  assert.equal(classifyDrawIntent('？').wantsPic, false, '「？」不该算要拍')
+  assert.equal(classifyDrawIntent('').wantsPic, false, '空消息不该算要拍')
+  assert.equal(classifyDrawIntent('拍一张').wantsPic, true)
+  assert.equal(classifyDrawIntent('全身照').wantsPic, true)
+  assert.equal(classifyDrawIntent('对镜自拍').wantsPic, true)
 })
-
 console.log('\n=== 9. 衣着以「今天穿着」为准，场景句里的衣服不算 ===')
 ok('★ 提示词里有"衣着只按那一行"的优先级说明', () => {
   const src = fs.readFileSync(new URL('../src/photo/photo-prompt.js', import.meta.url), 'utf8')

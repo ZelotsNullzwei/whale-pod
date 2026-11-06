@@ -12,7 +12,7 @@
  */
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
-import { QQBridge, pickPrivateCover } from '../src/qq/bridge.js'
+import { QQBridge, pickPrivateCover, classifyDrawIntent } from '../src/qq/bridge.js'
 
 const p = QQBridge.prototype
 let pass = 0
@@ -144,15 +144,11 @@ ok('★ 内容去重还在（防刷屏，跟"他明确要发"不冲突）', () =
 
 console.log('\n=== 6. 「发个图」要算作"要拍"（否则画图被拦、发群只剩文字）===')
 ok('★ wantsPic 覆盖 图/照片/发个/发张/群里发', () => {
-  const src = fs.readFileSync(new URL('../src/qq/bridge.js', import.meta.url), 'utf8')
-  const m = /const wantsPic = (\/.*?\/)\.test/.exec(src)
-  assert.ok(m, '找不到 wantsPic')
-  const re = eval(m[1])
+  // 2026-11-06：源码里已经没有 wantsPic 正则了（换成短语表 + classifyDrawIntent）
   for (const t of ['群里发个图', '发张照片', '发个图看看', '给我张图']) {
-    assert.equal(re.test(t), true, `应该算要拍：${t}`)
+    assert.equal(classifyDrawIntent(t).wantsPic, true, `应该算要拍：${t}`)
   }
-  assert.equal(re.test('？'), false, '「？」仍然不算')
+  assert.equal(classifyDrawIntent('？').wantsPic, false, '「？」仍然不算')
 })
-
 console.log(`\n${'='.repeat(44)}\n通过 ${pass} / 失败 ${fail}`)
 process.exit(fail === 0 ? 0 : 1)

@@ -4323,9 +4323,16 @@ export class QQBridge {
         if (!this._drawAsk) this._drawAsk = new Map()
         const askedAt = this._drawAsk.get(askKey) ?? 0
         const askedFresh = askedAt > 0 && Date.now() - askedAt < 10 * 60_000
-        const saidNo = /(不用了|不用|算了|别拍了|不看了|不看|别发|不要了)/.test(String(msg.text ?? ''))
-        /* 他明确要看 —— 只认这一种，别再往里加"催图"的说法 */
-        const wantsPic = /(拍|看|图|照片|自拍|全身|半身|对镜|前置|特写|脸|发个|发张|来一张|群里发)/.test(String(msg.text ?? ''))
+        /*
+         * ★★ **意图判断走短语表，不走单字正则**（2026-11-06 规格第 1 条）。
+         *
+         * 原来 wantsPic 里有单字「看」「图」「脸」，saidNo 里有「算了」：
+         *   「我在看剧」「这个图真好笑」  -> 误判成要图
+         *   「算了，还是拍一张吧」        -> 误判成拒绝
+         * 再加词只会更糟（加「快」就命中「快递到了」）。
+         * 现在两张短语表 + 一个导出的纯函数，能直接写回归测试。
+         */
+        const { saidNo, wantsPic } = classifyDrawIntent(msg.text ?? '')
 
         let allowDraw = false
         if (saidNo) {
@@ -5351,6 +5358,15 @@ export class QQBridge {
              *   原来 await _send 之后不看结果就写"已发" —— 纯图发送曾被
              *   空正文守卫整个拦掉，日志却报已发。现在读 __lastSend。
              */
+            /*
+             * ⚠️ **附加图暂不走审核/重拍**（2026-11-06 规格第 8 条）。
+             *   主图有 reviewImage + 不合格重拍；附加图这里没有接上 ——
+             *   不是忘了，是有意为之：补图是"同一轮的额外几张"，
+             *   每张再审核+重拍会把一轮拖到一两分钟，收益也不大
+             *   （同一套提示词、同一时段，风险面和主图一致）。
+             *   但**必须留痕**：日志里每张都标"未过审"，出问题能查。
+             */
+            this.log.info?.(`bridge：第 ${no} 张未过审核（附加图不接审核/重拍，见代码注释）`)
             await this._send(msg, '', `base64://${buf2.toString('base64')}`)
             if (msg.__lastSend?.imageSent) {
               drawSent = true
@@ -5363,7 +5379,27 @@ export class QQBridge {
           }
         }
       } catch { /* 补图失败不影响已经发出去的内容 */ }
-      this.stats.replied++
+      /*
+       * ★★ **回复计数按真实发送结果记**（2026-11-06 规格第 9 条）。
+       *
+       * 原来这里无条件 `stats.replied++` —— 图段失败、正文也失败时，
+       * 统计上照样"回复了一条"，日志和实际对不上（用户看到的是她没回）。
+       *
+       *   · 什么都没发出去      -> 记 failed，不算 replied
+       *   · 正文到了、图没到    -> 算 replied，但记 sent-partial（部分成功）
+       *   · 图和正文都到        -> sent
+       */
+      const sendRes = msg.__lastSend ?? {}
+      const nothingSent = sentIds.length === 0 && !sendRes.imageSent
+      const partial = Boolean(coverForSend?.url) && !sendRes.imageSent && sentIds.length > 0
+      if (nothingSent) {
+        this.stats.failed++
+        this.log.warn?.(`bridge：本轮实际没有任何内容发出（正文 ${JSON.stringify(String(text ?? '').slice(0, 20))}，配图 ${coverForSend?.url ? '有' : '无'}）`)
+        // ⚠️ 这里**不要**再 _record：下面统一按 partial / nothingSent 记一次。
+        //    原来两处都记，一条失败回复在轨迹里会出现两遍（2026-11-06 自查发现）。
+      } else {
+        this.stats.replied++
+      }
       mem.push(makeMessage({
         // ⚠️ 用自己的 message_id 记录这条回复。
         //    这样别人**引用我的话**回复时，能通过 replyTo 匹配到它，
@@ -5382,7 +5418,8 @@ export class QQBridge {
         provider: this._lastRoute?.provider ?? null,
         model: this._lastRoute?.model ?? null,
       }))
-      this._record(msg, d, text, 'sent')
+      // ★ 部分成功要说"部分"（图没到），全成功才记 sent
+      this._record(msg, d, text, partial ? 'sent-partial' : (nothingSent ? 'send-fail' : 'sent'))
       /*
        * 把**自己发了什么**也写进日志。
        *
@@ -10510,4 +10547,67 @@ function splitBySentences(text, maxChars) {
     for (let i = 0; i < p.length; i += maxChars) out.push(p.slice(i, i + maxChars))
   }
   return out.filter((s) => s.trim())
+}
+
+/**
+ * ★ 要图请求的**短语**表（不是单字）。
+ * 收录原则：必须能唯一指向"让他拍/发一张"，**宁可漏收不误收** ——
+ * 漏了还有"她问过、他答了"那条路兜住；误收会白花钱还刷屏。
+ */
+export const PIC_REQUEST_PHRASES = [
+  // 拍
+  '拍一张', '拍张', '拍个', '拍一下', '拍下来', '拍个照', '拍照', '拍给我', '拍给', '拍啊', '拍吧',
+  '快拍', '再拍', '就拍', '拍不拍', '来一张', '来张', '拍嘛', '拍一个',
+  // 自拍姿势
+  '自拍', '对镜', '前置', '怼脸', '特写', '全身照', '半身照', '出镜', '露脸', '露个脸',
+  // 发
+  '发图', '发个图', '发张图', '发照片', '发张', '发个照', '图给我', '照片给我', '发一张', '发过来',
+  // 给/来（要一张图给我；带"看"的都挪到 LOOK 表走宾语检查）
+  '给我张图', '给我一张', '来点图', '有图吗', '有照片吗', '来张图', '要照片', '想看照片',  // 群
+  '群里发', '发到群', '群发一张',
+  // 催（必须配着拍/图才算，避免「快点」误伤）
+  '怎么还不拍', '还没拍', '不拍吗',
+]
+
+/**
+ * ★ 明确拒绝的短语表。
+ * ⚠️ 故意**不收**单独的「算了」「不用」—— 它们后面常跟着要图请求
+ *    （「算了，还是拍一张吧」）。要拒绝就得说完整。
+ */
+export const PIC_REFUSE_PHRASES = [
+  '不用了', '不用拍', '不用发', '不用看', '别拍了', '别发了', '别拍', '不要了', '不要拍',
+  '不拍了', '不看了', '算了不拍', '算了不用', '先不拍', '这次不拍', '不需要', '不必拍',
+]
+
+/**
+ * ★★ 「看」这一族必须**排除她在说自己看别的东西**（2026-11-06 实测）。
+ *
+ * 「给我看看」是要图，但「给我看看书」不是 —— 短语表分不出这种差别，
+ * 因为区别在**宾语**。所以命中"看"族短语后，还要看有没有跟着别的宾语。
+ */
+export const PIC_REQUEST_LOOK_PHRASES = [
+  '看看你', '看你的', '让我看', '我看看', '给我看', '给我看看', '看下你', '看效果', '看成品', '看片',
+  '发来看看', '看下效果',
+]
+/** 后面跟这些 = 他在看别的东西，不是在要图 */
+export const PIC_LOOK_BLOCK = /看(书|剧|电影|电视|球|直播|视频|新闻|微博|抖音|漫画|小说|片源|B站|b站|案例|教程|评论|弹幕|资料|消息|手机|电脑|屏幕|镜子|外面)/
+
+/**
+ * 判断他这句话是要图、还是拒绝（导出的纯函数，给回归测试用）。
+ *
+ * 规则：
+ *   · 命中要图短语 -> wantsPic
+ *   · 命中拒绝短语**且没有**要图短语 -> saidNo
+ *     （两者同时出现时要图赢：「算了，还是拍一张吧」是请求不是拒绝）
+ * @param {string} text
+ * @returns {{wantsPic:boolean, saidNo:boolean}}
+ */
+export function classifyDrawIntent(text) {
+  const s = String(text ?? '')
+  if (!s.trim()) return { wantsPic: false, saidNo: false }
+  // 「看」族要过宾语检查：「给我看看书」不是要图
+  const lookHit = PIC_REQUEST_LOOK_PHRASES.some((p) => s.includes(p)) && !PIC_LOOK_BLOCK.test(s)
+  const wantsPic = PIC_REQUEST_PHRASES.some((p) => s.includes(p)) || lookHit
+  const refused = PIC_REFUSE_PHRASES.some((p) => s.includes(p))
+  return { wantsPic, saidNo: refused && !wantsPic }
 }
