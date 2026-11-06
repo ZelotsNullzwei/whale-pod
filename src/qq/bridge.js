@@ -4283,17 +4283,54 @@ export class QQBridge {
          * 没有 → 不画，把这句话改成问句（问拍什么、怎么拍）。
          */
         /*
-         * ⚠️ 「发个图 / 群里发张」也要算 go-ahead（2026-11-06 实测漏了）。
-         *    第一版只有"拍/看/来一张"，他说「群里发个图」被判成"没说要拍"，
-         *    于是画图被拦、发群只剩一句文字。
+         * ★★ **要不要画图：状态机，不猜关键词**（2026-11-06）。
+         *
+         * 用户：「感觉这样写会出问题」—— 对。上一版靠往正则里加词
+         * （催/快/还没/倒是…），必然误伤：「还没吃饭呢」命中"还没"、
+         * 「快递到了」命中"快"，都会误触发画图。
+         *
+         * ```
+         * idle  ──她写[画图:]但他没说要──▶ 拦住 + 问"拍什么、怎么拍" ──▶ asked
+         * asked ──他回了任何一句话─────────▶ 放行画一张 ──▶ idle
+         * idle  ──他明确要（拍/看/图/自拍/全身…）──▶ 直接画 ──▶ idle
+         * asked ──他说"不用/算了/不看"─────▶ 拦住 + 回 idle
+         * ```
+         *
+         * 关键：**asked 状态下放行不看内容** —— 他回「在磨蹭什么」也算，
+         * 因为"拍什么/怎么拍"已经在她的问题里定过了（用户口径：询问就是变量控制）。
+         * 这样正则只需要认"明确要看"一种，不用再猜"催图"的各种说法。
          */
-        const goAhead = /(要|拍|看|图|照片|来一张|发一张|发个|发张|可以|行吧|好啊|嗯|对镜|前置|全身|半身|特写|脸|这张|那张|自拍|群里发)/.test(String(msg.text ?? ''))
-        if (this.cfg.actions?.askBeforeDraw !== false && !goAhead) {
+        const askKey = String(msg.scope ?? '')
+        if (!this._drawAsk) this._drawAsk = new Map()
+        const askedAt = this._drawAsk.get(askKey) ?? 0
+        const askedFresh = askedAt > 0 && Date.now() - askedAt < 10 * 60_000
+        const saidNo = /(不用了|不用|算了|别拍了|不看了|不看|别发|不要了)/.test(String(msg.text ?? ''))
+        /* 他明确要看 —— 只认这一种，别再往里加"催图"的说法 */
+        const wantsPic = /(拍|看|图|照片|自拍|全身|半身|对镜|前置|特写|脸|发个|发张|来一张|群里发)/.test(String(msg.text ?? ''))
+
+        let allowDraw = false
+        if (saidNo) {
+          // 明确拒绝 → 不画，并且退出"等确认"状态
+          this._drawAsk.delete(askKey)
+          this.log.info?.('bridge：画图跳过 —— 他说了不用/不看')
+          msg.__askInstead = false
+        } else if (wantsPic) {
+          allowDraw = true
+        } else if (askedFresh) {
+          /* 她问过、他答了（答什么都算）→ 放行，并清掉状态 */
+          allowDraw = true
+          this.log.info?.('bridge：她问过了、他答了 → 这次可以画')
+        }
+
+        if (this.cfg.actions?.askBeforeDraw !== false && !allowDraw) {
           this.log.info?.('bridge：画图跳过 —— 他没说要拍（先问"拍什么、怎么拍"）')
           msg.__askInstead = true
+          this._drawAsk.set(askKey, Date.now())
         } else if (this.cfg.actions?.draw === false) {
           this.log.info?.('bridge：画图被开关关掉了（qq.actions.draw = false）')
         } else {
+          // 真画了 → 清掉"问过"的标记，别一直挂着
+          this._drawAsk.delete(askKey)
           /*
            * 真开始画了 —— 谎报闸的 `did.draw` 认这个（跳过的情况不算画过）。
            */
