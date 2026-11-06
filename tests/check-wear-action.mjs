@@ -67,13 +67,16 @@ ok('★ 换装后，wearingFor 立刻能读到（当天有效）', async () => {
   fs.rmSync(dir, { recursive: true, force: true })
 })
 
-ok('★ 晚上（睡衣时段）自动让位 → 读不到', async () => {
+ok('★ 晚上 22 点前仍然有效（19:39 那张女仆装就是这么丢的）', async () => {
   const W = await import(`../src/memory/wearing.js?t=${Date.now()}-2`)
   W.configureWearState({ home: dir })
   const k = '2026-11-06'
   W.setWearing(k, { text: '短款女仆装' })
-  assert.equal(W.wearingFor(k, 'evening'), null)
-  assert.equal(W.wearingFor(k, 'night'), null)
+  // 19:39 —— 现场那次生图的时间：必须还能读到
+  assert.equal(W.wearingFor(k, 'evening', new Date('2026-11-06T19:39:00'))?.text, '短款女仆装')
+  // 22:30 真到睡觉点了 → 让位给睡裙
+  assert.equal(W.wearingFor(k, 'evening', new Date('2026-11-06T22:30:00')), null)
+  assert.equal(W.wearingFor(k, 'night', new Date('2026-11-06T02:00:00')), null)
   fs.rmSync(dir, { recursive: true, force: true })
 })
 
