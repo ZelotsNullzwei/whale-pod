@@ -3954,9 +3954,17 @@ export class QQBridge {
            */
           /** 生图渠道（独立配置，见 config.store.js 的 qq.image）。 */
           const imgCfg = this.cfg?.image ?? {}
+          /*
+           * ★ 按时段取衣服（2026-11-06 用户：「现在服装就用的是一天固定一套」）：
+           *   起床/深夜穿睡衣，白天穿家居服。两者都来自衣柜白名单（memory/wardrobe.js）。
+           */
           const outfitText = (() => {
             try {
-              const v = this.dayPlan?.today?.()?.outfit
+              const today = this.dayPlan?.today?.()
+              const h = new Date().getHours()
+              const justWoke = currentSlot().id === 'morning' && h < 9
+              const lateNight = h >= 23 || h < 5
+              const v = (justWoke || lateNight) ? today?.sleepwear : today?.outfit
               return v ? String(v).replace(/\s+/g, ' ').slice(0, 120) : ''
             } catch { return '' }
           })()

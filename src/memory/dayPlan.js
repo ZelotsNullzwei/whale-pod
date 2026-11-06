@@ -23,6 +23,7 @@
 
 import fs from 'node:fs'
 import path from 'node:path'
+import { outfitForDay, sleepwearForDay, hairForDay } from './wardrobe.js'
 
 /** 一天分成四个时段。带分钟会让缓存失效，所以只到时段。 */
 export const SLOTS = [
@@ -88,8 +89,8 @@ ${recent.length > 0 ? `- 别跟前几天重样。前几天大概是：\n${recent
   "mood": "今天的心情，一两个词",
   "smallThing": "今天发生的一件小事",
   "weather": "今天的天气，一句（晴/阴/雨 + 冷热感，比如「阴天，十几度，有点凉」）",
-  "hair": "今天头发怎么弄的，一句（披着 / 扎低马尾 / 盘起来 / 用发夹夹到一边）",
-  "outfit": "今天在家从头到脚穿什么，**按顺序写全**：头饰（发夹/头绳）→ 上衣 → 下装（裙或裤）→ 袜子 → 鞋。一样都别漏，颜色和款式都说清楚，比如「白色蕾丝发带、浅灰短袖家居T恤、深蓝棉布长裤、白棉袜、不穿鞋只穿拖鞋」"
+  "hair": "（不用填，代码会填）",
+  "outfit": "（不用填，代码会填）",
 }`
 }
 
@@ -109,7 +110,7 @@ export function parseDayPlan(text) {
     if (!j || typeof j !== 'object') return null
     // 只保留认识的字段，避免模型塞一堆东西进来
     const out = {}
-    for (const k of ['wake', 'morning', 'noon', 'afternoon', 'evening', 'mood', 'smallThing', 'weather', 'hair', 'outfit']) {
+    for (const k of ['wake', 'morning', 'noon', 'afternoon', 'evening', 'mood', 'smallThing', 'weather', 'hair', 'outfit', 'sleepwear']) {
       const v = j[k]
       if (typeof v === 'string' && v.trim()) out[k] = v.trim().slice(0, 60)
     }
@@ -145,6 +146,7 @@ export function renderDayPlan(plan, slotId) {
   if (plan.weather) parts.push(`今天天气：${plan.weather}`)
   if (plan.hair) parts.push(`今天的头发：${plan.hair}`)
   if (plan.outfit) parts.push(`今天穿的：${plan.outfit}`)
+  if (plan.sleepwear) parts.push(`睡觉穿的：${plan.sleepwear}`)
   if (plan.mood) parts.push(`心情：${plan.mood}`)
   if (plan.smallThing) parts.push(`今天的小事：${plan.smallThing}`)
   if (parts.length === 0) return ''
@@ -221,7 +223,16 @@ export class DayPlanStore {
    * @param {Date} [now]
    */
   setToday(plan, now = new Date()) {
-    this.data.plans[dayKey(now)] = plan
+    /*
+     * ★ 衣服/睡衣/发型**不由模型编**（2026-11-06）：
+     *   从衣柜白名单按日期取 —— 同一天永远同一套，隔天换一套，且不会编出怪东西。
+     */
+    const k = dayKey(now)
+    const p = { ...plan }
+    p.outfit = outfitForDay(k)
+    p.sleepwear = sleepwearForDay(k)
+    p.hair = hairForDay(k)
+    this.data.plans[k] = p
     this.save()
     return plan
   }

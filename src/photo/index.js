@@ -56,7 +56,27 @@ export function planShot(o = {}) {
   const last = continuity.peek(scope)
   const skipCheck = shouldSkipPhoto({ scene, lastScene: last?.lastScene ?? '' })
   if (skipCheck.skip) {
-    return { skip: true, skipReason: skipCheck.reason, prompt: '', refImage: '', size: '', plan: {}, framingInfo: {} }
+    /*
+     * ⚠️ 早退分支**必须把字段补全**（2026-11-06 修）。
+     * 以前只返回 5 个字段，调用方读 `shot.emotion` / `shot.framing` / `shot.issues`
+     * 就全是 undefined（日志里打成 "undefined"，排查时一头雾水）。
+     */
+    return {
+      skip: true,
+      skipReason: skipCheck.reason,
+      mode: '',
+      modeLabel: '不拍',
+      framing: '',
+      prompt: '',
+      refImage: '',
+      size: '',
+      issues: [],
+      emotion: '',
+      emotionId: '',
+      continuityStrength: last ? (last.strength ?? '') : '',
+      plan: {},
+      framingInfo: {},
+    }
   }
 
   /* ② 规划拍摄方式 */
@@ -84,7 +104,7 @@ export function planShot(o = {}) {
   expressionHistory.set(scope, expression.id)
 
   /* ⑥ 参考图：按"人要不要出现在画面里"决定 */
-  const refImage = pickRefImage(plan, framing, imageCfg)
+  const refImage = pickRefImage(plan, framing, imageCfg, anime)
 
   /* ⑥ 连续性说明（只继承状态，不继承构图） */
   const note = continuity.continuityNote(scope, { outfit, hair, slot })
@@ -130,11 +150,21 @@ export function planShot(o = {}) {
  *   背影          → 全身三视图
  *   第一人称/拍物  → 不带
  */
-function pickRefImage(plan, framing, cfg = {}) {
+function pickRefImage(plan, framing, cfg = {}, anime = false) {
   if (plan.needsCharacterRef === false) return ''
-  const head = String(cfg.refImage || '')
-  const face3 = String(cfg.faceRefImage || '')
-  const body = String(cfg.bodyRefImage || '')
+  /*
+   * ★ 插画档用自己的参考图（2026-11-05）：
+   *   用户提供了完整 anime 设定图（4096×2804），按卡片框裁出正脸/正面全身/侧身。
+   *   插画档不能再用写实版参考图 —— 风格会串（写实脸套插画会崩）。
+   */
+  /*
+   * ⚠️ anime 的 head 用**全身图**（2026-11-05 用户指正：「头身比问题」）：
+   *   用头像当 head 时，模型只看到一张脸 → 画成"大头小身子"。
+   *   全身图才能把头身比带过去。头像只在面部特写/头肩时用。
+   */
+  const head = String((anime && cfg.animeBodyRefImage) || cfg.refImage || '')
+  const face3 = String((anime && cfg.animeFaceRefImage) || cfg.faceRefImage || '')
+  const body = String((anime && cfg.animeBodyRefImage) || cfg.bodyRefImage || '')
 
   /*
    * ★ 露脸就优先用**头像那张**（2026-11-05）：
@@ -142,6 +172,15 @@ function pickRefImage(plan, framing, cfg = {}) {
    *   身材靠提示词里的尺寸段压，不靠三视图。
    */
   const faceVisible = plan.mode === 'front_selfie' || plan.mode === 'mirror_selfie' || plan.mode === 'video_call'
+  /*
+   * ⚠️ 但 **anime 档例外**（2026-11-05 用户指正：「anime 上面不是有标准女仆装全身吗」）：
+   *   设定图的正面全身里脸也在，用它当参考能同时带上「脸 + 头身比 + 服装」，
+   *   用头像只会画出"大头小身子"。所以 anime 档即使露脸也走全身图。
+   */
+  if (anime && body) {
+    if (framing.framing === '面部特写' || framing.framing === '头肩') return face3 || body
+    return body
+  }
   if (faceVisible && (face3 || head)) {
     // 全身照也先给头像（脸最重要）；确实要全身时三视图只能当补充，这里不选
     return face3 || head

@@ -24,10 +24,9 @@ const HINTS = [
   // 视频通话（排在前面：通话场景常写"架在桌上"，容易被其它规则抢走）
   { re: /(视频|通话|语音里|看着屏幕|视频聊天|视频里)/, mode: 'video_call' },
   /*
-   * ★ 支架/定时拍（2026-11-05）：必须排在自拍**前面** ——
-   *   实测「手机架在茶几上」被 front_selfie 抢走，判成了自拍。
+   * ★ 视频通话（2026-11-05）：必须排在自拍**前面** ——
+   *   实测「手机架在桌上视频通话」被 front_selfie 抢走，判成了自拍。
    */
-  { re: /(架在|架着|支架|三脚架|立在|靠着|定时拍|定时拍摄|放桌上拍|摆好手机)/, mode: 'timer_shot' },
   /*
    * ★ 躺着/刚睡醒 → 自拍（2026-11-05）：
    *   补「低头摆弄东西」规则时误伤了这一档 —— 「刚睡醒赖在床上」被判成第一人称。
@@ -77,8 +76,8 @@ const SLOT_BIAS = {
   wake: ['front_selfie', 'first_person'],
   morning: ['first_person', 'front_selfie'],
   noon: ['first_person', 'front_selfie'],
-  afternoon: ['first_person', 'timer_shot', 'front_selfie'],
-  evening: ['first_person', 'timer_shot', 'front_selfie'],
+  afternoon: ['first_person', 'front_selfie'],
+  evening: ['first_person', 'front_selfie'],
   night: ['first_person', 'front_selfie'],
 }
 
@@ -89,10 +88,14 @@ const ACTIVITY_BIAS = [
   { re: /(沙发|躺|窝在|靠枕|看剧|看漫画|听歌)/, mode: 'front_selfie', subject: '窝在沙发上的自己' },
   { re: /(穿搭|新衣服|新发饰|发型|头饰|试衣)/, mode: 'mirror_selfie', subject: '今天的穿搭' },
   /*
-   * 背影/背对：她自己拍不到自己的背影（前摄拍不到、后摄要举到身后）——
-   * 又没有支架可用，所以这个构图本来就不成立。改成第一人称（不拍自己背后）。
+   * 背影/背对：这是**拍她自己**（不是拍眼前的东西）。
+   *
+   * 之前把它错映射成 first_person（镜头≈她的眼睛，画面里没有她），
+   * 结果"只露出一点侧后方的背"被画成一个跟她无关的房间。
+   * 她一个人拍不到自己后脑 → 用**镜子自拍**（能看到自己背面），
+   * 没镜子就退成前置自拍（露正脸，也是"看看样子"）。
    */
-  { re: /(背影|后脑|背对)/, mode: 'first_person', subject: '眼前的东西' },
+  { re: /(背影|后脑|背对|背对镜头|侧后方)/, mode: 'mirror_selfie', subject: '镜子里的自己' },
   { re: /(窗|阳台|外面|楼下|天)/, mode: 'rear_selfie', subject: '窗外/阳台的样子' },
 ]
 
@@ -207,5 +210,11 @@ export function shouldSkipPhoto({ scene = '', lastScene = '' } = {}) {
   if (lastScene && s === String(lastScene).trim()) {
     return { skip: true, reason: '和上一张图是同一个场景，重复了' }
   }
+  /*
+   * ⚠️ **不要因为"暗/在床上/只露一点"就不拍**（2026-11-05 用户驳回）。
+   * 关灯躺在床上举着手机自拍是很正常的场景，拦掉反而错。
+   * 那张"雷霆图"的真因是**判成了第一人称（不带参考图）** → 画了个空房间，
+   * 已经由 photo-modes 的"拍自己必须带参考图"修掉了，不在这里拦。
+   */
   return { skip: false, reason: '' }
 }

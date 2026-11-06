@@ -30,6 +30,24 @@ import { renderExpression } from './photo-expression.js'
  * @param {object} [o.character] { faceRef, bodyRef } 参考图文件名（只用于说明"照哪张"）
  * @returns {string} 完整提示词
  */
+/**
+ * 按当前小时给光线与窗外（2026-11-06 用户：「时间要对的上」）。
+ *
+ * ⚠️ 之前提示词里**完全没提时间**，凌晨画出来也是"自然光白天"，
+ *   和她实际在熬夜对不上。这里按小时给一段明确的描述。
+ */
+function lightByHour(h = new Date().getHours()) {
+  if (h >= 23 || h < 5) {
+    return '**深夜**：屋里只开一盏暖黄小灯，光线很暗；窗外是黑的（不要日光、不要白天）；整体偏暗、有轻微噪点'
+  }
+  if (h < 8) return '**清早**：柔和的晨光从窗外进来，光线偏淡；屋里还没完全亮起来'
+  if (h < 11) return '**上午**：明亮柔和的自然光，窗边有光斑'
+  if (h < 14) return '**中午**：充足的自然光，稍硬一点'
+  if (h < 17) return '**下午**：柔和的斜光，光温偏暖'
+  if (h < 19) return '**傍晚**：暖黄的斜阳，光温明显偏暖'
+  return '**晚上**：室内暖光为主（顶灯或台灯），窗外已经黑了；不要日光'
+}
+
 export function composePhotoPrompt(o = {}) {
   const {
     plan = {}, framing = {}, scene = '', outfit = '', hair = '', weather = '', mood = '',
@@ -140,6 +158,7 @@ ${(framing.notes ?? []).map((n) => '- ' + n).join('\n')}
     parts.push(`【画面】第一人称：镜头就是她的眼睛，看到的是**她眼前的东西**。
 场景内容：${sceneClean}
 ${continuity ? '\n' + continuity : ''}
+${lightByHour()}
 ⚠️ **硬性要求（第一人称）**：
 - **画面里不能出现她整个人、也不能出现她的脸** —— 镜头在她眼睛位置，看不到自己。
 - 只能出现：**她的手/手臂**（做动作的那部分）、眼前的桌面/食物/物件、房间的一角。
@@ -151,6 +170,7 @@ ${continuity ? '\n' + continuity : ''}
     parts.push(`【画面】只管"她在做什么 + 周围有什么 + 光线氛围"
 ${sceneClean}
 ${continuity ? '\n' + continuity : ''}
+${lightByHour()}
 ⚠️ 上面这句里如果出现描写她**外貌**的词（发色、发型、头饰、首饰、"蓝黑色长发""只露侧脸"之类），
 **一律作废、不要照画** —— 长相/发色/头饰/耳饰以参考图和【人物】为准。`)
   }
@@ -164,15 +184,7 @@ ${continuity ? '\n' + continuity : ''}
     '拼贴感：头像贴到另一个身体上、双重打光、局部清晰度不一致',
   ]
   if (plan.mode !== 'mirror_selfie') bans.push('镜面反射（这一张没有镜子）')
-  /*
-   * ★ 支架定时拍：手机/支架**绝对不能入画**（2026-11-05 用户指正）。
-   *   手机就是正在拍这张照片的设备，出现在画面里 = 变成第三人称视角。
-   *   写在 mode.rules 里模型不听（实测右下角还是出现手机），所以提到禁令段。
-   */
-  /*
-   * ⚠️ timer_shot **不写"不要手机"**（2026-11-05 实测两次翻车）：
-   *   否定式提示词反而把手机/三脚架召唤出来。改由 photo-modes 的机位描述正面约束。
-   */
+
   if (plan.hidePhone) bans.push('手机')
   if (plan.needsCharacterRef === false) bans.push('她自己的完整脸部')
   if (!framing.feet) bans.push('完整双脚（这一张不拍脚）')
