@@ -88,6 +88,8 @@ export function planShot(o = {}) {
   const hasMirror = /(镜子|照镜子|穿衣镜|镜前|对着镜子|镜子里|对镜自拍)/.test(scene) || loc.id === 'mirror'
   const check = validatePhotoPlan(plan, {
     scene, hasMirror, timeOfDay: slot,
+    /* ★ 2026-11-07：判断"他想看身形"要看那句请求，光看场景不够 */
+    request,
   })
   plan = applyFix(plan, check.fix, MODES)
 

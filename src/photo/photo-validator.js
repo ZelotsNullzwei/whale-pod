@@ -97,6 +97,20 @@ export function validatePhotoPlan(plan, ctx = {}) {
     fix.reason = '第一人称拍不到自己的脸 → 改成前置自拍'
   }
 
+  /*
+   * ★★ 前置自拍却要拍身形 → 改成镜子自拍（2026-11-07 实测事故）。
+   *
+   * 前摄只有一臂距离，拍不到全身/三分之二身；模型为了构图会往后退，
+   * 于是画面里多出"别人的手臂举着手机"、还带镜子边。
+   * 想要身形，物理上只有镜子自拍（站到镜子前）能做到。
+   */
+  const wantsFigure = /(身材|三围|体型|全身|腿长|比例|这一身|这身|穿搭|好不好看)/.test(String(text) + ' ' + String(ctx.request ?? ''))
+  if (plan.mode === 'front_selfie' && wantsFigure) {
+    issues.push({ code: 'fp_figure', msg: '前置自拍拍不到全身/身形', level: 'high' })
+    fix.mode = 'mirror_selfie'
+    fix.reason = '前置自拍拍不到全身/身形 → 改成镜子自拍'
+  }
+
   /* ⑦ 手机悬空：定时/后置却没提到任何支撑 */
   if (/(手机悬空|飘在|浮在)/.test(text)) {
     issues.push({ code: 'floating_phone', msg: '手机悬空', level: 'high' })
