@@ -26,6 +26,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { createHash } from 'node:crypto'
 import { makeMessage } from '../memory/short.js'
+import { renderFacts } from '../memory/facts.js'
 import { resolveCandidates, openFirstAvailable, applyFreeOrder, PROVIDER_MODEL_HINTS } from '../gateway/router.js'
 import { deriveRouting } from '../gateway/strategy.js'
 import { needsFreshInfo, webSearch, formatSearchContext, pickCoverImage, checkBalance } from '../gateway/search.js'
@@ -7861,6 +7862,11 @@ export class QQBridge {
          *   这里把对面会话的**长期摘要**挂进来，人格仍按会话各用各的。
          */
         this._crossLongDigest(msg.scope),
+        /*
+         * ★ 长期档案（2026-11-06）：只增不减，摘要重写也不会丢。
+         *   可见性按会话过滤：群只看 group+shared，私聊看全部。
+         */
+        renderFacts(msg.scope),
         // ★ 群里没头没尾的开场 → 最多回一个「？」或一个表情（2026-11-05）
         this._groupNoiseHint(msg, mem),
 

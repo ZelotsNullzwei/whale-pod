@@ -20,6 +20,7 @@
 
 import fs from 'node:fs'
 import path from 'node:path'
+import { addFacts } from './facts.js'
 
 /** 一个会话的长期记忆。 */
 export class LongTermMemory {
@@ -89,8 +90,18 @@ export class LongTermMemory {
    * @param {string} newSummary LLM 输出的「【人】…【事】…」格式
    */
   merge(newSummary) {
-    const incoming = newSummary
+    let incoming = newSummary
     if (!incoming) return
+    /*
+     * ★ 先把【记】段收进长期档案（2026-11-06）。
+     *   摘要是覆盖式的，这里的东西**只增不减**；同时把这一段从摘要里剥掉，
+     *   免得它被下一次重写冲掉、也不占摘要预算。
+     */
+    try {
+      const items = parseMemoryFacts(incoming)
+      if (items.length) addFacts(items)
+      incoming = stripMemoryFacts(incoming)
+    } catch { /* 档案写失败不能影响摘要 */ }
 
     /*
      * 不是新格式（老版本调用，或模型没按格式答）→ 原来直接「替换整个摘要」。
@@ -872,7 +883,7 @@ export class LongTermStore {
 /** 默认的摘要提示词（上层可覆盖）。 */
 export const SUMMARY_PROMPT = `你在维护一个 QQ 群聊机器人的长期记忆。目标**不是复述聊天，而是记住人**。
 
-按下面的格式输出，一共五部分（【人】【事实】【事】【我】【梗】）：
+按下面的格式输出，一共六部分（【人】【事实】【事】【我】【梗】【记】）：
 
 【人】
 每行一个人，格式：QQ号 | 昵称 | 一句话印象
@@ -1043,7 +1054,18 @@ ${'【已有印象】是上一次的结论。请在此基础上**更新**：\n- 
 【新的聊天记录】
 {messages}
 
-只输出上述五部分，不要任何前后缀。`
+【记】
+**只增不减的长期条目**（2026-11-06 加）—— 摘要是覆盖式的，写进这里的不会被下一次重写冲掉。
+一行一条，**开头必须标可见性**：
+- 「[私] …」 只有私聊看得见：亲密的话、只对一个人说的、两个人的约定
+- 「[群] …」 只有群里看得见：群友的事、群内梗、群里发生的事
+- 「[公] …」 两边都看得见：他本人的事（住哪、玩什么、什么作息）、跨场合都成立的事
+只写**具体、以后还用得上**的（他提过的经历/偏好/约定、关系变化、群里的固定说法）。
+⚠️ 不写流水账、不写开发调试（日志/测试/配置）、不写"这事还悬着"。
+⚠️ 拿不准该标哪个 → 标 「[私]」（宁可只给私聊看，也别漏到群里）。
+没有就整段留空。**最多 6 行**。
+
+只输出上述六部分，不要任何前后缀。`
 
 /**
  * 解析摘要输出里的「【人】」段。
@@ -1107,6 +1129,45 @@ export function parsePersonLines(text) {
  * 一行一件事。容忍 `|` / `｜` / `：` / `-` 混写（模型本来就爱自由发挥）。
  *
  * ⚠️ 边界必须收到【事】/【我】/【梗】 / 结尾 —— 否则会把后面几段吞掉。
+ *
+ * @param {string} text LLM 输出
+ * @returns {Array<{id:string, fact:string}>}
+ */
+export function parseMemoryFacts(text) {
+  const s = String(text ?? '')
+  const start = s.indexOf('【记】')
+  if (start < 0) return []
+  const rest = s.slice(start + 4)
+  const end = rest.search(/\n【[^】]+】/)
+  const seg = end >= 0 ? rest.slice(0, end) : rest
+  const out = []
+  for (const raw of seg.split(/\r?\n/)) {
+    const line = raw.trim().replace(/^[-*·]\s*/, '')
+    if (!line) continue
+    const m = line.match(/^[\[［]\s*(私|群|公)\s*[\]］]\s*(.+)$/)
+    if (!m) continue
+    const scope = m[1] === '私' ? 'private' : (m[1] === '群' ? 'group' : 'shared')
+    const t = String(m[2]).trim()
+    if (t.length >= 2) out.push({ text: t, scope })
+  }
+  return out
+}
+
+/**
+ * 从摘要里剥掉【记】段（它已经进长期档案了，不该再占摘要预算）。
+ */
+export function stripMemoryFacts(text) {
+  const s = String(text ?? '')
+  const start = s.indexOf('【记】')
+  if (start < 0) return s
+  const rest = s.slice(start + 4)
+  const end = rest.search(/\n【[^】]+】/)
+  const after = end >= 0 ? rest.slice(end) : ''
+  return (s.slice(0, start) + after).replace(/\n{3,}/g, '\n\n').trim()
+}
+
+/**
+ * 解析【事实】段
  *
  * @param {string} text LLM 输出
  * @returns {Array<{id:string, fact:string}>}

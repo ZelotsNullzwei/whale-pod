@@ -144,18 +144,17 @@ ok('SUMMARY_PROMPT 必须有【梗】段，且排除网络烂大街流行语', (
   assert.match(prompt, /最多 10 行/, '要有条数上限')
 })
 
-ok('提示词里说的部分数要和实际一致（五部分）', () => {
+ok('提示词里说的部分数要和实际一致（六部分）', () => {
   const src = fs.readFileSync(path.resolve(import.meta.dirname, '..', 'src', 'memory', 'long.js'), 'utf8')
   /*
    * ⚠️ 2026-10-31 从「四部分」变「五部分」—— 多了【事实】段。
-   *
-   * 加它的原因：`people.json` 里 5 个人 `facts` 全是空数组
-   * （`PersonProfile.addFact()` 写好了却零调用），"记住一个人"只剩一句性格标签。
-   * 摘要现在要顺带产出【事实】，解析后写进人物档案（然后从摘要里剥离）。
+   * ⚠️ 2026-11-06 从「五部分」变「六部分」—— 多了【记】段（只增不减的长期档案，
+   *    带 [私]/[群]/[公] 可见性；摘要里会被剥掉，写进 memory-facts.json）。
    */
-  assert.match(src, /一共五部分/, '开头要说五部分')
-  assert.match(src, /只输出上述五部分/, '结尾也要一致')
+  assert.match(src, /一共六部分/, '开头要说六部分')
+  assert.match(src, /只输出上述六部分/, '结尾也要一致')
   assert.match(src, /【事实】/, '【事实】段要在提示词里')
+  assert.match(src, /【记】/, '【记】段要在提示词里')
 })
 
 ok('★ 提示词不能再要求「【事】里必须包含我说过什么」', () => {
