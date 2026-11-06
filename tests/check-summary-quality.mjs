@@ -175,6 +175,18 @@ await ok('【事】要给出**中性事实**的正确写法', () => {
 })
 
 
+
+await ok('★ 【事】里不许留「悬着的事」（2026-11-06：她因此每轮往群里发图）', () => {
+  const seg = shiSeg()
+  assert.match(seg, /不要留「悬着的事」/)
+  assert.match(seg, /每一轮都惦记着/)
+  assert.match(seg, /每轮往群里发照片/, '要把线上后果写进去')
+})
+
+await ok('★ 【事】里也不许写开发/调试过程', () => {
+  const seg = shiSeg()
+  assert.match(seg, /不要写开发\/调试过程/)
+})
 await ok('★ 【事实】里不许记「我们在开发她」（2026-11-06 线上翻车）', () => {
   const seg = factsSeg()
   assert.match(seg, /不许记「我们在开发/)
