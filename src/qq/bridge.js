@@ -4720,7 +4720,22 @@ export class QQBridge {
             let file = r.url
             let finalBuf = null
             try {
-              const resp = await fetch(r.url, { signal: AbortSignal.timeout(25000) })
+              /*
+               * ★ **下载失败要重试一次**（2026-11-06 实测）：
+               *   23:44 那次 25s 超时 → 走"按 URL 发"兜底 → 原图带水印、
+               *   而且 NapCat 还要再去拉一遍，又拖垮了下一条发送（send_private_msg 超时）。
+               *   重试一次通常就过了；两次都失败才退 URL，并明确记「未裁水印」。
+               */
+              let resp
+              for (let attempt = 0; attempt < 2; attempt++) {
+                try {
+                  resp = await fetch(r.url, { signal: AbortSignal.timeout(25000) })
+                  if (resp.ok) break
+                } catch (e) {
+                  if (attempt === 1) throw e
+                  this.log.warn?.(`bridge：生成图下载失败，重试一次 — ${String(e?.message ?? e).slice(0, 60)}`)
+                }
+              }
               if (resp.ok) {
                 let buf = Buffer.from(await resp.arrayBuffer())
                 /*
@@ -4756,7 +4771,7 @@ export class QQBridge {
                 }
               }
             } catch (e) {
-              this.log.warn?.(`bridge：下载生成图失败（仍按 URL 发）— ${String(e?.message ?? e)}`)
+              this.log.warn?.(`bridge：下载生成图失败（仍按 URL 发，**这张没裁水印**）— ${String(e?.message ?? e)}`)
             }
             try {
               if (finalBuf) this._imageCache().put(drawPrompt, finalBuf, { scope: String(msg.scope ?? ''), ms: r.ms })
