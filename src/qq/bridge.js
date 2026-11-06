@@ -4200,7 +4200,25 @@ export class QQBridge {
      * 失败只 warn —— 和"找图"同理：图是锦上添花，绝不能因此丢文字。
      */
     let drawnImage = null
-    /** 这一轮到底有没有出现画图类标记（谎报闸要用它判"说了要拍却没拍"） */
+    /*
+     * ★★ **生图状态拆成四个**（2026-11-06）。
+     *
+     * 原来只有一个 `drewAny`，既表示"出现过标记"，又在生成前就被置 true ——
+     * 于是生成失败、被限流、被去重跳过、他根本没确认时，谎报闸都以为"已经画了"，
+     * 她照样能说"这就发"而没人拦。
+     *
+     *   drawRequested  这一轮出现过 [画图:]/[场景图:]/[插画:] 标记
+     *   drawAllowed    通过了确认（askBeforeDraw）和功能开关
+     *   drawGenerated  至少有一张真的生成成功（拿到图）
+     *   drawSent       至少有一张真的**发出去**（OneBot 返回成功）
+     */
+    let drawRequested = false
+    let drawAllowed = false
+    let drawGenerated = false
+    let drawSent = false
+    /** 跳过/失败的原因，写日志和记忆用 */
+    let drawSkipReason = ''
+    /** 兼容旧名：`drewAny` 现在严格等于"真的画出来了" */
     let drewAny = false
     {
       const re = /[\[［]\s*画图\s*[:：]\s*([^\]］]+?)\s*[\]］]/g
@@ -4240,7 +4258,8 @@ export class QQBridge {
       })()
       try { msg.__extraMarks = allMarks.slice(1) } catch { /* 只读对象就算了 */ }
       // 记「这一轮有没有要画图」—— 给谎报闸用（见 did.draw）
-      drewAny = allMarks.length > 0
+      drawRequested = allMarks.length > 0
+      // 旧名保留，但只在"真画出来"时置 true（见下面 drawGenerated）
       /*
        * ★ 要脸时把"背影"洗掉并强制自拍（2026-11-06 实测）：
        *   她会照搬前几轮自己说的「背影，脸不在这张里」，planner 就顺着改成第一人称。
@@ -4325,10 +4344,16 @@ export class QQBridge {
         if (this.cfg.actions?.askBeforeDraw !== false && !allowDraw) {
           this.log.info?.('bridge：画图跳过 —— 他没说要拍（先问"拍什么、怎么拍"）')
           msg.__askInstead = true
+          drawAllowed = false
+          drawSkipReason = '没确认（已改为询问）'
           this._drawAsk.set(askKey, Date.now())
         } else if (this.cfg.actions?.draw === false) {
           this.log.info?.('bridge：画图被开关关掉了（qq.actions.draw = false）')
+          drawAllowed = false
+          drawSkipReason = '功能开关关闭'
+          this._drawAsk.delete(askKey)   // 终态：清掉确认状态
         } else {
+          drawAllowed = true
           // 真画了 → 清掉"问过"的标记，别一直挂着
           this._drawAsk.delete(askKey)
           /*
@@ -4555,9 +4580,18 @@ export class QQBridge {
             anime: Boolean(hitIll),
             imageCfg: imgCfg,
           })
+          /*
+           * ★★ **方案不可行只跳过这张图，不能结束整轮**（2026-11-06）。
+           *
+           * 原来这里直接 `return` —— 从 `_handle` 整个返回，
+           * 后面的找图、QQ 动作、正文发送**全都没执行**。
+           * 用户看到的就是"她突然不吭声了"，日志里只有一句「这一轮不画」。
+           */
+          drawMain: {
           if (shot.skip) {
             this.log.info?.(`bridge：这一轮不画（${shot.skipReason}）`)
-            return
+            drawSkipReason = String(shot.skipReason ?? '方案不可行')
+            break drawMain
           }
           this.log.info?.(`bridge：拍摄方案 → ${describeShot(shot)}`)
           const drawPrompt = shot.prompt
@@ -4701,10 +4735,14 @@ export class QQBridge {
               }
             }
             drawnImage = { url: file }
+            drawGenerated = true
+            drewAny = true   // 兼容旧名：真的画出来了
             this.log.info?.(`bridge：画好了（${Math.round(r.ms / 1000)}s）`)
           } else {
             this.log.warn?.(`bridge：画图失败 — ${r.error}`)
+            drawSkipReason = `生成失败：${String(r.error ?? '未知').slice(0, 40)}`
           }
+          }   // ← drawMain 闭合
           }   // ← 10 分钟闸门 else 闭合
         }
       }
@@ -4770,8 +4808,15 @@ export class QQBridge {
             this.log.warn?.(`bridge：找图出错（按纯文字发）— ${String(e?.message ?? e)}`)
           }
         }
-        // 剥完标记如果什么都不剩，就只发图（不硬凑文字）
-        if (!text.trim() && !findImage) {
+        /*
+         * 剥完标记如果什么都不剩，就只发图（不硬凑文字）。
+         *
+         * ★★ **有图就不能 return**（2026-11-06）。
+         *   原来这里只看 `!text.trim() && !findImage` —— 她自己画的那张
+         *   (`drawnImage`) 不在判断里，于是"只发图、不说话"整轮被丢弃，
+         *   图生成了却没发出去。现在有图就继续走下去。
+         */
+        if (!text.trim() && !findImage && !drawnImage) {
           this.stats.silent++
           this._record(msg, d, null, 'find-image-empty')
           this._maybeSummarize(msg.scope, mem, scene)
@@ -5107,8 +5152,12 @@ export class QQBridge {
         qzone: qqNotes.some((n) => String(n).includes('发空间')),
         qzoneImage: qqNotes.some((n) => String(n).includes('发空间了') && !String(n).includes('没图')),
         qzoneDel: qqNotes.some((n) => String(n).includes('删了刚发的说说')),
-        // 这一轮有没有画图标记（说了"换就换/等着"却没画 → 谎报）
-        draw: drewAny,
+        /*
+         * ★★ **是否真的画出来了**（2026-11-06）。
+         * 原来这里是"出现过标记就算画了"，于是被拦/失败/去重时谎报闸失效。
+         * 现在：真的生成成功（drawGenerated）才算。
+         */
+        draw: drawGenerated,
         // 这一轮真的把消息发到群里了吗（跳过节流/发错群/找不到群 → 没发）
         crossGroup: Boolean(crossGroupNote),
         // 这一轮真的换了衣服吗（[换装:…] 或画了标志性那套）
@@ -8654,6 +8703,14 @@ export class QQBridge {
     const maxChars = reply.maxChars ?? 500
     /** @type {string[]} */
     const sentIds = []
+    /*
+     * ★★ **结构化发送结果**（2026-11-06）。
+     *
+     * 光看 `sentIds.length > 0` 证明不了图发出去了 —— 图段失败会被跳过，
+     * 后面的正文照发，于是 `sentIds` 非空、但图其实没发。
+     * 跨群那边就是踩了这个：「图发群里了」其实群里只有文字。
+     */
+    const detail = { textSent: false, imageSent: false, failedSegments: [] }
 
     /*
      * ★ 先摘出「约定时间」标记 `[等:N]`（2026-11-03）。
@@ -8668,10 +8725,19 @@ export class QQBridge {
      *
      * 事故现场：她整段输出只有一个 `[画图:…]`，剥掉标记后变成空字符串 ——
      * 如果照样发出去，聊天里会出现一条空白消息。
-     * 这里直接返回空数组（调用方按"没发出去"处理）。
+     *
+     * ★★ **但"只有图"是合法的一条消息**（2026-11-06 修）。
+     *
+     * 现场：补第 2、3 张图时调用的是 `this._send(msg, '', 'base64://…')` ——
+     * 正文本来就是空的，于是被这条守卫拦下，**附加图一张都没发出去**，
+     * 日志还写着"已发"。所以守卫必须区分三种情况：
+     *   · 无正文 + 无图 → 不发（空消息）
+     *   · 无正文 + 有图 → **发图**（合法）
+     *   · 有正文 + 有图 → 正常发
      */
-    if (!String(wait.text ?? '').trim()) {
-      this.log.info?.('bridge：剥掉标记后没有正文，这条不发')
+    const hasCover = Boolean(cover?.url)
+    if (!String(wait.text ?? '').trim() && !hasCover) {
+      this.log.info?.('bridge：剥掉标记后既没有正文也没有图，这条不发')
       return []
     }
     text = wait.text
@@ -8787,6 +8853,7 @@ export class QQBridge {
          */
         if (seg.kind === 'image' || seg.kind === 'face' || seg.kind === 'mface') {
           this.log.warn?.(`bridge：${seg.kind} 段发送失败（跳过，继续发正文）— ${JSON.stringify(res).slice(0, 120)}`)
+          detail.failedSegments.push(seg.kind)
           continue
         }
         throw new Error(`OneBot 返回失败：${JSON.stringify(res).slice(0, 200)}`)
@@ -8794,6 +8861,12 @@ export class QQBridge {
       // 记下这条的 message_id（OneBot 放在 data.message_id）
       const mid = res?.data?.message_id ?? res?.message_id
       if (mid != null) sentIds.push(String(mid))
+      /*
+       * ★ 只有**真正发成功**才记（2026-11-06）：
+       *   生成成功 ≠ 下载成功 ≠ 发送成功。这里记的是最后一步。
+       */
+      if (seg.kind === 'image') detail.imageSent = true
+      else if (seg.kind === 'text') detail.textSent = true
       // 多条之间像人一样停顿
       if (i < segments.length - 1) {
         await sleep(400 + Math.random() * 600)
@@ -8806,6 +8879,22 @@ export class QQBridge {
         + `，配图=${cover?.url ? '有' : '无'}）—— 什么都没发`,
       )
     }
+    /*
+     * ★ 详细结果挂在 msg 上（兼容旧返回格式：5 个调用点在用 sentIds 数组）。
+     *   调用方要判断"图到底发出去没有"，读 `msg.__lastSend`。
+     */
+    try {
+      msg.__lastSend = {
+        ...detail,
+        sentIds: [...sentIds],
+        requestedImage: hasCover,
+        requestedText: Boolean(String(text ?? '').trim()),
+        allRequestedSegmentsSent:
+          detail.failedSegments.length === 0
+          && (!hasCover || detail.imageSent)
+          && (!String(text ?? '').trim() || detail.textSent),
+      }
+    } catch { /* 只读对象就跳过 */ }
     return sentIds
   }
 
