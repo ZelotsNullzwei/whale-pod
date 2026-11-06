@@ -47,6 +47,7 @@ import { generateImage, cropBottom, eraseCornerWatermark } from './mcpImage.js'
 import { planShot, describeShot } from '../photo/index.js'
 import { figurePoseForDay } from '../photo/photo-composer.js'
 import { dayKey } from '../memory/dayPlan.js'
+import { outingOutfitForDay, signatureOutfitForDay } from '../memory/wardrobe.js'
 import { hasBiliLink, resolveBvid, fetchVideoInfo, fetchTopComments, fetchDanmaku, fetchAudioCandidates, downloadAudio, formatVideoContext } from './bilibili.js'
 import { transcribeVideoCached, transcribeVideoDetailed } from './asr.js'
 // 梗百科 —— 本地词库（零成本），联网查梗之前先走它；没收录才放行联网
@@ -4232,6 +4233,12 @@ export class QQBridge {
               const h = new Date().getHours()
               const justWoke = currentSlot().id === 'morning' && h < 9
               const lateNight = h >= 23 || h < 5
+              /*
+               * ★ 标志性那套（2026-11-06 用户：「标志性的女仆带鲸尾巴那一套」）：
+               *   日常不穿，只有明确要这套时才换。
+               */
+              const wantsSignature = /(女仆装|女仆|那套标志|标志性那套|带尾巴那套|鲸尾巴|你那套经典|cosplay|cos一下)/i.test(String(msg.text ?? ''))
+              if (wantsSignature) return String(signatureOutfitForDay(dayKey()) ?? '')
               if (outingNow) return String(outingOutfitForDay(dayKey()) ?? '')
               const v = (justWoke || lateNight) ? today?.sleepwear : today?.outfit
               return v ? String(v).replace(/\s+/g, ' ').slice(0, 120) : ''
