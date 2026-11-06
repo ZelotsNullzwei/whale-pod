@@ -3522,6 +3522,34 @@ export class QQBridge {
      */
     const tStart = Date.now()
     /*
+     * ★★ `[发群]` 的**人工确认**（2026-11-06 用户：「每次要群发叫她询问我」）。
+     *
+     * 她上一轮把要发的话摆出来问过（`_pendingCross`），这里判他这条是不是"发"：
+     *   · 同意（发/发吧/可以/行/好/嗯/去吧）→ 真的发到群里
+     *   · 拒绝（别/不要/算了/先不发）→ 丢掉
+     *   · 别的（在聊别的事）→ 先留着，10 分钟不作数
+     * 只认**同一个会话**，不会拿私聊的确认去发别的群。
+     */
+    try {
+      const pend = this._pendingCross
+      if (pend && String(pend.scope) === String(msg.scope ?? '')) {
+        const t = String(msg.text ?? '').trim()
+        const expired = Date.now() - Number(pend.at ?? 0) > 10 * 60_000
+        if (expired) {
+          this._pendingCross = null
+        } else if (/^(发|发吧|发出去|发群里|可以|行|好|嗯|去吧)/.test(t)) {
+          this._pendingCross = null
+          await this._send(msg, pend.text, pend.cover ?? null, { groupId: pend.groupId })
+          this.log.info?.(`bridge：发群（他确认了）「${String(pend.text).slice(0, 30)}」→ ${pend.groupId}`)
+        } else if (/^(别|不要|不用|算了|先不|等等)/.test(t)) {
+          this._pendingCross = null
+          this.log.info?.('bridge：发群（他说不发）')
+        }
+      }
+    } catch (e) {
+      this.log.warn?.(`bridge：发群确认处理失败 — ${String(e?.message ?? e).slice(0, 60)}`)
+    }
+    /*
      * ★ **超过 2 分钟才轮到的消息直接丢**（2026-11-05）。
      *
      * 实测有 598s / 2998s 才回一句的 —— 那是积压、排队或者补历史残留。
@@ -5104,6 +5132,27 @@ export class QQBridge {
                 this.log.info?.(`bridge：发群跳过 —— 「${String(hit[1]).slice(0, 30)}」5 分钟内刚发过`)
                 crossGroupNote = ''
                 crossGroupSkipped = 'dup'
+              } else if (this.cfg.actions?.crossGroupConfirm !== false) {
+                /*
+                 * ★★ **发群前先问他**（2026-11-06 用户：「每次要群发叫她询问我」）。
+                 *
+                 * 现场：她每轮都惦记着"把照片发群里"，而节流用户明确说不要。
+                 * 改成**人工确认**：这一轮只把话摆出来问一句，等他回「发」才真发。
+                 * 待办存在 `_pendingCross`，下一条消息里判定（见 _handle 开头）。
+                 */
+                this._pendingCross = {
+                  scope: String(msg.scope ?? ''),
+                  groupId: target.groupId,
+                  text: String(hit[1]).trim(),
+                  cover: cover ?? null,
+                  at: Date.now(),
+                }
+                crossGroupNote = ''
+                crossGroupSkipped = 'confirm'
+                const shortText = String(hit[1]).trim().slice(0, 40)
+                text = (String(text ?? '').trim() ? String(text).trim() + '\n\n' : '')
+                  + `（「${shortText}」要发到群里吗？回个"发"我就发）`
+                this.log.info?.('bridge：发群 → 先问他（待确认）')
               } else {
               await this._send(msg, String(hit[1]).trim(), cover, target)
               /*

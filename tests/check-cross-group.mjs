@@ -157,5 +157,19 @@ ok('★ wantsPic 覆盖 图/照片/发个/发张/群里发', () => {
   }
   assert.equal(classifyDrawIntent('？').wantsPic, false, '「？」仍然不算')
 })
+
+console.log('\n=== 7. 发群前必须先问他（2026-11-06）===')
+ok('★ 有 crossGroupConfirm 分支，且默认要确认', () => {
+  const src = fs.readFileSync(new URL('../src/qq/bridge.js', import.meta.url), 'utf8')
+  assert.match(src, /crossGroupConfirm !== false/)
+  assert.match(src, /this\._pendingCross = \{/)
+  assert.match(src, /要发到群里吗/, '要有一句问他')
+})
+ok('★ _handle 开头会处理待确认（发 / 不发 / 过期）', () => {
+  const src = fs.readFileSync(new URL('../src/qq/bridge.js', import.meta.url), 'utf8')
+  assert.match(src, /const pend = this\._pendingCross/)
+  assert.match(src, /发群（他确认了）/)
+  assert.match(src, /10 \* 60_000/, '要有过期时间')
+})
 console.log(`\n${'='.repeat(44)}\n通过 ${pass} / 失败 ${fail}`)
 process.exit(fail === 0 ? 0 : 1)
