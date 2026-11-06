@@ -5389,9 +5389,18 @@ export class QQBridge {
        *   · 正文到了、图没到    -> 算 replied，但记 sent-partial（部分成功）
        *   · 图和正文都到        -> sent
        */
-      const sendRes = msg.__lastSend ?? {}
-      const nothingSent = sentIds.length === 0 && !sendRes.imageSent
-      const partial = Boolean(coverForSend?.url) && !sendRes.imageSent && sentIds.length > 0
+      const sendRes = msg.__lastSend ?? null
+      /*
+       * ⚠️ **不能只看 sentIds 空不空**（2026-11-06 全量测试抓到）。
+       *   sentIds 靠 OneBot 返回的 message_id 填；有的实现/测试桩返回
+       *   status:ok 但不带 message_id —— 只看它会误判成"什么都没发"。
+       *   所以优先用 _send 自己记的 textSent/imageSent，
+       *   只有 _send 提前返回（没内容）时才回落到 sentIds。
+       */
+      const nothingSent = sendRes
+        ? (!sendRes.textSent && !sendRes.imageSent)
+        : (sentIds.length === 0)
+      const partial = Boolean(coverForSend?.url) && !sendRes?.imageSent && !nothingSent
       if (nothingSent) {
         this.stats.failed++
         this.log.warn?.(`bridge：本轮实际没有任何内容发出（正文 ${JSON.stringify(String(text ?? '').slice(0, 20))}，配图 ${coverForSend?.url ? '有' : '无'}）`)

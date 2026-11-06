@@ -31,6 +31,10 @@ const ok = (name, fn) => {
 }
 
 const read = (p) => fs.readFileSync(new URL(`../${p}`, import.meta.url), 'utf8')
+  // ⚠️ 行尾归一化（2026-11-06）：下面断言的是**源码结构**（indexOf("\n  }\n") 这种），
+  //    而仓库 core.autocrlf=true 会让工作区是 CRLF、别的机器 checkout 可能是 LF。
+  //    不归一化，测试结果就变成"取决于你怎么 checkout"。
+  .replace(/\r\n/g, '\n')
 
 const CTX = {
   fallbackEnabled: true,
@@ -94,8 +98,14 @@ ok(`三个策略名：${STRATEGIES.join(' / ')}`, () => {
 // ── 3. ★★ 源码锁：真的接到路由上了吗 ───────────────────────────
 ok('★★ bridge 的 _candidates 必须调 deriveRouting（原来它只认 disabledProviders）', () => {
   const src = read('src/qq/bridge.js')
-  const at = src.indexOf('_candidates()')
-  assert.ok(at > 0)
+  /*
+   * ⚠️ 必须找**方法定义**，不能只找 `_candidates()` ——
+   *    上面还有一行 `return this._candidates()` 是调用点，
+   *    indexOf 会先命中它，body 就落在上一个方法的尾巴里，
+   *    deriveRouting 自然"找不到"（2026-11-06 排查踩到）。
+   */
+  const at = src.indexOf('  _candidates() {')
+  assert.ok(at > 0, '找不到 _candidates 的定义')
   const end = src.indexOf('\n  }\n', at)
   const body = src.slice(at, end > at ? end : at + 4000)
   assert.match(body, /deriveRouting\(/, '要调 deriveRouting')
