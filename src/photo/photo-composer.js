@@ -112,6 +112,11 @@ export function composeFraming(plan, o = {}) {
   const req = String(o.request ?? '')
   const notes = []
   let framing = '半身'
+  /**
+   * 覆盖 FRAMINGS 里的通用构图描述（2026-11-06）。
+   * 通用描述是按"最典型的情况"写的，某些模式（对镜自拍）会跟它打架。
+   */
+  let framingNote = ''
 
   switch (plan.mode) {
     case 'face_closeup':
@@ -132,6 +137,14 @@ export function composeFraming(plan, o = {}) {
     case 'mirror_selfie':
       /* 对镜：看穿搭/看身形就全身，否则三分之二身 */
       framing = (/(穿搭|全身|这一身|衣服)/.test(req) || wantsFigure(req)) ? '全身' : '三分之二身'
+      /*
+       * ★ **对镜自拍的构图要说"镜子里的取景"，不是"沙发/桌边"**（2026-11-06 修）。
+       *
+       * `三分之二身` 的通用 desc 是「到膝盖上方（坐姿常见：沙发、桌边）」——
+       * 那句是给"坐着自拍"写的。对镜自拍是**站着对镜子**，照抄这句会让模型
+       * 把人画成坐着，构图和场景打架，镜子/手机这些要素就更容易丢。
+       */
+      framingNote = '镜子里取到膝盖上方（站姿，全身镜 / 穿衣镜前）'
       break
     case 'first_person':
       framing = '局部'
@@ -167,7 +180,7 @@ export function composeFraming(plan, o = {}) {
 
   return {
     framing,
-    desc: f.desc,
+    desc: framingNote || f.desc,
     feet: f.feet,
     groundGap: f.groundGap,
     showFace: f.showFace && plan.faceVisible !== false,
