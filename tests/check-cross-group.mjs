@@ -143,10 +143,10 @@ ok('★ 内容去重还在（防刷屏，跟"他明确要发"不冲突）', () =
 })
 
 console.log('\n=== 6. 「发个图」要算作"要拍"（否则画图被拦、发群只剩文字）===')
-ok('★ goAhead 覆盖 图/照片/发个/发张/群里发', () => {
+ok('★ wantsPic 覆盖 图/照片/发个/发张/群里发', () => {
   const src = fs.readFileSync(new URL('../src/qq/bridge.js', import.meta.url), 'utf8')
-  const m = /const goAhead = (\/.*?\/)\.test/.exec(src)
-  assert.ok(m, '找不到 goAhead')
+  const m = /const wantsPic = (\/.*?\/)\.test/.exec(src)
+  assert.ok(m, '找不到 wantsPic')
   const re = eval(m[1])
   for (const t of ['群里发个图', '发张照片', '发个图看看', '给我张图']) {
     assert.equal(re.test(t), true, `应该算要拍：${t}`)

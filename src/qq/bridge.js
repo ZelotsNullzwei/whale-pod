@@ -8735,7 +8735,21 @@ export class QQBridge {
      *   · 无正文 + 有图 → **发图**（合法）
      *   · 有正文 + 有图 → 正常发
      */
-    const hasCover = Boolean(cover?.url)
+    /*
+     * ★★ **配图参数两种形状都要认**（2026-11-06）。
+     *
+     * `_send` 的 `cover` 有两种调用方：
+     *   · 主图：`{ url: 'base64://…' }`   （对象）
+     *   · 附加图：`'base64://…'`          （**裸字符串**，见补图那一段）
+     * 原来所有判断都写 `cover?.url` —— 附加图那条永远取不到，等于"没有图"，
+     * 于是被空正文守卫拦下、被 buildOutgoingSegments 忽略。
+     * 这里统一成对象，后面全部用 `coverObj`。
+     */
+    const coverObj = typeof cover === 'string'
+      ? (cover.trim() ? { url: cover.trim() } : null)
+      : (cover?.url ? cover : null)
+    const hasCover = Boolean(coverObj?.url)
+    cover = coverObj
     if (!String(wait.text ?? '').trim() && !hasCover) {
       this.log.info?.('bridge：剥掉标记后既没有正文也没有图，这条不发')
       return []
@@ -10354,8 +10368,13 @@ export function buildOutgoingSegments(text, cover = null, opts = {}) {
     for (const c of chunks) if (String(c).trim()) segments.push({ kind: 'text', text: String(c) })
   }
 
-  // ⚠️ 配图**不**依赖已有文字 —— 见上方注释
-  if (cover?.url) segments.push({ kind: 'image', url: cover.url })
+  /*
+   * ⚠️ 配图**不**依赖已有文字 —— 见上方注释
+   * ★★ cover 两种形状都认（2026-11-06）：对象 `{url}` 或裸字符串。
+   *    补第 2/3 张图那条路传的就是裸字符串，原来在这里被静默忽略。
+   */
+  const coverUrl = typeof cover === 'string' ? cover.trim() : String(cover?.url ?? '').trim()
+  if (coverUrl) segments.push({ kind: 'image', url: coverUrl })
   return segments
 }
 

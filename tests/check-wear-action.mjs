@@ -195,8 +195,8 @@ ok('★ 拦下之后要补一句真的问话（否则这条什么都没发）', 
 
 ok('★ 判据覆盖"？"这种没内容的（不能算 go-ahead）', () => {
   const src = fs.readFileSync(new URL('../src/qq/bridge.js', import.meta.url), 'utf8')
-  const m = /const goAhead = (\/.*?\/)\.test/.exec(src)
-  assert.ok(m, '找不到 goAhead 正则')
+  const m = /const wantsPic = (\/.*?\/)\.test/.exec(src)
+  assert.ok(m, '找不到 wantsPic 正则')
   const re = eval(m[1]) // 同一条正则
   assert.equal(re.test('？'), false, '「？」不该算要拍')
   assert.equal(re.test(''), false, '空消息不该算要拍')
