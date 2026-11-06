@@ -2862,6 +2862,25 @@ export class QQBridge {
       .filter(Boolean)
     const images = []
     const stickerRefs = []
+    /*
+     * ★ **合并转发 id 要并集**（2026-11-06 实测踩到）。
+     *
+     * 线上：他连发三条「现在呢 / [合并转发] / 能看吗」→ 合并成一条
+     * → 她看到的是字面量「[合并转发]」，一句话内容都读不到。
+     *
+     * 根因：下面 `...last` 把字段覆盖成**最后一条**的 —— 而最后一条
+     * 「能看吗」的 `forwards` 是空数组，把中间那条的转发 id **抹掉了**。
+     * 于是 `_handle` 里 `msg.forwards.length > 0` 判假，展开根本不会跑。
+     *
+     * 修法跟 images / stickerRefs 一样：取**并集**（按 id 去重）。
+     */
+    const forwards = []
+    for (const m of msgs) {
+      for (const f of m.forwards ?? []) {
+        const id = String(f?.id ?? '').trim()
+        if (id && !forwards.some((x) => x.id === id)) forwards.push({ ...f, id })
+      }
+    }
     for (const m of msgs) {
       for (const r of m.images ?? []) if (!images.includes(r)) images.push(r)
       for (const r of m.stickerRefs ?? []) if (!stickerRefs.includes(r)) stickerRefs.push(r)
@@ -2870,6 +2889,7 @@ export class QQBridge {
       ...last,
       text: texts.join('\n'),
       images,
+      forwards,
       ...(stickerRefs.length ? { stickerRefs } : {}),
       __merged: msgs.length,
     }
