@@ -137,5 +137,35 @@ await okAsync('参数名两种都传（NapCat 认 message_id，别的认 id）',
   assert.equal(seen.params.id, 42)
 })
 
+console.log('\n=== 3. 协议端的"报错当内容"必须过滤（2026-11-06 线上实测）===')
+/*
+ * 现场：她回「转的啥啊，这边就看到一句消息已过期」。
+ * 查下来不是她在猜 —— NapCat 取不到转发内容时**不报错**，
+ * 而是把「消息已过期或者为内层消息，无法获取转发消息」当成一条消息返回，
+ * 我们照单收下当成了转发内容，她就照着念。
+ */
+const expiredNode = {
+  message: [{ type: 'text', data: { text: '消息已过期或者为内层消息，无法获取转发消息' } }],
+}
+
+await okAsync('整段都是报错话术 → 返回 null（保留占位，不喂假内容）', async () => {
+  const c = mkClient([expiredNode])
+  assert.equal(await c.getForwardMsg('f1'), null)
+})
+
+await okAsync('报错话术混在真内容里 → 只留真内容', async () => {
+  const c = mkClient([expiredNode, node('真的第一句'), node('真的第二句')])
+  const got = await c.getForwardMsg('f1')
+  assert.ok(got)
+  assert.ok(!got.text.includes('消息已过期'), '报错话术不能进提示词')
+  assert.match(got.text, /真的第一句/)
+  assert.equal(got.total, 3, '总数仍按原始节点数算')
+})
+
+await okAsync('英文版报错也认（not found / expired）', async () => {
+  const c = mkClient([{ message: [{ type: 'text', data: { text: 'message not found' } }] }])
+  assert.equal(await c.getForwardMsg('f1'), null)
+})
+
 console.log(`\n${'='.repeat(44)}\n通过 ${pass} / 失败 ${fail}`)
 process.exit(fail === 0 ? 0 : 1)

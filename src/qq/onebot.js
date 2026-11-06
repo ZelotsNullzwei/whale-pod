@@ -580,9 +580,26 @@ export class OneBotClient {
     const nodes = Array.isArray(raw) ? raw : [raw]
     if (nodes.length === 0) return null
 
+    /*
+     * ★ **把"错误话术"当内容过滤掉**（2026-11-06 实测踩到）。
+     *
+     * NapCat 取不到转发内容时**不报错**，而是把错误信息当成一条消息回：
+     * ```
+     * { status:'ok', retcode:0, data:{ messages:[ { message:[ {type:'text',
+     *     data:{ text:'消息已过期或者为内层消息，无法获取转发消息' } } ] } ] } }
+     * ```
+     * 那句话于是被当成**转发内容**塞进提示词，她照着念
+     * 「转的啥啊，这边就看到一句消息已过期」—— 看着像她在猜，其实是我们在喂假数据。
+     *
+     * 所以：整段都是这类话术 → 返回 null（保留 `[合并转发]` 占位），
+     * 宁可她不知道内容，也不让她念一句协议端的报错。
+     */
+    const FAILED_RE = /消息已过期|无法获取转发|内层消息|获取转发消息失败|not found|expired|invalid/i
+
     const lines = []
     let used = 0
     let chars = 0
+    let sawRealContent = false
     for (const node of nodes) {
       if (used >= maxNodes || chars >= maxChars) break
       const body = node?.message ?? node?.content ?? node
@@ -594,6 +611,9 @@ export class OneBotClient {
       }
       text = String(text ?? '').replace(/\s+/g, ' ').trim()
       if (!text) continue
+      // 这一段是不是协议端的报错？是就跳过（别当成聊天内容）
+      if (FAILED_RE.test(text)) continue
+      sawRealContent = true
       const who = String(
         node?.sender?.card || node?.sender?.nickname || node?.sender?.user_id
         || node?.nickname || node?.name || '',
@@ -603,7 +623,7 @@ export class OneBotClient {
       used++
       chars += cut.length
     }
-    if (lines.length === 0) return null
+    if (!sawRealContent || lines.length === 0) return null
 
     const rest = nodes.length - used
     const head = `[转发了聊天记录·${nodes.length}条]`
