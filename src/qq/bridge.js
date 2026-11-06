@@ -6576,6 +6576,44 @@ export class QQBridge {
   }
 
   /**
+   * 另一边的**长期记忆**（群 ↔ 私聊）—— 2026-11-06 用户：「人格不一样，记忆相同」。
+   *
+   * 短期记忆按会话分开（各自最近 30 条），但**长期摘要也是各存一份** ——
+   * 群里聊过的事，私聊隔一天就忘了；反过来也一样。
+   * 这里把对面的长期摘要挂进来：**同一个"她"，只是场合不同**。
+   *
+   * ⚠️ 口径仍然是「知道」，不是「搬过去」：群里别提私聊的事、私聊别把群里的
+   *    私事抖出去 —— 这条写在块头里，人格那条也有一份。
+   *
+   * @param {string} scope 当前会话（决定取哪一边）
+   */
+  _crossLongDigest(scope) {
+    try {
+      const self = String(scope ?? '')
+      if (!self) return ''
+      const wantGroup = self.startsWith('private:')
+      const keys = (this.longMemory?.scopes?.() ?? [])
+        .map(String)
+        .filter((k) => (wantGroup ? k.startsWith('group:') : k.startsWith('private:')))
+        .filter((k) => k !== self)
+      if (!keys.length) return ''
+      const blocks = []
+      for (const k of keys.slice(0, 2)) {
+        let s = String(this.longMemory?.get?.(k)?.summary ?? '')
+        if (!s.trim()) continue
+        // 事实段由 people.json 单独提供，这里去掉免得重复占预算
+        s = s.replace(/【事实】[\s\S]*?(?=【|$)/, '').trim().slice(0, 1200)
+        if (!s) continue
+        blocks.push(`（${wantGroup ? '群里' : '私下'} ${k.split(':')[1]}）\n${s}`)
+      }
+      if (!blocks.length) return ''
+      return '## 另一边发生过的（同一个你，只是场合不同）\n'
+        + '知道就行：**别主动把那边的事搬到这边说**，对方问起再讲。\n\n'
+        + blocks.join('\n\n')
+    } catch { return '' }
+  }
+
+  /**
    * 群里「没头没尾的开场」提示：纯标点、≤4 字且不是问句、纯表情。
    *
    * 用户原话：「发一张表情或者莫名其妙的话开场她不用接」
@@ -7817,6 +7855,12 @@ export class QQBridge {
         msg.kind === 'private' ? this._recentGroupDigest() : '',
         // ★ 群里也知道私下聊过什么（知道就行，别主动提 —— 见人格那条）
         msg.kind === 'group' ? this._recentPrivateDigest() : '',
+        /*
+         * ★ 长期记忆两边共享（2026-11-06 用户：「人格不一样，记忆相同」）。
+         *   上面两条只覆盖最近 30 分钟的原始对话；隔天就断片。
+         *   这里把对面会话的**长期摘要**挂进来，人格仍按会话各用各的。
+         */
+        this._crossLongDigest(msg.scope),
         // ★ 群里没头没尾的开场 → 最多回一个「？」或一个表情（2026-11-05）
         this._groupNoiseHint(msg, mem),
 
