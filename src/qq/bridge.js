@@ -4741,6 +4741,12 @@ export class QQBridge {
                     buf = await eraseCornerWatermark(buf, this.log)
                   } else {
                     buf = await cropBottom(buf, Number(imgCfg.cropBottom ?? 0.1), this.log)
+                    /*
+                     * ★ 非全身也要擦一次角落（2026-11-06 用户：插画档水印没截掉）。
+                     *   插画档底图和写实档不是同一个模型，水印位置偏高/偏右，
+                     *   光裁底部一条盖不住。角落补丁只有 14%×3.2%，看不出来。
+                     */
+                    buf = await eraseCornerWatermark(buf, this.log)
                   }
                   finalBuf = buf
                   file = `base64://${buf.toString('base64')}`
@@ -5481,6 +5487,7 @@ export class QQBridge {
             }
             if (s2.framingInfo?.feet) {
               buf2 = await cropBottom(buf2, 0.06, this.log)
+              buf2 = await eraseCornerWatermark(buf2, this.log)
               buf2 = await eraseCornerWatermark(buf2, this.log)
             } else {
               buf2 = await cropBottom(buf2, Number(cfg2.cropBottom ?? 0.1), this.log)
