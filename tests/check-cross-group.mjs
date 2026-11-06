@@ -40,6 +40,13 @@ ok('普通聊天不该抠出群名', () => {
     assert.equal(p._groupHintFromText.call({}, t), '', `不该抠出：${t}`)
   }
 })
+ok('★「你在群里发照片了吗」不该抠出「你在」（线上 20:22 误判：整个发群被跳过）', () => {
+  assert.equal(p._groupHintFromText.call({}, '你在群里发照片了吗'), '')
+  assert.equal(p._groupHintFromText.call({}, '你在群里发照片了吗 我没看见'), '')
+})
+ok('「测试群里发一下」仍然是点名', () => {
+  assert.equal(p._groupHintFromText.call({}, '测试群里发一下'), '测试')
+})
 
 console.log('\n=== 2. 点名了就必须发到那个群（对不上就不发）===')
 function target({ hint, scopes, names }) {

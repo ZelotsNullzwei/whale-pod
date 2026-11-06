@@ -5046,7 +5046,24 @@ export class QQBridge {
                *   这条回复有什么（文字 / 图），群里就收到什么 ——
                *   不需要额外的 [发群图] 标记。画了图就带图，没画就只发文字。
                */
-              const cover = drawnImage ?? null
+              /*
+               * ★★ **本轮没现画，也要把刚才那张带过去**（2026-11-06）。
+               *
+               * 现场：20:18 私聊发了一张女仆装自拍；20:19:47 他说「去群发吧」，
+               * 20:19:50 群里只收到一句「试好了，本鲸这身新衣服…」——没有图。
+               * 原来 `cover = drawnImage ?? null` 只看**本轮**有没有画，
+               * 而这一轮她只是转发，不可能再画一张。
+               *
+               * 判据抽到 `pickCrossGroupCover()`：要"这句话本身在说图/看"
+               * 且 10 分钟内发过、且同一个会话 —— 不满足就只发文字，
+               * 不硬塞一张不相干的旧图。
+               */
+              const cover = pickCrossGroupCover({
+                drawnImage,
+                lastSentImage: this._lastSentImage ?? null,
+                scope: String(msg.scope ?? ''),
+                text: String(hit[1] ?? ''),
+              })
               /*
                * ★ 同一句话 5 分钟内别重发（2026-11-05）：
                *   用户连发几个「？」时，她每轮都把同一句配文再发一遍。
@@ -8738,13 +8755,31 @@ export class QQBridge {
      * 不认「发群里」（没点名 → 走默认目标）。
      */
     const m = /(?:发到|发去|发在|分享到|丢到|丢去)\s*[「"'《]?\s*([^\s，。！？、,.!?「」"'《》]{1,16}?)\s*群/.exec(s)
-    if (m) return String(m[1]).trim()
+    if (m) return clean(String(m[1]))
     const m2 = /([^\s，。！？、,.!?]{1,16}?)\s*群里\s*(?:发|丢|分享)/.exec(s)
-    if (m2) return String(m2[1]).trim()
+    if (m2) return clean(String(m2[1]))
     // 纯数字群号
     const m3 = /(?:发到|发去|发在)\s*(\d{5,12})\s*(?:群)?/.exec(s)
     if (m3) return String(m3[1])
     return ''
+
+    /**
+     * 抠出来的"群名"要像个名字。
+     *
+     * ⚠️ 线上误判（2026-11-06 20:22）：
+     *   他问「你在群里发照片了吗」→ 正则抠出「你在」当群名 →
+     *   找不到这个群 → **整条发群被跳过**，刚画好的图留在私聊里，
+     *   群里回「你图没过来」。
+     *
+     * 所以带介词/代词收尾的一律不算名字（那是"在群里做某事"）。
+     */
+    function clean(raw) {
+      const name = String(raw ?? '').trim()
+      if (!name) return ''
+      if (/(?:在|于|给|向|对|和|跟|往|把|被|到)$/.test(name)) return ''
+      if (/^(?:你|我|他|她|它|咱|大家|群里)$/.test(name)) return ''
+      return name
+    }
   }
 
   /**
@@ -9019,7 +9054,24 @@ export class QQBridge {
        * ★ 只有**真正发成功**才记（2026-11-06）：
        *   生成成功 ≠ 下载成功 ≠ 发送成功。这里记的是最后一步。
        */
-      if (seg.kind === 'image') detail.imageSent = true
+      if (seg.kind === 'image') {
+        detail.imageSent = true
+        /*
+         * ★ 记下**刚发出去的那张图**（2026-11-06）。
+         *
+         * 用途：私聊里她说「我发群里了」时，`[发群]` 那一轮往往**没有现画**
+         * （图是上一轮画的、已经发给他了）—— 原来 `cover = drawnImage ?? null`
+         * 只看本轮，于是群里只收到一句话。
+         *
+         * 现场（20:19:50）：
+         * ```
+         * 20:18:03  出图（上一轮，已私聊发出）
+         * 20:19:47  他「去群发吧，给风宝他们看看」
+         * 20:19:50  发群「试好了，本鲸这身新衣服，风宝你们看看行不行」→ 704291282  ← 没图
+         * ```
+         */
+        this._lastSentImage = { scope: String(msg?.scope ?? ''), url: seg.url, at: Date.now() }
+      }
       else if (seg.kind === 'text') detail.textSent = true
       // 多条之间像人一样停顿
       if (i < segments.length - 1) {
@@ -10495,6 +10547,35 @@ export function pickPrivateCover({ findImage, drawnImage, cover, sentToGroup } =
   if (findImage?.buffer) return { url: `base64://${findImage.buffer.toString('base64')}` }
   if (sentToGroup) return null
   return drawnImage ?? cover ?? null
+}
+
+/**
+ * `[发群]` 那条消息该带哪张图（2026-11-06）。
+ *
+ * ① 本轮现画了 → 用本轮那张（老行为）
+ * ② 本轮没画，但这句话本身在说图/看，且 10 分钟内刚发过一张
+ *    → 用那张补上（转发场景，她不可能再画一张）
+ * ③ 其余 → 不带图，别硬塞一张不相干的旧图
+ *
+ * @param {object} o
+ * @param {object|null} [o.drawnImage]    本轮画出来的
+ * @param {object|null} [o.lastSentImage] { scope, url, at }
+ * @param {string} [o.scope]              当前会话
+ * @param {string} [o.text]               要发到群里的那句
+ * @param {number} [o.now]
+ * @param {number} [o.maxAgeMs]
+ */
+export function pickCrossGroupCover({
+  drawnImage = null, lastSentImage = null, scope = '', text = '',
+  now = Date.now(), maxAgeMs = 10 * 60_000,
+} = {}) {
+  if (drawnImage?.url) return drawnImage
+  const wantsPic = /(图|照片|这张|这身|这套|自拍|看看|你们看|你看)/.test(String(text ?? ''))
+  if (!wantsPic) return null
+  if (!lastSentImage?.url) return null
+  if (String(lastSentImage.scope ?? '') !== String(scope ?? '')) return null
+  if (now - Number(lastSentImage.at ?? 0) >= maxAgeMs) return null
+  return { url: lastSentImage.url }
 }
 
 export function buildOutgoingSegments(text, cover = null, opts = {}) {
