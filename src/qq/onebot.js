@@ -630,6 +630,13 @@ export class OneBotClient {
      */
     const HARD_LINES = 400
     const maxDepth = Math.max(1, Number(opts.maxDepth) || 3)
+    /*
+     * ★ **转发里的图最多取几张**（2026-11-06，用户：「太多的看一点就停」）。
+     * 默认 4 —— 87 张全看是真花钱（每张都是视觉 token），也没人等。
+     */
+    const maxImages = Math.max(0, Number(opts.maxImages ?? 4))
+    const images = []
+    let imageOmitted = 0
     const walk = (segs, depth, who) => {
       if (!Array.isArray(segs)) return
       for (const seg of segs) {
@@ -658,6 +665,16 @@ export class OneBotClient {
         // 协议端的报错话术：跳过（别当成聊天内容）
         if (FAILED_RE.test(text)) continue
         sawRealContent = true
+        /*
+         * 图片节点把**可下载引用**带出去：bridge 会拼成一张网格再交给视觉模型。
+         * ⚠️ 超出上限的记进 imageOmitted，正文里会写「还有 N 张没看」——
+         *    别假装全看了。
+         */
+        if (t === 'image') {
+          const ref = String(sd.url || sd.file || sd.file_id || sd.path || '')
+          if (ref && images.length < maxImages) images.push(ref)
+          else if (ref) imageOmitted++
+        }
         all.push({ who: who || '某人', text })
       }
     }
@@ -699,6 +716,10 @@ export class OneBotClient {
       total: all.length,
       used,
       truncated: rest > 0,
+      /** 可下载的图片引用（bridge 拼图后交给视觉模型） */
+      images,
+      /** 因上限没取的图片张数 */
+      imageOmitted,
     }
   }
 
