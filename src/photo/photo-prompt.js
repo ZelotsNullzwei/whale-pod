@@ -51,7 +51,7 @@ function lightByHour(h = new Date().getHours()) {
 export function composePhotoPrompt(o = {}) {
   const {
     plan = {}, framing = {}, scene = '', outfit = '', hair = '', weather = '', mood = '',
-    continuity = '', hasRef = false, anime = false, character = {}, expression = null, bodyOverride = '',
+    continuity = '', hasRef = false, anime = false, character = {}, expression = null, bodyOverride = '', sceneOnly = false,
   } = o
 
   const parts = []
@@ -101,7 +101,20 @@ ${bodyOverride ? `${bodyOverride}、` : ''}
    有内衣托着时才会有。按衣服的实际松紧自然呈现，别硬加也别硬删。
 **不要重新设计人物，也不要照搬参考图里的姿势和背景。**`)
   } else if (plan.needsCharacterRef === false) {
-    /* 第一人称/拍物：人不在画面或只露手，不写外貌 */
+    /*
+     * ⚠️ **场景图（sceneOnly）不许出现人**（2026-11-06 实测）：
+     *   原来写"只出现手/手臂/腿，或一缕头发"，模型直接画了后脑+肩膀 → 第三人称。
+     */
+    if (sceneOnly) {
+      parts.push(`【人物】**画面里没有人** —— 这张只拍东西/环境（桌面、窗外、玻璃、物品）。
+⚠️ 不要出现她的脸、头发、后脑、肩膀、手臂、腿、脚，也不要出现她的身影或倒影。`)
+    } else {
+      parts.push(`【人物】她本人基本不在画面里（只出现手/手臂/腿）。
+⚠️ 入画的那部分**必须是同一个人**：
+- 皮肤：偏白、真实质感（不是塑料感）；
+- 手：手指修长、指节清楚，指甲短而平整（不涂甲油）；
+- 腿：纤细、直，不是 O 型。`)
+    }
     /*
      * ⚠️ 即使人不在画面，**入画的那部分也必须是她的**（2026-11-06 用户指正）：
      *   原来只写"手指修长"，模型就把头发画成黑发/棕发（发色不对）。

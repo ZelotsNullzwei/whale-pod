@@ -133,7 +133,7 @@ export function planShot(o = {}) {
   /* ⑦ 组装提示词 */
   const prompt = composePhotoPrompt({
     plan, framing, scene: sceneFixed, outfit, hair, weather, mood,
-    continuity: note, hasRef: Boolean(refImage), anime, bodyOverride,
+    continuity: note, hasRef: Boolean(refImage), anime, bodyOverride, sceneOnly,
     expression,
     character: { faceRef: imageCfg.refImage, bodyRef: imageCfg.bodyRefImage },
   })
