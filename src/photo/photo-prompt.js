@@ -13,6 +13,7 @@
  */
 
 import { pairingBlock } from '../memory/outfitRules.js'
+import { FACE_CLOSEUP_RULES } from './photo-modes.js'
 import { FRAMINGS } from './photo-composer.js'
 import { renderExpression } from './photo-expression.js'
 
@@ -165,24 +166,40 @@ ${bodyOverride ? `${bodyOverride}、` : ''}
   }
 
   /* ── 模块三：摄影方案（这是 v2.0 的核心）─────────────────── */
+  /*
+   * ★ 面部特写：三条冲突规则都要让路（见 patch 注释）。
+   *   实测不处理的话，脸会低下去、构图变成三分之二身。
+   */
+  const isCloseup = framing.framing === '面部特写'
   const shot = [
     `拍摄者：${plan.shooter}`,
     `设备：${plan.device}`,
     `相机位置：${plan.camera}`,
     `视角高度：${framing.cameraAngle ?? '平视'}`,
     `构图：${framing.desc ?? '半身'}`,
-    `视线：${plan.look}`,
+    `视线：${isCloseup ? '**直视镜头**，眼神落在镜头上（不许看屏幕、不许往下看）' : plan.look}`,
   ]
   if (plan.hidePhone) shot.push('手机不出现（不要画出手机）')
   parts.push(`【摄影方案】
 ${shot.join('\n')}
-${(plan.rules ?? []).map((r) => '- ' + r).join('\n')}
+${(plan.rules ?? []).filter((r) => !isCloseup || !/(别瞪着镜头|别把脸怼满屏|多留白)/.test(r)).map((r) => '- ' + r).join('\n')}
 ${(framing.notes ?? []).map((n) => '- ' + n).join('\n')}
 ⚠️ **线上陪伴关系**：她在自己家、用**自己的手机**拍，然后发到 QQ 上。
 - **不要虚构现实中的朋友、家人或摄影师**，画面里只有她一个人。
 - **不要假设他在她身边**，也不要生成"从他的视角"拍的照片。
 - 他说"帮你拍/我给你拍"也不代表见面 —— 她只能自拍、对镜拍、架机拍。
 - 要看她的样子，就靠**前置自拍 / 镜子自拍 / 视频通话**这三条路，不靠第三个人。`)
+
+  /*
+   * ★ 面部特写 / 头肩：眼睛必须看镜头（2026-11-06 用户要求）。
+   *   SELFIE_RULES 那条「别瞪着镜头、可以略微看向旁边」会把特写的视线带跑，
+   *   这里用一条更硬的规则覆盖它。
+   */
+  if (framing.framing === '面部特写') {
+    parts.push(['【面部特写（怼脸）】', ...FACE_CLOSEUP_RULES.map((r) => '- ' + r)].join('\n'))
+  } else if (framing.framing === '头肩') {
+    parts.push('【眼神】**眼睛直视镜头** —— 眼神落在镜头上，不要飘到一边、不要半闭、不要斜视。')
+  }
 
   /*
    * ★ 连身睡裙要看得见裙摆（2026-11-06 实测）：

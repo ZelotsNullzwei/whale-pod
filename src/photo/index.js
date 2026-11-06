@@ -112,7 +112,11 @@ export function planShot(o = {}) {
    *   半身 + 被子盖住下半身 → 模型只看到上衣，把睡裙画成了灰 T 恤。
    */
   const needSkirtVisible = /连身.*睡裙/.test(String(outfit ?? ''))
-  const framing = composeFraming(plan, { request: needSkirtVisible ? `${request} 看看这一身` : request })
+  const framing = composeFraming(plan, {
+    request: needSkirtVisible ? `${request} 看看这一身` : request,
+    /* ★ 场景也传进去：她会自己写「怼脸特写」而用户只说了「看看你的脸」（2026-11-06） */
+    scene,
+  })
 
   /* ⑤ 表情：先看他说了什么，再看场景/心情/时段，并防止和上一张重复 */
   const expression = pickEmotion({

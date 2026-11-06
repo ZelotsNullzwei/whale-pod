@@ -114,10 +114,18 @@ export function composeFraming(plan, o = {}) {
   let framing = '半身'
 
   switch (plan.mode) {
+    case 'face_closeup':
+      framing = '面部特写'
+      break
     case 'front_selfie':
       /* 自拍：他要"看看你/自拍"就头肩或面部；否则半身 */
       framing = /(脸|正脸|长什么样|自拍)/.test(req) ? '头肩' : '半身'
-      if (/(特写|近一点|凑近)/.test(req)) framing = '面部特写'
+      /*
+       * ★ 特写要看 request **和场景**（2026-11-06）：
+       *   用户说「看看你的脸」+ 她写「怼脸特写」时，只看 request 会漏掉场景。
+       */
+      const closeupText = req + ' ' + String(o.scene ?? '')
+      if (/(特写|近一点|凑近|怼脸|脸贴镜头|镜头贴脸)/.test(closeupText)) framing = '面部特写'
       // 要看身形 → 至少给到三分之二身（半身看不出来）
       if (wantsFigure(req)) framing = '三分之二身'
       break
