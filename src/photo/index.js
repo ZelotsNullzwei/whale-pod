@@ -90,8 +90,29 @@ export function planShot(o = {}) {
   })
   plan = applyFix(plan, check.fix, MODES)
 
+  /*
+   * ★ 姿势可行性（2026-11-06 用户：「e 的身体逻辑都不对」）：
+   *   躺着 + 举手机自拍是矛盾的 —— 实测把"躺着/伸手/托脸"三件事粘一起，身体崩了。
+   *   现实里醒来是**靠着床头坐起来**再举手机。
+   */
+  const selfieMode = plan.mode === 'front_selfie' || plan.mode === 'mirror_selfie' || plan.mode === 'video_call'
+  let sceneFixed = String(scene)
+  if (selfieMode && /(躺在|躺着|窝在被子里|窝在被子|趴着|还没起来)/.test(sceneFixed)) {
+    /*
+     * 躺姿自拍是成立的，只是要写清楚：身体躺着、一只手把手机举在脸侧。
+     * 不写清楚模型会把"躺着 + 伸手 + 托脸"粘成一个崩掉的姿势。
+     */
+    sceneFixed = `${sceneFixed}（姿势：她**躺着/半靠在枕头上**，一只手把手机举在脸侧拍，
+      另一只手自然放在被子或腿上；被子盖到腰以下。手臂要和肩膀连得上，别出现第二条手臂）`
+  }
+
   /* ④ 构图 */
-  const framing = composeFraming(plan, { request })
+  /*
+   * ★ 连身睡裙要给到三分之二身（2026-11-06 实测）：
+   *   半身 + 被子盖住下半身 → 模型只看到上衣，把睡裙画成了灰 T 恤。
+   */
+  const needSkirtVisible = /连身.*睡裙/.test(String(outfit ?? ''))
+  const framing = composeFraming(plan, { request: needSkirtVisible ? `${request} 看看这一身` : request })
 
   /* ⑤ 表情：先看他说了什么，再看场景/心情/时段，并防止和上一张重复 */
   const expression = pickEmotion({
@@ -111,7 +132,7 @@ export function planShot(o = {}) {
 
   /* ⑦ 组装提示词 */
   const prompt = composePhotoPrompt({
-    plan, framing, scene, outfit, hair, weather, mood,
+    plan, framing, scene: sceneFixed, outfit, hair, weather, mood,
     continuity: note, hasRef: Boolean(refImage), anime,
     expression,
     character: { faceRef: imageCfg.refImage, bodyRef: imageCfg.bodyRefImage },
