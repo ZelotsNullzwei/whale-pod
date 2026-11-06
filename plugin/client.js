@@ -1233,6 +1233,117 @@ window.__ModuleLoader__.load({
         open ? children : null)
     }
 
+    /**
+     * 衣柜编辑器（2026-11-06）。
+     *
+     * ⚠️ **必须定义在模块作用域**，不能放进 `WhalePodPanel` 里：
+     *    那样每 4 秒轮询重渲染都会产生新的函数身份 → React 卸载重建
+     *    → 点开立刻收起、输入框存不住字（2026-11-06 实测就是这个）。
+     *
+     * 开合用 React state（不是原生 `<details>`）：子树一重建，
+     * DOM 的 open 状态就回到收起。
+     */
+    function WardrobeEditor({ pools, reload, defaultOpen = false }) {
+      const KINDS = [
+        ['home', '家居服'], ['outing', '外出服'], ['sleepwear', '睡衣'],
+        ['signature', '标志性'], ['hairstyle', '发型'],
+      ]
+      const [open, setOpen] = useState(defaultOpen)
+      const [busy, setBusy] = useState(false)
+      const [kind, setKind] = useState('home')
+      const [text, setText] = useState('')
+      const [err, setErr] = useState('')
+
+      const post = async (body) => {
+        if (busy) return
+        setBusy(true)
+        setErr('')
+        try {
+          const d = await api('/wardrobe', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(body),
+          })
+          if (d && d.ok === false) throw new Error(d.error || '保存失败')
+          setText('')
+          if (typeof reload === 'function') reload()
+        } catch (e) {
+          setErr(String((e && e.message) || e))
+        } finally {
+          setBusy(false)
+        }
+      }
+
+      const btn = (label, onClick, style) => h('button', {
+        className: 'gd_btn',
+        disabled: busy,
+        onClick,
+        style: Object.assign({ fontSize: '11px', padding: '1px 7px' }, style || {}),
+      }, label)
+
+      const rowStyle = {
+        display: 'flex', gap: '6px', alignItems: 'flex-start',
+        padding: '4px 7px', borderRadius: '7px',
+        border: '1px solid var(--dsw-alias-border-l1)',
+      }
+
+      const toggle = h('button', {
+        className: 'gd_btn',
+        onClick: () => setOpen((v) => !v),
+        style: { fontSize: '11.5px', marginTop: '8px' },
+      }, open ? '收起编辑' : '✎ 编辑衣柜')
+
+      const head = h('div', { style: { display: 'flex', gap: '6px', alignItems: 'center' } },
+        h('select', {
+          value: kind,
+          onChange: (e) => setKind(e.target.value),
+          style: { fontSize: '11.5px', padding: '2px 4px' },
+        }, KINDS.map(([k, label]) => h('option', { key: k, value: k }, label))),
+        h('input', {
+          className: 'gd_input',
+          placeholder: '写清颜色/款式/鞋袜，一句到底',
+          value: text,
+          onChange: (e) => setText(e.target.value),
+          onKeyDown: (e) => {
+            if (e.key === 'Enter' && String(text).trim()) post({ action: 'add', kind, text })
+          },
+          style: { flex: 1, minWidth: 0, fontSize: '11.5px' },
+        }),
+        btn('添加', () => { if (String(text).trim()) post({ action: 'add', kind, text }) }))
+
+      if (!open) return h('div', null, toggle)
+
+      const rows = KINDS.map(([k, label]) => {
+        const arr = Array.isArray(pools && pools[k]) ? pools[k] : []
+        const items = arr.map((o, i) => h('div', { key: i, style: rowStyle },
+          h('span', { style: { flex: 1, fontSize: '11.5px', lineHeight: 1.55 } },
+            String(o).replace(/\*\*/g, '')),
+          btn('删', () => post({ action: 'remove', kind: k, text: String(o) }),
+            { color: '#e5484d' })))
+        return h('details', { key: k, style: { marginTop: '2px' } },
+          h('summary', { style: { cursor: 'pointer', fontSize: '12px', fontWeight: 600 } },
+            label + '（' + arr.length + '）'),
+          h('div', { style: { display: 'flex', flexDirection: 'column', gap: '3px', marginTop: '4px' } },
+            arr.length === 0
+              ? h('span', { className: 'gd_note', style: { fontSize: '11.5px' } }, '（空）')
+              : items))
+      })
+
+      const tail = h('div', { style: { display: 'flex', gap: '6px', marginTop: '2px' } },
+        btn('这一类恢复预设', () => post({ action: 'reset', kind })),
+        btn('全部恢复预设', () => post({ action: 'reset' })))
+
+      return h('div', { style: { display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '6px' } },
+        toggle,
+        err ? h('div', { style: { fontSize: '11.5px', color: '#e5484d' } }, err) : null,
+        head,
+        rows,
+        tail,
+        h('div', { className: 'gd_note', style: { fontSize: '11px' } },
+          '改完立刻生效（写 wardrobe.json，热加载，不用重启）。'))
+    }
+
+
     function KV({ label, value }) {
       return h('div', { className: 'gd_kv' },
         h('span', null, label),
@@ -1573,102 +1684,6 @@ window.__ModuleLoader__.load({
           : online ? t('dash.online') : t('dash.offline')
       const selfName = stats?.self?.name || stats?.self?.id || null
 
-      /*
-       * ★ **衣柜可编辑**（2026-11-06。用户：「衣柜要能改吧，毕竟现在这个
-       *   只是我们的预设，不代表别人喜欢」）。
-       *
-       * 数据侧：POST /api/whale-pod/wardrobe（set/add/remove/reset），
-       * 写 <数据目录>/wardrobe.json，mtime 热加载。
-       * ⚠️ 这个组件必须定义在**函数体里**，不能放进 return 的子节点列表 ——
-       *    那里是实参位置，`function` 声明会直接报语法错。
-       */
-        function WardrobeEditor({ pools, reload }) {
-          const KINDS = [
-            ['home', '家居服'], ['outing', '外出服'], ['sleepwear', '睡衣'],
-            ['signature', '标志性'], ['hairstyle', '发型'],
-          ]
-          const [busy, setBusy] = useState(false)
-          const [kind, setKind] = useState('home')
-          const [text, setText] = useState('')
-          const [err, setErr] = useState('')
-
-          const post = async (body) => {
-            if (busy) return
-            setBusy(true)
-            setErr('')
-            try {
-              const d = await api('/wardrobe', {
-                method: 'POST',
-                headers: { 'content-type': 'application/json' },
-                body: JSON.stringify(body),
-              })
-              if (d && d.ok === false) throw new Error(d.error || '保存失败')
-              if (typeof reload === 'function') reload()
-              setText('')
-            } catch (e) {
-              setErr(String((e && e.message) || e))
-            } finally {
-              setBusy(false)
-            }
-          }
-
-          const btn = (label, onClick, style) => h('button', {
-            className: 'gd_btn',
-            disabled: busy,
-            onClick,
-            style: Object.assign({ fontSize: '11px', padding: '1px 7px' }, style || {}),
-          }, label)
-
-          const rowStyle = {
-            display: 'flex', gap: '6px', alignItems: 'flex-start',
-            padding: '4px 7px', borderRadius: '7px',
-            border: '1px solid var(--dsw-alias-border-l1)',
-          }
-
-          const rows = KINDS.map(([k, label]) => {
-            const arr = Array.isArray(pools && pools[k]) ? pools[k] : []
-            const items = arr.map((o, i) => h('div', { key: i, style: rowStyle },
-              h('span', { style: { flex: 1, fontSize: '11.5px', lineHeight: 1.55 } },
-                String(o).replace(/\*\*/g, '')),
-              btn('删', () => post({ action: 'remove', kind: k, text: String(o) }),
-                { color: '#e5484d' })))
-            return h('details', { key: k, style: { marginTop: '2px' } },
-              h('summary', { style: { cursor: 'pointer', fontSize: '12px', fontWeight: 600 } },
-                label + '（' + arr.length + '）'),
-              h('div', { style: { display: 'flex', flexDirection: 'column', gap: '3px', marginTop: '4px' } },
-                arr.length === 0
-                  ? h('span', { className: 'gd_note', style: { fontSize: '11.5px' } }, '（空）')
-                  : items))
-          })
-
-          const head = h('div', { style: { display: 'flex', gap: '6px', alignItems: 'center' } },
-            h('select', {
-              value: kind,
-              onChange: (e) => setKind(e.target.value),
-              style: { fontSize: '11.5px', padding: '2px 4px' },
-            }, KINDS.map(([k, label]) => h('option', { key: k, value: k }, label))),
-            h('input', {
-              className: 'gd_input',
-              placeholder: '写清颜色/款式/鞋袜，一句到底',
-              value: text,
-              onChange: (e) => setText(e.target.value),
-              style: { flex: 1, minWidth: 0, fontSize: '11.5px' },
-            }),
-            btn('添加', () => { if (String(text).trim()) post({ action: 'add', kind, text }) }))
-
-          const tail = h('div', { style: { display: 'flex', gap: '6px', marginTop: '2px' } },
-            btn('这一类恢复预设', () => post({ action: 'reset', kind })),
-            btn('全部恢复预设', () => post({ action: 'reset' })))
-
-          return h('div', { style: { display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '6px' } },
-            err ? h('div', { style: { fontSize: '11.5px', color: '#e5484d' } }, err) : null,
-            head,
-            rows,
-            tail,
-            h('div', { className: 'gd_note', style: { fontSize: '11px' } },
-              '改完立刻生效（写 wardrobe.json，热加载，不用重启）。'))
-        }
-
       return h('div', { className: 'gd_root' },
         h('style', null, CSS),
 
@@ -1903,11 +1918,8 @@ window.__ModuleLoader__.load({
             pool('home', 'dash.wardrobeHome'),
             pool('outing', 'dash.wardrobeOuting'),
             pool('sleepwear', 'dash.wardrobeSleep'),
-            /* ★ 编辑入口（2026-11-06）：默认收起，不打扰"就看一眼"的人 */
-            h('details', { style: { marginTop: '8px' } },
-              h('summary', { style: { cursor: 'pointer', fontSize: '12.5px', fontWeight: 600 } },
-                '✎ 编辑衣柜'),
-              h(WardrobeEditor, { pools, reload: status.reload })),
+            /* ★ 编辑入口（2026-11-06）：默认收起 */
+            h(WardrobeEditor, { pools, reload: status.reload }),
           )
         })() : null,
 
