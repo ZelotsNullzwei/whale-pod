@@ -19,6 +19,7 @@ import { CLIENT_CSS, CLIENT_JS } from './assets.js'
 import { ICONS } from './icons.js'
 import * as fallbackMod from '../gateway/fallback.js'
 import { probeImage, probeOpenAI, readMagpieSettings } from '../qq/mcpImage.js'
+import { normalizeModelId } from '../qq/modelId.js'
 import { resolveCandidates, openFirstAvailable, applyFreeOrder, PROVIDER_MODEL_HINTS } from '../gateway/router.js'
 // 搜索限额（每天最多几次）—— 和 QQ 那侧共用同一份计数文件
 import { SearchQuota } from '../gateway/search.js'
@@ -806,7 +807,7 @@ export function createWebServer(opts) {
           for (const p of next) state.userEnabled?.delete(p)
           patch.gateway = { ...(patch.gateway ?? {}), disabledProviders: next }
         }
-        if (typeof body.qqModel === 'string') patch.qq = { ...(patch.qq ?? {}), model: body.qqModel }
+        if (typeof body.qqModel === 'string') patch.qq = { ...(patch.qq ?? {}), model: normalizeModelId(body.qqModel) }
         /*
          * 生图风格（2026-11-05）：photo / anime 两档完全分开。
          * bridge 每次生图现读 `cfg.qq.actions.drawStyle`，所以改完立即生效、不用重启。
@@ -3189,7 +3190,7 @@ async function whalePodCompat(o) {  const { sub, method, url, req, res, json, re
         patch.gateway = { ...(patch.gateway ?? {}), disabledProviders: next }
       }
       if (typeof body.qqModel === 'string') {
-        patch.qq = { ...(patch.qq ?? {}), model: body.qqModel }
+        patch.qq = { ...(patch.qq ?? {}), model: normalizeModelId(body.qqModel) }
       }
       // 推理等级：空串表示"用模型默认"，此时清掉字段而不是存空串
       // （bridge 读 effort 时按 undefined 走默认逻辑）。
