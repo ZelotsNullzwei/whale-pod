@@ -4164,6 +4164,24 @@ export class QQBridge {
       let sceneOnly = Boolean(hitScene)
       const forceAnime = Boolean(hitIll)
       /*
+       * ★ 一轮可以画多张（2026-11-06）：把**所有**标记按出现顺序收集起来。
+       *   第一张仍走下面的原流程，剩下的在主图发完后逐张补（顺序执行）。
+       */
+      const allMarks = (() => {
+        const out = []
+        const scan = (re, sceneOnly, anime) => {
+          const r = new RegExp(re.source, 'g')
+          let m
+          while ((m = r.exec(text))) out.push({ idx: m.index, desc: String(m[1] ?? '').trim(), sceneOnly, anime })
+        }
+        scan(re, false, false)
+        scan(reScene, true, false)
+        scan(reIll, false, true)
+        out.sort((a, b) => a.idx - b.idx)
+        return out.filter((x) => x.desc)
+      })()
+      try { msg.__extraMarks = allMarks.slice(1) } catch { /* 只读对象就算了 */ }
+      /*
        * ★ 要脸时把"背影"洗掉并强制自拍（2026-11-06 实测）：
        *   她会照搬前几轮自己说的「背影，脸不在这张里」，planner 就顺着改成第一人称。
        */
@@ -4907,6 +4925,69 @@ export class QQBridge {
       // ★ 节奏控制：生成已经花了多少，就只补剩下的（见 `_waitForPace`）
       await this._waitForPace(tStart, d)
       const sentIds = await this._send(msg, text, coverForSend)
+      /*
+       * ★ 剩下的几张：**顺序**画、画一张发一张（2026-11-06）。
+       *   最多补 3 张；某张失败就跳过，不影响其它，也绝不影响刚才那条正文。
+       */
+      try {
+        const extras = Array.isArray(msg.__extraMarks) ? msg.__extraMarks.slice(0, 3) : []
+        for (const [i, mark] of extras.entries()) {
+          try {
+            /* 要脸时同样把"背影"洗掉（跟主图一致） */
+            let desc = String(mark.desc ?? '')
+            if (msg.__wantsFace) {
+              desc = desc
+                .replace(/背对(镜头|镜子|着他)?/g, '面对镜头')
+                .replace(/背影|后脑|侧后方|侧后|不露脸|脸不在(这张里|画面里)?|别拍脸/g, '')
+                .replace(/[，,、]{2,}/g, '，').replace(/^[，,、\s]+|[，,、\s]+$/g, '').trim()
+            }
+            const s2 = planShot({
+              scene: desc,
+              slot: currentSlot().id,
+              outfit: (() => { try { return String(this.dayPlan?.today?.()?.outfit ?? '') } catch { return '' } })(),
+              hair: (() => { try { return String(this.dayPlan?.today?.()?.hair ?? '') } catch { return '' } })(),
+              request: (() => { try { return String(msg.text ?? '') } catch { return '' } })(),
+              scope: msg.scope ?? '',
+              sceneOnly: Boolean(mark.sceneOnly),
+              anime: Boolean(mark.anime),
+              imageCfg: (this.cfg?.image ?? {}),
+            })
+            if (!s2 || s2.skip) { this.log.info?.(`bridge：第 ${i + 2} 张跳过（${s2?.skipReason ?? '—'}）`); continue }
+            this.log.info?.(`bridge：第 ${i + 2} 张 → ${describeShot(s2)}`)
+            const cfg2 = this.cfg?.image ?? {}
+            const r2 = await generateImage({
+              prompt: s2.prompt,
+              url: cfg2.url,
+              provider: cfg2.provider ?? 'magpie-mcp',
+              baseUrl: cfg2.baseUrl,
+              apiKeyEnv: cfg2.keyEnv,
+              model: cfg2.model,
+              size: s2.framingInfo?.feet ? (cfg2.size || '1024x2048') : cfg2.size,
+              refImage: s2.refImage,
+              aspect: cfg2.aspect ?? '9:16',
+              resolution: cfg2.resolution ?? '2K',
+              log: this.log,
+            })
+            if (!r2?.ok) { this.log.warn?.(`bridge：第 ${i + 2} 张生成失败 — ${r2?.error ?? '—'}`); continue }
+            let buf2 = null
+            try {
+              const resp2 = await fetch(r2.url, { signal: AbortSignal.timeout(25000) })
+              if (resp2.ok) buf2 = Buffer.from(await resp2.arrayBuffer())
+            } catch (e) { this.log.warn?.(`bridge：第 ${i + 2} 张下载失败 — ${String(e?.message ?? e)}`) }
+            if (!buf2 || buf2.length < 1024) continue
+            if (s2.framingInfo?.feet) {
+              buf2 = await cropBottom(buf2, 0.06, this.log)
+              buf2 = await eraseCornerWatermark(buf2, this.log)
+            } else {
+              buf2 = await cropBottom(buf2, Number(cfg2.cropBottom ?? 0.1), this.log)
+            }
+            await this._send(msg, '', `base64://${buf2.toString('base64')}`)
+            this.log.info?.(`bridge：第 ${i + 2} 张已发（${Math.round(buf2.length / 1024)}KB）`)
+          } catch (e) {
+            this.log.warn?.(`bridge：补第 ${i + 2} 张失败 — ${String(e?.message ?? e).slice(0, 80)}`)
+          }
+        }
+      } catch { /* 补图失败不影响已经发出去的内容 */ }
       this.stats.replied++
       mem.push(makeMessage({
         // ⚠️ 用自己的 message_id 记录这条回复。
