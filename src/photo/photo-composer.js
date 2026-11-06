@@ -77,6 +77,33 @@ export const FRAMINGS = {
  * 他是不是**要看身形**（2026-11-06 用户：「三围我看不出来，无法判断」）。
  * 这类要求必须给能看全身的构图，半身/头肩看不出来。
  */
+/**
+ * 「看身材」的姿势（2026-11-06，来自知乎《网红身材打假》，实测定稿）。
+ *
+ * 只用**身体姿态 + 机位**，不写道具。三种都留着（用户：「有更多选择」）：
+ *   · 骨盆前倾 → 腰塌下去、臀自然翘起来（实测最好）
+ *   · 侧腰入镜 → 收腹 + 脊柱旋转，侧面看腰更细
+ *   · 上身微前倾 → 肩腰对比，腰显细（偏正面，臀不明显）
+ */
+const FIGURE_POSES = [
+  '侧身站、胯往一侧顶（骨盆前倾），收腹、上身微微后仰，屁股自然往后送；'
+    + '身体沿画面对角线摆放，机位略低于腰、往上仰一点',
+  '侧身站、收腹、脊柱微微旋转让侧腰入镜，一手扶着镜框；机位略低，身体沿对角线',
+  '正面偏侧一点站，收腹、上身略微前倾，胯往一侧顶；肩和腰形成对比，机位略低',
+]
+
+/**
+ * 按日期稳定取一个看身材的姿势（同一天同一句，不会每次换）。
+ * @param {string} dayKey  YYYY-MM-DD
+ * @returns {string}
+ */
+export function figurePoseForDay(dayKey) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(dayKey ?? ''))
+  if (!m) return FIGURE_POSES[0]
+  const n = Math.floor(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])) / 86_400_000)
+  return FIGURE_POSES[((n % FIGURE_POSES.length) + FIGURE_POSES.length) % FIGURE_POSES.length]
+}
+
 function wantsFigure(req) {
   return /(身材|三围|体型|身高|腿长|比例|胖了|瘦了|腰细|腰粗|好不好看|看看这一身|全身)/.test(String(req ?? ''))
 }

@@ -45,6 +45,8 @@ import { extractQQMarkers, runQQMarkers, buildEmojiHint } from './qqActions.js'
 import { generateImage, cropBottom, eraseCornerWatermark } from './mcpImage.js'
 /* 摄影决策链（v2.0）：规划 → 校验 → 构图 → 提示词，见 src/photo/ */
 import { planShot, describeShot } from '../photo/index.js'
+import { figurePoseForDay } from '../photo/photo-composer.js'
+import { dayKey } from '../memory/dayPlan.js'
 import { hasBiliLink, resolveBvid, fetchVideoInfo, fetchTopComments, fetchDanmaku, fetchAudioCandidates, downloadAudio, formatVideoContext } from './bilibili.js'
 import { transcribeVideoCached, transcribeVideoDetailed } from './asr.js'
 // 梗百科 —— 本地词库（零成本），联网查梗之前先走它；没收录才放行联网
@@ -3320,6 +3322,9 @@ export class QQBridge {
     let total = 0
     let used = 0
     let truncated = false
+    /** 转发里取到的图片引用（拼图后交给视觉模型） */
+    const images = []
+    let imageOmitted = 0
     for (const id of ids) {
       let got = this._forwardCache.get(id)
       if (!got) {
@@ -3342,6 +3347,12 @@ export class QQBridge {
       used += Number(got.used ?? 0)
       if (got.truncated) truncated = true
       if (got.text) blocks.push(got.text)
+      /*
+       * ★ 转发里的图片引用要一起带回去（2026-11-06）。
+       * 上层会把它们拼成一张网格再交给视觉模型 —— 见 `forward-images.js`。
+       */
+      if (Array.isArray(got.images)) for (const r of got.images) if (r) images.push(r)
+      if (Number(got.imageOmitted ?? 0) > 0) imageOmitted += Number(got.imageOmitted)
     }
     if (blocks.length === 0) return null
 
@@ -3351,6 +3362,8 @@ export class QQBridge {
       nodes: used || text.split('\n').filter((l) => l.startsWith('  ')).length,
       total: total || used,
       truncated,
+      images,
+      imageOmitted,
     }
   }
 
@@ -3511,8 +3524,45 @@ export class QQBridge {
             this.log.info?.(
               `bridge：合并转发展开 ${fwd.nodes}/${fwd.total} 条`
               + (fwd.truncated ? '（已截断）' : '')
-              + `，${fwd.text.length} 字`,
+              + `，${fwd.text.length} 字`
+              + (fwd.images?.length ? `，图 ${fwd.images.length} 张` : ''),
             )
+            /*
+             * ★★ **转发里的图拼成一张，再交给视觉模型**（2026-11-06）。
+             *
+             * 用户要的：「或者用我们现在看 b 站视频的机制」「做拼贴」「然后再交给模型」。
+             * 复用车牌内页那套零依赖 canvas 拼图（`page.stitchGrid`）——
+             * whale-pod 没有 sharp / canvas，但图本来就在浏览器页面里。
+             *
+             * ⚠️ 只取前 `maxImages` 张（默认 4）：87 张全看是真花钱，也没人等。
+             *    超出部分**必须说清**（"还有 N 张没看"），别假装全看了。
+             * ⚠️ 拼图/浏览器失败 → 退回原图，一张都不少（见 `forward-images.js`）。
+             * ⚠️ 整段 try/catch：图是加分项，绝不能因为它让这条回复发不出去。
+             */
+            if (Array.isArray(fwd.images) && fwd.images.length > 0) {
+              try {
+                const { stitchForwardImages } = await import('./forward-images.js')
+                const r = await stitchForwardImages({
+                  refs: fwd.images,
+                  fetchImage: (ref, o2) => this.onebot.fetchImage(ref, o2),
+                  makeImageBlock: (o2) => this.gateway.makeImageBlock(o2),
+                  log: this.log,
+                  maxImages: Number(this.cfg.reply?.maxImages ?? 4),
+                  maxBytes: this.cfg.reply?.maxImageBytes ?? DEFAULT_MAX_IMAGE_BYTES,
+                })
+                if (r.blocks.length > 0) {
+                  msg.forwardBlocks = r.blocks
+                  this.log.info?.(
+                    `bridge：转发图 ${r.used} 张${r.stitched ? '（已拼成 1 张）' : ''}`
+                    + `${r.omitted > 0 ? `，另有 ${r.omitted} 张没看` : ''} → 交给视觉模型`,
+                  )
+                  // 正文里补一句"还有几张没看"，否则她会以为全看完了
+                  if (r.omitted > 0) msg.text = `${msg.text}\n（转发里还有 ${r.omitted} 张图没看）`
+                }
+              } catch (e) {
+                this.log.warn?.(`bridge：转发图处理失败（跳过视觉）— ${String(e?.message ?? e).slice(0, 80)}`)
+              }
+            }
           }
         } catch (e) {
           this.log.warn?.(`bridge：合并转发取内容失败 — ${String(e?.message ?? e)}`)
@@ -4023,8 +4073,13 @@ export class QQBridge {
         /*
          * 要看身材 → 对镜自拍 + 全身（半身看不出三围）；否则 → 自拍正脸。
          */
-        const prefix = msg.__wantsFigure ? '对镜自拍，全身，看看这一身，' : '自拍，'
-        hit[1] = cleaned ? `${prefix}${cleaned}` : (msg.__wantsFigure ? '对镜自拍，全身，看看这一身' : '自拍一张，正脸看镜头')
+        /*
+         * 看身材的姿势**按日期轮换**（2026-11-06 实测三种都有效，用户要「更多选择」）：
+         * 骨盆前倾 / 侧腰入镜 / 上身微前倾 —— 只用姿态+机位，不写道具。
+         */
+        const figurePose = figurePoseForDay(dayKey())
+        const prefix = msg.__wantsFigure ? `对镜自拍，全身，看看这一身，${figurePose}，` : '自拍，'
+        hit[1] = cleaned ? `${prefix}${cleaned}` : (msg.__wantsFigure ? `对镜自拍，全身，看看这一身，${figurePose}` : '自拍一张，正脸看镜头')
         sceneOnly = false // 要脸就不要"只拍东西"
         if (before !== cleaned) {
           this.log.info?.(`bridge：要脸 → 描述已洗掉背影「${String(hit[1]).slice(0, 40)}」`)
@@ -6833,6 +6888,22 @@ export class QQBridge {
      *    （`_generate` 的调用点有五六处，加参数一定会漏）。
      */
     let blocks = extraBlocks
+    /*
+     * ★ **转发里拼好的图并进来**（2026-11-06）。
+     *
+     * `msg.forwardBlocks` 是 `_handle` 里算好的（下载 → 拼成一张网格 →
+     * makeImageBlock），这里只是把它接到 `_collectImages` 的口子上 ——
+     * 跟 B 站分镜图、车牌内页截图走的是**同一个入口**，所以别在调用点加参数
+     * （`_generate` 的调用点有五六处，加参数一定会漏）。
+     */
+    if (Array.isArray(msg?.forwardBlocks) && msg.forwardBlocks.length > 0) {
+      const merged = new Map(blocks ?? [])
+      for (const [i, blk] of msg.forwardBlocks.entries()) {
+        if (blk) merged.set(`fwd:img:${i + 1}`, blk)
+      }
+      blocks = merged
+      this.log.info?.(`bridge：转发图 ${merged.size} 块进上下文（视觉模型能看到）`)
+    }
     if (Array.isArray(biliShots?.images) && biliShots.images.length) {
       if (typeof this.gateway?.makeImageBlock === 'function') {
         const merged = new Map(extraBlocks ?? [])
