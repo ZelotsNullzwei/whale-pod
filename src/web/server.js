@@ -2312,6 +2312,32 @@ async function whalePodCompat(o) {  const { sub, method, url, req, res, json, re
             return c.list().slice(0, 24)
           } catch { return [] }
         })(),
+        /*
+         * ★ 衣柜（2026-11-06）：侧栏「衣柜」卡片读这里 ——
+         *   今天穿的三套（家居/外出/睡衣）+ 四个池子的全部条目。
+         */
+        wardrobe: await (async () => {
+          try {
+            const W = await import('../memory/wardrobe.js')
+            const { dayKey } = await import('../memory/dayPlan.js')
+            const k = dayKey()
+            return {
+              date: k,
+              today: {
+                outfit: W.outfitForDay(k),
+                outing: W.outingOutfitForDay(k),
+                sleepwear: W.sleepwearForDay(k),
+                hair: W.hairForDay(k),
+              },
+              pools: {
+                home: W.HOME_OUTFITS,
+                outing: W.OUTING_OUTFITS,
+                sleepwear: W.SLEEPWEAR,
+                signature: W.SIGNATURE_OUTFITS,
+              },
+            }
+          } catch { return null }
+        })(),
         memory: memory?.stats?.() ?? null,
         // 人物档案：仪表盘「认识的人 · 好感度」读这里（原来只挂在 /memory 上）
         people: state.people?.stats?.() ?? null,

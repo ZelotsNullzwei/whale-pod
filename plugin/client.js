@@ -109,6 +109,15 @@ window.__ModuleLoader__.load({
       'dash.people': '认识的人',
       'dash.peopleHint': '好感度 · 聊得越多越熟',
       'dash.peopleEmpty': '还没有形成印象（多聊几次就会出现）',
+      'dash.wardrobe': '衣柜',
+      'dash.wardrobeHint': '今天穿什么 · 全部条目',
+      'dash.wardrobeToday': '今天',
+      'dash.wardrobeHome': '家居服',
+      'dash.wardrobeOuting': '外出服',
+      'dash.wardrobeSleep': '睡衣',
+      'dash.wardrobeSignature': '标志性造型',
+      'dash.wardrobeHair': '发型',
+      'dash.wardrobeEmpty': '还没读到衣柜',
       'dash.images': '生成图',
       'dash.imagesHint': '最近画的图 · 点开看大图',
       'dash.imagesEmpty': '还没画过图',
@@ -475,6 +484,15 @@ window.__ModuleLoader__.load({
       'dash.activeDaysUnit': 'd',
       'dash.people': 'People',
       'dash.peopleHint': 'Affinity · the more you chat, the closer',
+      'dash.wardrobe': 'Wardrobe',
+      'dash.wardrobeHint': "What she's wearing · all items",
+      'dash.wardrobeToday': 'Today',
+      'dash.wardrobeHome': 'Home',
+      'dash.wardrobeOuting': 'Outing',
+      'dash.wardrobeSleep': 'Sleepwear',
+      'dash.wardrobeSignature': 'Signature',
+      'dash.wardrobeHair': 'Hair',
+      'dash.wardrobeEmpty': 'Wardrobe not loaded',
       'dash.images': 'Generated',
       'dash.imagesHint': 'Recent pictures · click to enlarge',
       'dash.imagesEmpty': 'Nothing drawn yet',
@@ -1740,6 +1758,49 @@ window.__ModuleLoader__.load({
               ? h('p', { className: 'gd_note' }, t('dash.peopleEmpty'))
               : h('div', { style: { display: 'flex', flexDirection: 'column', gap: '8px' } }, rows))
         })(),
+
+        /* ── 衣柜（2026-11-06）：今天穿什么 + 全部条目 ────────────── */
+        enabled ? (() => {
+          const w = status.data?.wardrobe
+          if (!w) return h(Fold, { title: t('dash.wardrobe'), summary: t('dash.wardrobeEmpty'), defaultOpen: false },
+            h('p', { className: 'gd_note' }, t('dash.wardrobeEmpty')))
+          const pools = w.pools ?? {}
+          const total = [pools.home, pools.outing, pools.sleepwear, pools.signature]
+            .reduce((n, arr) => n + (Array.isArray(arr) ? arr.length : 0), 0)
+          const rowStyle = { display: 'flex', flexDirection: 'column', gap: '2px', padding: '6px 9px', borderRadius: '8px', border: '1px solid var(--dsw-alias-border-l1)', background: 'color-mix(in srgb, var(--dsw-alias-bg-layer-1) 55%, transparent)' }
+          const pool = (key, titleKey) => {
+            const arr = Array.isArray(pools[key]) ? pools[key] : []
+            return h('details', { key, style: { marginTop: '6px' } },
+              h('summary', { style: { cursor: 'pointer', fontSize: '12.5px', fontWeight: 600 } },
+                `${t(titleKey)}（${arr.length}）`),
+              h('div', { style: { display: 'flex', flexDirection: 'column', gap: '4px', marginTop: '6px' } },
+                arr.map((o, i) => h('div', { key: i, style: rowStyle },
+                  h('span', { style: { fontSize: '12px', lineHeight: 1.6 } }, String(o).replace(/\*\*/g, ''))))))
+          }
+          const todayRows = [
+            [t('dash.wardrobeHome'), w.today?.outfit],
+            [t('dash.wardrobeOuting'), w.today?.outing],
+            [t('dash.wardrobeSleep'), w.today?.sleepwear],
+            [t('dash.wardrobeHair'), w.today?.hair],
+          ].filter((r) => r[1])
+          return h(Fold, {
+            title: t('dash.wardrobe'),
+            hint: t('dash.wardrobeHint'),
+            summary: `${total} 套`,
+            defaultOpen: false,
+          },
+            h('div', { style: { display: 'flex', flexDirection: 'column', gap: '4px' } },
+              h('div', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-secondary)' } },
+                `${t('dash.wardrobeToday')} · ${w.date ?? ''}`),
+              todayRows.map(([label2, val], i) => h('div', { key: i, style: rowStyle },
+                h('span', { style: { fontSize: '11px', color: 'var(--dsw-alias-label-secondary)' } }, label2),
+                h('b', { style: { fontSize: '12px', lineHeight: 1.6, fontWeight: 500 } }, String(val).replace(/\*\*/g, ''))))),
+            pool('signature', 'dash.wardrobeSignature'),
+            pool('home', 'dash.wardrobeHome'),
+            pool('outing', 'dash.wardrobeOuting'),
+            pool('sleepwear', 'dash.wardrobeSleep'),
+          )
+        })() : null,
 
         /* ── 生成图（缩略图网格；点开预览）──────────────────────── */
         enabled ? (() => {
