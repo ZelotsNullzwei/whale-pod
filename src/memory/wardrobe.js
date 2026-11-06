@@ -223,3 +223,24 @@ export function outfitForSlot(slotId, dayKey, justWoke = false) {
   }
   return { kind: 'home', text: outfitForDay(dayKey) }
 }
+/**
+ * 衣柜摘要（进对话提示词用）。
+ *
+ * 现场问题：用户说「给你加了几件新衣服」，她反问「真的？什么样的，快说说」——
+ * 因为衣柜只存在于出图链路，**没进她的对话提示词**。
+ *
+ * ⚠️ 只给分类/风格/套数/标志性名单 —— 47 套逐条列会把提示词撑爆，
+ *    但足够她回答「你有什么衣服」「都什么风格」。
+ * @returns {string}
+ */
+export function wardrobeBrief() {
+  const total = HOME_OUTFITS.length + OUTING_OUTFITS.length + SLEEPWEAR.length + SIGNATURE_OUTFITS.length
+  return [
+    `【你的衣柜】一共 ${total} 套，都是你自己的衣服：`,
+    `- 家居服 ${HOME_OUTFITS.length} 套：简约基础、休闲运动、学院风（V领背心+衬衫）、甜妹碎花、复古格纹，还有几套"一个人在家随便穿"的`,
+    `- 外出服 ${OUTING_OUTFITS.length} 套：**JK 制服 3 套**（水手服 / 西装+领带 / 开衫+格纹裙）、学院风、甜妹碎花裙、休闲运动、中性工装、复古知性、温柔针织`,
+    `- 睡衣 ${SLEEPWEAR.length} 套：睡衣套装 + 吊带连身睡裙`,
+    `- 标志性造型 ${SIGNATURE_OUTFITS.length} 套（按官方设定图）：女仆装长款、女仆装短款、女仆风上衣+长裤、藏青连衣裙+围裙、水手服+鲸尾、白色系女仆装`,
+    '⚠️ 上面这些就是全部。别人问「什么衣服/哪件/什么风格」就按这个答，**不要现编这里没有的衣服**；要说今天具体穿了哪套，看上面「今天穿的」。',
+  ].join('\n')
+}

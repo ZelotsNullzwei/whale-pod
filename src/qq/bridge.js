@@ -47,7 +47,7 @@ import { generateImage, cropBottom, eraseCornerWatermark } from './mcpImage.js'
 import { planShot, describeShot } from '../photo/index.js'
 import { figurePoseForDay } from '../photo/photo-composer.js'
 import { dayKey } from '../memory/dayPlan.js'
-import { outingOutfitForDay, signatureOutfitForDay } from '../memory/wardrobe.js'
+import { outingOutfitForDay, signatureOutfitForDay, wardrobeBrief } from '../memory/wardrobe.js'
 import { hasBiliLink, resolveBvid, fetchVideoInfo, fetchTopComments, fetchDanmaku, fetchAudioCandidates, downloadAudio, formatVideoContext } from './bilibili.js'
 import { transcribeVideoCached, transcribeVideoDetailed } from './asr.js'
 // 梗百科 —— 本地词库（零成本），联网查梗之前先走它；没收录才放行联网
@@ -6711,6 +6711,14 @@ export class QQBridge {
           const plan = this.dayPlan?.today()
           if (!plan) return ''
           return renderDayPlan(plan, currentSlot().id)
+        })(),
+        /*
+         * ★ 衣柜（2026-11-06 用户：「衣柜要她自己也能看吧」）：
+         *   之前只把「今天穿的」给她，她不知道**自己有哪些衣服** ——
+         *   用户说「给你加了几件新衣服」，她只能反问"什么样的，快说说"。
+         */
+        (() => {
+          try { return wardrobeBrief() } catch { return '' }
         })(),
         /*
          * ── 今天外面在聊什么（免费热点源）──
