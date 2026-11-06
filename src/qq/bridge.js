@@ -5965,9 +5965,35 @@ export class QQBridge {
              *    NapCat 历史里的 image 段带 `data.url`，直接取回来存进记忆。
              */
             const segs = Array.isArray(m.message) ? m.message : []
+            /*
+             * ⚠️ **两路取图**（2026-11-06 修）：
+             *   ① m.message 是**数组**时，直接挑 type:'image' 段（正常路径）；
+             *   ② 补历史拿到的是 NapCat 原始行，m.message 常常**不是数组** ——
+             *      这时图和转发 id 只在 raw_message 的 **CQ 码**里：
+             *      [CQ:image,file=...,url=...] / [CQ:forward,id=...]
+             *      原来只认 ①，所以补历史永远没有图（她那句"图没跟着进来"是真的）。
+             */
+            const rawMsg = String(m.raw_message ?? '')
+            const cqUnescape = (v) => String(v ?? '')
+              .replace(/&#44;/g, ',').replace(/&#91;/g, '[').replace(/&#93;/g, ']')
+              .replace(/&amp;/g, '&')
             const imgs = segs.filter((x) => x?.type === 'image')
               .map((x) => String(x?.data?.url ?? x?.data?.file ?? ''))
               .filter(Boolean)
+            // ② CQ 码兜底：图片（用 split 而不是正则 —— CQ 码里有方括号，正则转义容易写错）
+            if (imgs.length === 0) {
+              for (const part of rawMsg.split('[CQ:image,').slice(1)) {
+                const kv = part.split(']')[0] ?? ''
+                const pick = (k) => {
+                  const i = kv.indexOf(k + '=')
+                  if (i < 0) return ''
+                  const rest = kv.slice(i + k.length + 1)
+                  return rest.split(',')[0] ?? ''
+                }
+                const u = pick('url') || pick('file')
+                if (u) imgs.push(cqUnescape(u))
+              }
+            }
             /*
              * ★★ **转发里的图不在本条消息里**（2026-11-06 修）。
              * 现场：13:44:51 重启后补历史，那条是「[转发了聊天记录·6条]」——
@@ -5977,7 +6003,23 @@ export class QQBridge {
              * ⚠️ id 必须字符串原样传（19 位超安全整数，转 Number 丢精度）。
              * ⚠️ 失败吞掉：展开不了就当没图，不能因此不补历史。
              */
-            const fwdId = String(segs.find((x) => x?.type === 'forward')?.data?.id ?? '').trim()
+            let fwdId = String(segs.find((x) => x?.type === 'forward')?.data?.id ?? '').trim()
+            // ② CQ 码兜底：转发 id（[CQ:forward,id=xxx] 或 [CQ:forward,data={"id":"xxx"}]）
+            if (!fwdId) {
+              const fseg = rawMsg.split('[CQ:forward,').slice(1)[0]
+              if (fseg) {
+                const kv = fseg.split(']')[0] ?? ''
+                const idAt = kv.indexOf('id=')
+                if (idAt >= 0) fwdId = cqUnescape((kv.slice(idAt + 3).split(',')[0] ?? ''))
+                else {
+                  const dataAt = kv.indexOf('data=')
+                  if (dataAt >= 0) {
+                    const mjson = kv.slice(dataAt + 5).match(/\{[^}]*\}/)
+                    if (mjson) { try { fwdId = String(JSON.parse(cqUnescape(mjson[0]))?.id ?? '') } catch { /* 忽略 */ } }
+                  }
+                }
+              }
+            }
             if (fwdId && imgs.length === 0) {
               try {
                 const fw = await this.onebot.callHttp('get_forward_msg', { message_id: fwdId, id: fwdId }, 6000)
