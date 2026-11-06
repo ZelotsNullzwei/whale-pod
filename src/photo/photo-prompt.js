@@ -12,6 +12,7 @@
  * 最后附【禁止】。
  */
 
+import { pairingBlock } from '../memory/outfitRules.js'
 import { FRAMINGS } from './photo-composer.js'
 import { renderExpression } from './photo-expression.js'
 
@@ -153,6 +154,15 @@ ${bodyOverride ? `${bodyOverride}、` : ''}
   }
   if (hair && !fpOnly) life.push(`今天的头发：${hair}`)
   if (life.length) parts.push(`【生活状态】\n${life.join('\n')}`)
+  /*
+   * ★ 搭配要成立（2026-11-06，来自 B 站半裙搭配 + 知乎 7 个技巧）：
+   *   模型不会自己想搭配 —— 不管它就画成上下都宽、三段分色、长裙配高帮靴。
+   *   只在**有人入画**时加（第一人称/纯场景用不上）。
+   */
+  if (plan.needsCharacterRef !== false && !fpOnly) {
+    const pb = pairingBlock(outfit)
+    if (pb) parts.push(pb)
+  }
 
   /* ── 模块三：摄影方案（这是 v2.0 的核心）─────────────────── */
   const shot = [
