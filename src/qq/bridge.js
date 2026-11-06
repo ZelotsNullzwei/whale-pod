@@ -3696,6 +3696,14 @@ export class QQBridge {
        */
       const wantsPicture = String(msg.scope ?? '').startsWith('private')
         && /(看看|看一下|什么样|长什么样|在干嘛|在做什么|在干什么|拍一张|拍张|拍照|照片|自拍|发图|来一张|发一张|露个脸|你的脸|什么样子)/.test(String(msg.text ?? ''))
+      /*
+       * ★ 他是不是要**看人**（要脸）—— 和"要画面"分开（2026-11-06）：
+       *   在干嘛 → 场景图（拍碗拍窗台）也合理；看看你/你的脸 → 必须自拍。
+       */
+      const wantsFace = String(msg.scope ?? '').startsWith('private')
+        && /(看看你|看你|你的脸|露个脸|长什么样|什么样子|自拍|照片|拍照|发张|来一张|发一张|拍一张|拍张)/.test(String(msg.text ?? ''))
+      // 画图块要读这两个意图（挂在 msg 上，作用域最稳）
+      try { msg.__wantsPicture = wantsPicture; msg.__wantsFace = wantsFace } catch { /* 只读对象就跳过 */ }
       const picNote = wantsPicture
         ? '★ 他这条是在**要画面**（看看 / 什么样子 / 你在干嘛）。这一轮**必须**用 '
           + '[画图:一句话描述画面] 回答，**不要用文字描述** —— 文字他已经会问了。\n'
@@ -3889,8 +3897,24 @@ export class QQBridge {
       const hitScene = reScene.exec(text)
       const hitIll = hitScene ? null : reIll.exec(text)
       const hit = hitScene ?? hitIll ?? re.exec(text)
-      const sceneOnly = Boolean(hitScene)
+      let sceneOnly = Boolean(hitScene)
       const forceAnime = Boolean(hitIll)
+      /*
+       * ★ 要脸时把"背影"洗掉并强制自拍（2026-11-06 实测）：
+       *   她会照搬前几轮自己说的「背影，脸不在这张里」，planner 就顺着改成第一人称。
+       */
+      if (hit && msg.__wantsFace) {
+        const before = String(hit[1] ?? '').trim()
+        const cleaned = before
+          .replace(/背对(镜头|镜子|着他)?/g, '面对镜头')
+          .replace(/背影|后脑|侧后方|侧后|不露脸|脸不在(这张里|画面里)?|别拍脸/g, '')
+          .replace(/[，,、]{2,}/g, '，').replace(/^[，,、\s]+|[，,、\s]+$/g, '').trim()
+        hit[1] = cleaned ? `自拍，${cleaned}` : '自拍一张，正脸看镜头'
+        sceneOnly = false // 要脸就不要"只拍东西"
+        if (before !== cleaned) {
+          this.log.info?.(`bridge：要脸 → 描述已洗掉背影「${String(hit[1]).slice(0, 40)}」`)
+        }
+      }
       if (hit) {
         text = text.replace(hitScene ? reScene : (hitIll ? reIll : re), '').replace(/[ \t]{2,}/g, ' ').trim()
         if (this.cfg.actions?.draw === false) {
@@ -3902,12 +3926,23 @@ export class QQBridge {
            *   已经画过就跳过，直接把标记剥掉。
            */
           if (!this._drawRecent) this._drawRecent = new Map()
-          const drawKey = String(msg.scope ?? '')
-          const lastDraw = this._drawRecent.get(drawKey) ?? 0
+          /*
+           * ★ 按**描述**去重（2026-11-06 改）：原来按会话算 10 分钟，
+           *   导致"真的要一张新图"也被挡掉 —— 她嘴上说"拍了"，实际没图。
+           *   现在：同一段描述 10 分钟内不重画；描述不同就照画。
+           */
+          const descKey = String(msg.scope ?? '') + '|'
+            + String(hit[1] ?? '').replace(/\s+/g, '').slice(0, 40)
+          const lastDraw = this._drawRecent.get(descKey) ?? 0
           if (Date.now() - lastDraw < 600_000) {
-            this.log.info?.('bridge：画图跳过 —— 这个会话 10 分钟内刚画过')
+            this.log.info?.('bridge：画图跳过 —— 这段描述 10 分钟内画过（换说法才会重画）')
           } else {
-          this._drawRecent.set(drawKey, Date.now())
+          this._drawRecent.set(descKey, Date.now())
+          // 只留最近 40 条，避免 Map 无限长
+          if (this._drawRecent.size > 40) {
+            const oldest = this._drawRecent.keys().next().value
+            this._drawRecent.delete(oldest)
+          }
           this.log.info?.(`bridge：画图「${String(hit[1]).slice(0, 40)}」`)
           /*
            * ★ **垫场**（2026-11-05）：画图要 30 秒上下，别让人干等。
