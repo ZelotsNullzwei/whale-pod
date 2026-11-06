@@ -4282,7 +4282,12 @@ export class QQBridge {
          * 判据：他这一轮有没有"让我拍"的意思（要/拍/看/来一张/全身/半身/对镜…）。
          * 没有 → 不画，把这句话改成问句（问拍什么、怎么拍）。
          */
-        const goAhead = /(要|拍|看|来一张|发一张|可以|行吧|好啊|嗯|对镜|前置|全身|半身|特写|脸|这张|那张|自拍)/.test(String(msg.text ?? ''))
+        /*
+         * ⚠️ 「发个图 / 群里发张」也要算 go-ahead（2026-11-06 实测漏了）。
+         *    第一版只有"拍/看/来一张"，他说「群里发个图」被判成"没说要拍"，
+         *    于是画图被拦、发群只剩一句文字。
+         */
+        const goAhead = /(要|拍|看|图|照片|来一张|发一张|发个|发张|可以|行吧|好啊|嗯|对镜|前置|全身|半身|特写|脸|这张|那张|自拍|群里发)/.test(String(msg.text ?? ''))
         if (this.cfg.actions?.askBeforeDraw !== false && !goAhead) {
           this.log.info?.('bridge：画图跳过 —— 他没说要拍（先问"拍什么、怎么拍"）')
           msg.__askInstead = true
@@ -4972,9 +4977,23 @@ export class QQBridge {
                * 真想说更多，只能等他下一轮明确再要求。
                */
               const crossKey = String(msg.scope ?? 'private:?')
+              /*
+               * ★★ **30 分钟次数节流默认关掉了**（2026-11-06 用户：
+               *    「冷却不是关了吗」「先改吧有问题后面再说」）。
+               *
+               * 这个键从来没暴露到设置页 —— 用户在设置里关的是别的冷却，
+               * 而 `crossGroupMinGapMs` 一直按 30 分钟默认值在后台拦人。
+               * 现场：他要图，第一次只发出去一句话（画图被拦），紧接着三轮
+               * 「发群跳过 —— 这个私聊 1 分钟前刚发过」—— 图永远发不出去。
+               *
+               * 现在：默认 **0 = 不限**（要恢复就把 qq.actions.crossGroupMinGapMs 设成毫秒数）。
+               * 保留的只有下面那条**按内容去重**（5 分钟同一句不重发）——
+               * 那防的是刷屏，跟"他明确要发"不冲突。
+               */
               const lastCross = this._crossGroupAt?.get?.(crossKey) ?? 0
-              const crossGapMs = Number(this.cfg.actions?.crossGroupMinGapMs ?? 30 * 60 * 1000)
-              if (lastCross && Date.now() - lastCross < crossGapMs) {
+              const crossGapMs = Number(this.cfg.actions?.crossGroupMinGapMs ?? 0)
+              const throttled = crossGapMs > 0 && lastCross && Date.now() - lastCross < crossGapMs
+              if (throttled) {
                 const mins = Math.round((Date.now() - lastCross) / 60000)
                 this.log.info?.(`bridge：发群跳过 —— 这个私聊 ${mins} 分钟前刚发过（间隔要 ${Math.round(crossGapMs / 60000)} 分钟）`)
                 crossGroupNote = ''
@@ -7285,7 +7304,14 @@ export class QQBridge {
             const key = String(msg?.scope ?? '')
             const last = this._crossGroupAt?.get?.(key) ?? 0
             if (!last) return ''
-            const gap = Number(this.cfg?.actions?.crossGroupMinGapMs ?? 30 * 60 * 1000)
+            /*
+             * ⚠️ 默认 0 = 不限（2026-11-06 和上面那段保持一致）。
+             *    这里原来也是 30 分钟 —— 两处各写一遍默认值，
+             *    改一处漏一处就会出"代码说能发、提示词说不能发"的矛盾。
+             *    现在两边同一个默认，且为 0。
+             */
+            const gap = Number(this.cfg?.actions?.crossGroupMinGapMs ?? 0)
+            if (gap <= 0) return ''
             const left = gap - (Date.now() - last)
             if (left <= 0) return ''
             const mins = Math.ceil(left / 60000)

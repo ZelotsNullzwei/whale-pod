@@ -11,6 +11,7 @@
  * ③ **抠群名**：只认"发到/发去/发在 + XX + 群"，不能把「发群里」也当点名。
  */
 import assert from 'node:assert/strict'
+import fs from 'node:fs'
 import { QQBridge, pickPrivateCover } from '../src/qq/bridge.js'
 
 const p = QQBridge.prototype
@@ -126,6 +127,31 @@ ok('找图（findImage）优先级最高，和发群无关', () => {
 
 ok('什么都没画 → null（不硬凑）', () => {
   assert.equal(pickPrivateCover({}), null)
+})
+
+
+console.log('\n=== 5. 30 分钟次数节流默认关掉（用户「冷却不是关了吗」）===')
+ok('★ 默认值是 0 = 不限（这个键从没暴露到设置页，不该在后台拦人）', () => {
+  const src = fs.readFileSync(new URL('../src/qq/bridge.js', import.meta.url), 'utf8')
+  assert.match(src, /crossGroupMinGapMs \?\? 0/, '默认必须是不限')
+  assert.ok(!/crossGroupMinGapMs \?\? 30 \* 60 \* 1000/.test(src), '不能再有 30 分钟默认值')
+})
+
+ok('★ 内容去重还在（防刷屏，跟"他明确要发"不冲突）', () => {
+  const src = fs.readFileSync(new URL('../src/qq/bridge.js', import.meta.url), 'utf8')
+  assert.match(src, /_groupSendDup/)
+})
+
+console.log('\n=== 6. 「发个图」要算作"要拍"（否则画图被拦、发群只剩文字）===')
+ok('★ goAhead 覆盖 图/照片/发个/发张/群里发', () => {
+  const src = fs.readFileSync(new URL('../src/qq/bridge.js', import.meta.url), 'utf8')
+  const m = /const goAhead = (\/.*?\/)\.test/.exec(src)
+  assert.ok(m, '找不到 goAhead')
+  const re = eval(m[1])
+  for (const t of ['群里发个图', '发张照片', '发个图看看', '给我张图']) {
+    assert.equal(re.test(t), true, `应该算要拍：${t}`)
+  }
+  assert.equal(re.test('？'), false, '「？」仍然不算')
 })
 
 console.log(`\n${'='.repeat(44)}\n通过 ${pass} / 失败 ${fail}`)
