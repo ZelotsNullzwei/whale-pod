@@ -4270,10 +4270,33 @@ export class QQBridge {
           const lastDraw = this._drawRecent.get(descKey) ?? 0
           /* 去重窗口可配：qq.actions.drawDupMs（0 = 不去重，测试用） */
           const drawDupMs = Number(this.cfg.actions?.drawDupMs ?? 600_000)
-          if (drawDupMs > 0 && Date.now() - lastDraw < drawDupMs) {
+          /*
+           * ★★ **同一会话的画图频率上限**（2026-11-06 用户：「我叫她换他会一直发图」）。
+           *
+           * 原来的去重是**按描述**算的：描述不一样就照画。于是他一说"换那套"，
+           * 她每轮都换个说法画一张 —— 20 多秒、每次都花钱，还刷屏。
+           *
+           * 现在再加一道**按会话的次数闸**：默认 5 分钟内最多 2 张。
+           * 超了就跳过（标记照样剥掉，正文照发），日志写明原因。
+           * 可配：qq.actions.drawWindowMs / drawMaxPerWindow（0 = 不限）。
+           */
+          const drawWinMs = Number(this.cfg.actions?.drawWindowMs ?? 5 * 60_000)
+          const drawMax = Number(this.cfg.actions?.drawMaxPerWindow ?? 2)
+          if (!this._drawTimes) this._drawTimes = new Map()
+          const scopeKey = String(msg.scope ?? '')
+          const times = (this._drawTimes.get(scopeKey) ?? []).filter((t) => Date.now() - t < drawWinMs)
+          if (drawMax > 0 && times.length >= drawMax) {
+            this.log.info?.(
+              `bridge：画图跳过 —— 这个会话 ${Math.round(drawWinMs / 60000)} 分钟内已画 ${times.length} 张`
+              + `（上限 ${drawMax}，qq.actions.drawMaxPerWindow 可调）`,
+            )
+          } else if (drawDupMs > 0 && Date.now() - lastDraw < drawDupMs) {
             this.log.info?.('bridge：画图跳过 —— 这段描述 10 分钟内画过（换说法才会重画）')
           } else {
           this._drawRecent.set(descKey, Date.now())
+          // 记进"这一会话最近画过的时间"，给上面的次数闸用
+          times.push(Date.now())
+          this._drawTimes.set(scopeKey, times)
           // 只留最近 40 条，避免 Map 无限长
           if (this._drawRecent.size > 40) {
             const oldest = this._drawRecent.keys().next().value
@@ -5547,7 +5570,7 @@ export class QQBridge {
       {
         kind: 'wear',
         need: 'wear',
-        re: /(换好了|换上了|换完了|已经换好|换过了|穿好了|换好衣服了|换上那套)/,
+        re: /(换好了|换上了|换完了|已经换好|换过了|穿好了|换好衣服了|换上那套|换就换|正在换|在换了)/,
         skip: /(还没|没换|不换|等会|马上换|这就换|要去换)/,
       },
       /*
@@ -5583,10 +5606,17 @@ export class QQBridge {
        *   · 且这一轮**没有任何** draw / scene / illus 标记
        *   · 排除疑问句、否定句、"改天/下次"这种往后拖的
        */
+      /*
+       * ⚠️ **"换就换/正在换"不算"要发图"**（2026-11-06 修）。
+       *
+       * 这两句原来在这条里，于是：他一说"换那套"，她回一句"换就换"，
+       * 闸门就认为"你答应了要发图却没画" → 逼她画 → **每次换衣服都发一张图**。
+       * 换衣服现在有独立标记 [换装:…]，这两句归 `wear` 那条。
+       */
       {
         kind: 'draw',
         need: 'draw',
-        re: /(换就换|这就拍|这就画|马上给你|这就给你|等着看|等着啊|正在换|在换了|我这就|给你拍一张|拍一张给你|给你发一张)/,
+        re: /(这就拍|这就画|马上给你|这就给你|等着看|等着啊|我这就给你|给你拍一张|拍一张给你|给你发一张)/,
         skip: /(下次|改天|以后|不方便|不想|不拍|拍不了|画不了|没空|等会儿再说)/,
       },
       /*
@@ -5621,9 +5651,9 @@ export class QQBridge {
       /*
        * ⚠️ 否定句判据只对**紧挨着命中词**的 4 个字生效 —— 但「本鱼正在换，别催」
        * 里那个「别」是**劝对方别催**，不是否定"正在换"（2026-11-06 实测）。
-       * 所以 `draw` 这类"答应式"规则跳过这条通用判据，改用它自己的 skip 词。
+       * 所以 `draw` / `wear` 这类"答应式"规则跳过这条通用判据，改用它自己的 skip 词。
        */
-      if (r.kind !== 'draw' && /[没不未别甭]|不了/.test(around(m.index, m[0].length))) continue // 否定句
+      if (r.kind !== 'draw' && r.kind !== 'wear' && /[没不未别甭]|不了/.test(around(m.index, m[0].length))) continue // 否定句
       const after = s.slice(m.index + m[0].length, m.index + m[0].length + 1)
       if (/[吗么？?]/.test(after)) continue // 疑问句
       /*
@@ -7282,7 +7312,16 @@ export class QQBridge {
               + '晚上换睡衣或第二天自动恢复\n'
               + '  · ⚠️ **说了"换好了"就必须写 [换装:…]** —— 不写就是没换，'
               + '他一看图还是原来那身（实测被抓过）\n'
-              + '  · 想同时给他看，就再写一个 [画图:…]（两个标记可以同一条）',
+              /*
+               * ★★ **换衣服 ≠ 拍照**（2026-11-06 用户：「我叫她换他会一直发图」）。
+               *
+               * 上一版这里写着"想同时给他看就再写一个 [画图:…]"，结果他一说换，
+               * 她就顺手画一张 —— 每轮都发图，刷屏。
+               * 换衣服是换衣服，要不要看是**他另说的**。
+               */
+              + '  · ⚠️⚠️ **换衣服不要自动配图**：[换装:…] 只改穿着，'
+              + '**不要**顺带写 [画图:…]。只有他**明确要看**'
+              + '（"看看/拍一张/发张照片/给我看看"）时才画。',
             )
           }
           if (a.signature === true) {

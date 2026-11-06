@@ -97,5 +97,37 @@ ok('★ 源码里真的解析 [换装:…] 和别名 [换衣服:…]', () => {
   assert.match(src, /换装\|换衣服/)
 })
 
+console.log('\n=== 4. 换衣服不再触发画图（用户：「我叫她换他会一直发图」）===')
+ok('★ 「换就换，等着」→ 只要求 [换装:]，**不要求**画图', () => {
+  const r = claim('换就换，等着', {})
+  assert.equal(r?.kind, 'wear', `应该是 wear，实际 ${r?.kind}`)
+})
+
+ok('★ 「正在换」也算 wear（不是 draw）', () => {
+  const r = claim('正在换，别催', {})
+  assert.equal(r?.kind, 'wear')
+})
+
+ok('真画图的话「这就拍」仍然要求 draw（这条不能丢）', () => {
+  assert.equal(claim('这就拍，等我', {})?.kind, 'draw')
+})
+
+ok('★ 提示词明确写"换衣服不要自动配图"', () => {
+  const src = fs.readFileSync(new URL('../src/qq/bridge.js', import.meta.url), 'utf8')
+  assert.match(src, /换衣服不要自动配图/)
+})
+
+console.log('\n=== 5. 画图频率上限（防止一直发图）===')
+ok('★ 源码里有按会话的次数闸，且可配', () => {
+  const src = fs.readFileSync(new URL('../src/qq/bridge.js', import.meta.url), 'utf8')
+  assert.match(src, /drawMaxPerWindow/)
+  assert.match(src, /drawWindowMs/)
+})
+
+ok('★ 默认上限是有限值（不是 0 = 不限）', () => {
+  const src = fs.readFileSync(new URL('../src/qq/bridge.js', import.meta.url), 'utf8')
+  assert.match(src, /drawMaxPerWindow \?\? 2/)
+})
+
 console.log(`\n${'='.repeat(44)}\n通过 ${pass} / 失败 ${fail}`)
 process.exit(fail === 0 ? 0 : 1)
