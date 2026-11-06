@@ -54,6 +54,7 @@ export function composePhotoPrompt(o = {}) {
   const {
     plan = {}, framing = {}, scene = '', outfit = '', hair = '', weather = '', mood = '',
     continuity = '', hasRef = false, anime = false, character = {}, expression = null, bodyOverride = '', sceneOnly = false,
+    canonRef = false,
   } = o
 
   const parts = []
@@ -108,6 +109,17 @@ ${bodyOverride ? `${bodyOverride}、` : ''}
 ⚠️ **不用刻意处理事业线**：宽松衣服没有束缚，看不到事业线是正常的；
    有内衣托着时才会有。按衣服的实际松紧自然呈现，别硬加也别硬删。
 **不要重新设计人物，也不要照搬参考图里的姿势和背景。**`)
+    /*
+     * ★★ **定妆照**（2026-11-06 A 方案）。
+     *   这张参考图就是这套衣服的"标准像"，只对齐款式/体型/尾巴数量。
+     */
+    if (canonRef) {
+      parts.push(`【参考图是这套衣服的定妆照】
+- **只对齐这三件事**：① 这套衣服的款式（领口、袖子、围裙、裙摆层次与蕾丝、袜子、鞋、发饰）；
+  ② 体型三围（和参考图同一副身材，不许更丰满或更瘦）；③ **尾巴只有一条**（位置、大小照参考图）。
+- **不要**照搬参考图的姿势、构图、背景、光线、手机位置 —— 这些按【摄影方案】来。
+- 不许换款式、不许加装饰（刺绣、蕾丝、扣子都要和参考图一致）。`)
+    }
   } else if (plan.needsCharacterRef === false) {
     /*
      * ⚠️ **场景图（sceneOnly）不许出现人**（2026-11-06 实测）：

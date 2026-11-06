@@ -19,6 +19,7 @@ import { composePhotoPrompt } from './photo-prompt.js'
 import { PhotoContinuity, detectLocation } from './photo-continuity.js'
 import { fallbackText } from './character-profile.js'
 import { pickEmotion, renderExpression, ExpressionHistory } from './photo-expression.js'
+import { canonFor } from './canon.js'
 
 /** 全局唯一的连续性记录器（进程内有效） */
 export const continuity = new PhotoContinuity()
@@ -129,7 +130,17 @@ export function planShot(o = {}) {
   expressionHistory.set(scope, expression.id)
 
   /* ⑥ 参考图：按"人要不要出现在画面里"决定 */
-  const refImage = pickRefImage(plan, framing, imageCfg, anime)
+  /*
+   * ★★ **定妆照优先**（2026-11-06 A 方案）。
+   *
+   * 文字锁压不住款式漂移和"长出两条尾巴"（实测加了最硬的措辞仍然翻车），
+   * 所以对**指定过的衣服**改用图生图：`<数据目录>/canon.json` 里按正则匹配
+   * 衣柜原文，命中就把那张定妆照当参考图，只对齐「款式 + 体型 + 尾巴数量」。
+   * 没配 canon 的衣服走老路（日常穿搭未受影响）。
+   */
+  const baseRef = pickRefImage(plan, framing, imageCfg, anime)
+  const canon = sceneOnly ? null : canonFor(String(outfit ?? ''))
+  const refImage = canon ? canon.file : baseRef
 
   /* ⑥ 连续性说明（只继承状态，不继承构图） */
   const note = continuity.continuityNote(scope, { outfit, hair, slot })
@@ -139,6 +150,7 @@ export function planShot(o = {}) {
     plan, framing, scene: sceneFixed, outfit, hair, weather, mood,
     continuity: note, hasRef: Boolean(refImage), anime, bodyOverride, sceneOnly,
     expression,
+    canonRef: Boolean(canon),
     character: { faceRef: imageCfg.refImage, bodyRef: imageCfg.bodyRefImage },
   })
 
@@ -156,6 +168,7 @@ export function planShot(o = {}) {
     framing: framing.framing,
     prompt,
     refImage,
+    canonRef: Boolean(canon),
     size,
     issues: check.issues,
     fixedFrom: plan.fixedFrom,

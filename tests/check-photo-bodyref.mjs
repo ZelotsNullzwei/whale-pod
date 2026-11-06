@@ -13,7 +13,11 @@
  * - 没有身体参考图时不能崩，要退回头像
  */
 import assert from 'node:assert/strict'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 import { planShot } from '../src/photo/index.js'
+import { configureCanon } from '../src/photo/canon.js'
 
 let pass = 0
 let fail = 0
@@ -22,6 +26,11 @@ function ok(name, fn) {
   catch (e) { console.log(`  ❌ ${name}\n     ${e.message}`); fail++ }
 }
 
+// 本文件只测「身体参考图」这条：先把定妆照关掉，否则女仆装会被 canon 接管
+const noCanon = fs.mkdtempSync(path.join(os.tmpdir(), 'wp-nocanon-'))
+configureCanon({ home: noCanon })
+
+let n = 0
 const imageCfg = {
   refImage: 'FACE.png',
   faceRefImage: 'FACE3.png',
@@ -29,7 +38,7 @@ const imageCfg = {
   size: '1024x2048',
 }
 const shot = (scene, cfg = imageCfg) => planShot({
-  scene, slot: 'evening', outfit: '女仆装短款', request: '拍一张看看', scope: 't', imageCfg: cfg,
+  scene, slot: 'evening', outfit: '女仆装短款', request: '拍一张看看', scope: 't' + (++n), imageCfg: cfg,
 })
 
 console.log('=== 1. 身体入画 → 身体参考图 ===')
