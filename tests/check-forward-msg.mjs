@@ -111,7 +111,9 @@ await okAsync('里面的图片/表情被认出来（不是当成空节点丢掉�
     sender: { card: '风宝' },
   }])
   const got = await c.getForwardMsg('f1')
-  assert.match(got.text, /风宝：看这个\[表情包:猫猫\]/)
+  // 文字和表情各占一行（按段拆），关键是**表情没丢**
+  assert.match(got.text, /风宝：看这个/)
+  assert.match(got.text, /风宝：\[表情包:猫猫\]/)
 })
 
 await okAsync('接口失败 → null（不抛，不影响回复）', async () => {
@@ -124,17 +126,19 @@ await okAsync('返回空 messages → null', async () => {
   assert.equal(await mkClient([]).getForwardMsg('f1'), null)
 })
 
-await okAsync('参数名两种都传（NapCat 认 message_id，别的认 id）', async () => {
+await okAsync('★ id 必须原样传字符串（19 位超出安全整数，转 Number 会丢精度）', async () => {
   let seen = null
   const c = Object.create(OneBotClient.prototype)
   c.callHttp = async (action, params) => {
     seen = { action, params }
     return { status: 'ok', data: { messages: [node('x')] } }
   }
-  await c.getForwardMsg('42')
+  await c.getForwardMsg('7704891221357637709')
   assert.equal(seen.action, 'get_forward_msg')
-  assert.equal(seen.params.message_id, 42)
-  assert.equal(seen.params.id, 42)
+  // ⚠️ 线上实测：传 Number 会被 NapCat 判成「消息已过期」，必须原样字符串
+  assert.equal(seen.params.message_id, '7704891221357637709')
+  assert.equal(seen.params.id, '7704891221357637709')
+  assert.equal(typeof seen.params.id, 'string')
 })
 
 console.log('\n=== 3. 协议端的"报错当内容"必须过滤（2026-11-06 线上实测）===')
@@ -159,7 +163,9 @@ await okAsync('报错话术混在真内容里 → 只留真内容', async () => 
   assert.ok(got)
   assert.ok(!got.text.includes('消息已过期'), '报错话术不能进提示词')
   assert.match(got.text, /真的第一句/)
-  assert.equal(got.total, 3, '总数仍按原始节点数算')
+  // 抬头按**真正展开的条数**算（报错那条不算内容）
+  assert.equal(got.total, 2)
+  assert.match(got.text, /转发了聊天记录·2条/)
 })
 
 await okAsync('英文版报错也认（not found / expired）', async () => {

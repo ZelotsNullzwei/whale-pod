@@ -560,10 +560,22 @@ export class OneBotClient {
     let res
     try {
       res = await this.callHttp('get_forward_msg', {
-        // ⚠️ 参数名两种都传：NapCat 认 `message_id`，dsh-qq / 部分实现认 `id`。
-        //    多传一个不存在的字段不会报错，少传才是"取不到"的根因。
-        message_id: /^\d+$/.test(id) ? Number(id) : id,
-        id: /^\d+$/.test(id) ? Number(id) : id,
+        /*
+         * ⚠️⚠️ **id 必须原样传字符串，绝不能转 Number**（2026-11-06 实测）。
+         *
+         * 转发 id 是 19 位（`7704891221357637709`），**超出 JS 安全整数范围**
+         * （2^53 ≈ 9.007e15），转 Number 会丢精度 → NapCat 认不出这个 id →
+         * 返回「消息已过期或者为内层消息，无法获取转发消息」。
+         *
+         * 实测对照（同一条转发、同一个 NapCat）：
+         *   {"id":"7704891221357637709"}        → ok，5 个节点
+         *   {"id":7704891221357637709}          → failed，"消息已过期"
+         *   {"message_id":7704891221357637709}  → failed，"消息已过期"
+         *
+         * 那句"消息已过期"**根本不是过期**，是精度丢了。
+         */
+        message_id: id,
+        id,
       }, Number(opts.timeoutMs) || 6000)
     } catch {
       return null
@@ -596,41 +608,95 @@ export class OneBotClient {
      */
     const FAILED_RE = /消息已过期|无法获取转发|内层消息|获取转发消息失败|not found|expired|invalid/i
 
-    const lines = []
-    let used = 0
-    let chars = 0
+    const all = []
     let sawRealContent = false
-    for (const node of nodes) {
-      if (used >= maxNodes || chars >= maxChars) break
-      const body = node?.message ?? node?.content ?? node
-      let text = ''
-      try {
-        text = parseMessage(body).text
-      } catch {
-        text = ''
+
+    /*
+     * ★★ **内容可能在 `data.content` 里，不在 `message` 里**（2026-11-06 实测）。
+     *
+     * 真实那条转发的每个节点长这样：
+     * ```
+     * { sender:{nickname:'QQ用户'}, message:[ { type:'forward',
+     *     data:{ id:'…', content:[ {sender, message:[…]}, … ] } } ] }
+     * ```
+     * 外面那层 nodes 只是"转发套转发"的壳，真正的消息在 `data.content` 里。
+     * 只读 `node.message` 的话，每个节点都被当成一个空的 forward 段丢掉 ——
+     * 一条都读不出来（这是第二个 bug）。
+     *
+     * ⚠️ 有层数上限（默认 3）：QQ 允许转发套转发，套太深没有阅读价值。
+     * ⚠️ 先**全量收集**（硬上限 HARD_LINES 兜底防跑飞），再按 maxNodes /
+     *    maxChars 截断 —— 这样抬头能写「共 N 条，列前 M 条」，
+     *    而不是自己都不知道漏了多少。
+     */
+    const HARD_LINES = 400
+    const maxDepth = Math.max(1, Number(opts.maxDepth) || 3)
+    const walk = (segs, depth, who) => {
+      if (!Array.isArray(segs)) return
+      for (const seg of segs) {
+        if (all.length >= HARD_LINES) return
+        const t = seg?.type
+        const sd = seg?.data ?? {}
+        if (t === 'forward' && Array.isArray(sd.content) && depth < maxDepth) {
+          for (const inner of sd.content) {
+            if (all.length >= HARD_LINES) return
+            const innerWho = String(
+              inner?.sender?.card || inner?.sender?.nickname || inner?.sender?.user_id
+              || who || '',
+            ).trim().slice(0, 24)
+            walk(inner?.message, depth + 1, innerWho)
+          }
+          continue
+        }
+        let text = ''
+        try {
+          text = parseMessage([seg]).text
+        } catch {
+          text = ''
+        }
+        text = String(text ?? '').replace(/\s+/g, ' ').trim()
+        if (!text) continue
+        // 协议端的报错话术：跳过（别当成聊天内容）
+        if (FAILED_RE.test(text)) continue
+        sawRealContent = true
+        all.push({ who: who || '某人', text })
       }
-      text = String(text ?? '').replace(/\s+/g, ' ').trim()
-      if (!text) continue
-      // 这一段是不是协议端的报错？是就跳过（别当成聊天内容）
-      if (FAILED_RE.test(text)) continue
-      sawRealContent = true
+    }
+
+    for (const node of nodes) {
+      if (all.length >= HARD_LINES) break
       const who = String(
         node?.sender?.card || node?.sender?.nickname || node?.sender?.user_id
         || node?.nickname || node?.name || '',
       ).trim().slice(0, 24)
-      const cut = text.length > nodeChars ? `${text.slice(0, nodeChars)}…` : text
-      lines.push(`  ${who || '某人'}：${cut}`)
+      const body = node?.message ?? node?.content ?? (Array.isArray(node) ? node : null)
+      walk(body ?? [node], 0, who)
+    }
+    if (!sawRealContent || all.length === 0) return null
+
+    // ── 按条数 / 总字数截断 ──────────────────────────────
+    const lines = []
+    let used = 0
+    let chars = 0
+    for (const it of all) {
+      if (used >= maxNodes || chars >= maxChars) break
+      const cut = it.text.length > nodeChars ? `${it.text.slice(0, nodeChars)}…` : it.text
+      lines.push(`  ${it.who}：${cut}`)
       used++
       chars += cut.length
     }
-    if (!sawRealContent || lines.length === 0) return null
+    if (lines.length === 0) return null
 
-    const rest = nodes.length - used
-    const head = `[转发了聊天记录·${nodes.length}条]`
+    /*
+     * ⚠️ 抬头按**实际展开的条数**算，不能按外层 nodes.length：
+     *    外层 5 个节点里包着 16 条真消息（转发套转发），
+     *    按 nodes.length 写会变成「·5条」但下面列 16 行，自相矛盾。
+     */
+    const rest = all.length - used
+    const head = `[转发了聊天记录·${all.length}条]`
     const tail = rest > 0 ? `\n  …（后面还有 ${rest} 条没展开）` : ''
     return {
       text: `${head}\n${lines.join('\n')}${tail}`,
-      total: nodes.length,
+      total: all.length,
       used,
       truncated: rest > 0,
     }
