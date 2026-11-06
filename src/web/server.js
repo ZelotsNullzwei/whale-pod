@@ -2321,6 +2321,7 @@ async function whalePodCompat(o) {  const { sub, method, url, req, res, json, re
             const W = await import('../memory/wardrobe.js')
             const { dayKey } = await import('../memory/dayPlan.js')
             const k = dayKey()
+            const pools = W.effectivePools()
             return {
               date: k,
               today: {
@@ -2329,12 +2330,15 @@ async function whalePodCompat(o) {  const { sub, method, url, req, res, json, re
                 sleepwear: W.sleepwearForDay(k),
                 hair: W.hairForDay(k),
               },
-              pools: {
-                home: W.HOME_OUTFITS,
-                outing: W.OUTING_OUTFITS,
-                sleepwear: W.SLEEPWEAR,
-                signature: W.SIGNATURE_OUTFITS,
-              },
+              /*
+               * ⚠️ 这里是**生效中的池子**（文件覆盖 + 预设合并），
+               *    不是写死的常量 —— 面板要改衣服，得看到真实的那一份。
+               *    `overrides` 告诉它哪几类被 wardrobe.json 覆盖了。
+               */
+              pools,
+              overrides: W.wardrobeOverrides(),
+              file: W.wardrobePath(),
+              error: W.wardrobeError() || null,
             }
           } catch { return null }
         })(),
@@ -2665,6 +2669,68 @@ async function whalePodCompat(o) {  const { sub, method, url, req, res, json, re
         token: w.token,
         autoLoginUrl: w.token === null ? null : `${w.url}${w.url.includes('?') ? '&' : '?'}token=${encodeURIComponent(w.token)}`,
       })
+    }
+
+    // ── 衣柜（可编辑，2026-11-06）────────────────────────────────
+    /*
+     * 用户：「衣柜要能改吧，毕竟现在这个只是我们的预设，不代表别人喜欢」。
+     *
+     * 内置的 47 套只是**我们的预设**，不代表别人喜欢 —— 所以给一条
+     * 真正的修改通道：设置页/侧栏点一下就能加、删、整类替换、恢复预设。
+     * 写进 `<数据目录>/wardrobe.json`，按 mtime 热加载（不用重启）。
+     */
+    if (sub === '/wardrobe' && method === 'GET') {
+      const W = await import('../memory/wardrobe.js')
+      const { dayKey } = await import('../memory/dayPlan.js')
+      const k = dayKey()
+      return json(res, 200, {
+        ok: true,
+        date: k,
+        today: {
+          outfit: W.outfitForDay(k),
+          outing: W.outingOutfitForDay(k),
+          sleepwear: W.sleepwearForDay(k),
+          hair: W.hairForDay(k),
+        },
+        pools: W.effectivePools(),
+        // 内置预设（用来区分"哪些是用户改过的"）
+        presets: {
+          home: W.HOME_OUTFITS,
+          outing: W.OUTING_OUTFITS,
+          sleepwear: W.SLEEPWEAR,
+          signature: W.SIGNATURE_OUTFITS,
+          hairstyle: W.HAIRSTYLES,
+        },
+        overrides: W.wardrobeOverrides(),
+        file: W.wardrobePath(),
+        error: W.wardrobeError() || null,
+      })
+    }
+    if (sub === '/wardrobe' && method === 'POST') {
+      const body = await readJson(req).catch(() => ({}))
+      const W = await import('../memory/wardrobe.js')
+      const action = String(body?.action ?? '').trim()
+      const kind = String(body?.kind ?? '').trim()
+      if (action === 'set') {
+        const r = W.saveWardrobe({ [kind]: body?.list })
+        return json(res, r.ok ? 200 : 500, { ok: r.ok, error: r.error ?? null, file: r.file })
+      }
+      if (action === 'add') {
+        const r = W.addOutfit(kind, body?.text)
+        return json(res, r.ok ? 200 : 400, r)
+      }
+      if (action === 'remove') {
+        const r = W.removeOutfit(kind, body?.text)
+        return json(res, r.ok ? 200 : 400, r)
+      }
+      if (action === 'reset') {
+        // 空数组 = 该分类回到内置预设
+        const patch = kind ? { [kind]: [] } : Object.fromEntries(W.WARDROBE_KINDS.map((x) => [x, []]))
+        const r = W.saveWardrobe(patch)
+        log.info?.('Web：衣柜已恢复预设' + (kind ? `（${kind}）` : '（全部）'))
+        return json(res, r.ok ? 200 : 500, { ok: r.ok, error: r.error ?? null, file: r.file })
+      }
+      return json(res, 400, { ok: false, error: 'action 只能是 set / add / remove / reset' })
     }
 
     // ── 记忆 ─────────────────────────────────────────────────────

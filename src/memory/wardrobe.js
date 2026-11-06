@@ -18,6 +18,10 @@
  * 这样既"有变化"，又"控制得住"。
  */
 
+import fs from 'node:fs'
+import path from 'node:path'
+import os from 'node:os'
+
 /** 家居服（白天在家穿）。每套都写全：头饰 → 上衣 → 下装 → 袜子 → 鞋。 */
 /**
  * 家居服（白天在家穿）。
@@ -62,7 +66,8 @@ export const SIGNATURE_OUTFITS = [
  * @returns {string}
  */
 export function signatureOutfitForDay(dayKey) {
-  return SIGNATURE_OUTFITS[pickIndex(dayKey, SIGNATURE_OUTFITS.length, 11)] ?? SIGNATURE_OUTFITS[0]
+  const pool = effectivePools().signature
+  return pool[pickIndex(dayKey, pool.length, 11)] ?? pool[0] ?? ''
 }
 
 export const HOME_OUTFITS = [
@@ -177,7 +182,8 @@ function pickIndex(dayKey, mod, salt = 0) {
  * @returns {string}
  */
 export function outfitForDay(dayKey) {
-  return HOME_OUTFITS[pickIndex(dayKey, HOME_OUTFITS.length, 0)] ?? HOME_OUTFITS[0]
+  const pool = effectivePools().home
+  return pool[pickIndex(dayKey, pool.length, 0)] ?? pool[0] ?? ''
 }
 
 /**
@@ -186,7 +192,8 @@ export function outfitForDay(dayKey) {
  * @returns {string}
  */
 export function outingOutfitForDay(dayKey) {
-  return OUTING_OUTFITS[pickIndex(dayKey, OUTING_OUTFITS.length, 3)] ?? OUTING_OUTFITS[0]
+  const pool = effectivePools().outing
+  return pool[pickIndex(dayKey, pool.length, 3)] ?? pool[0] ?? ''
 }
 /**
  * 取某天的睡衣。
@@ -194,7 +201,8 @@ export function outingOutfitForDay(dayKey) {
  * @returns {string}
  */
 export function sleepwearForDay(dayKey) {
-  return SLEEPWEAR[pickIndex(dayKey, SLEEPWEAR.length, 2)] ?? SLEEPWEAR[0]
+  const pool = effectivePools().sleepwear
+  return pool[pickIndex(dayKey, pool.length, 2)] ?? pool[0] ?? ''
 }
 
 /**
@@ -203,7 +211,8 @@ export function sleepwearForDay(dayKey) {
  * @returns {string}
  */
 export function hairForDay(dayKey) {
-  return HAIRSTYLES[pickIndex(dayKey, HAIRSTYLES.length, 1)] ?? HAIRSTYLES[0]
+  const pool = effectivePools().hairstyle
+  return pool[pickIndex(dayKey, pool.length, 1)] ?? pool[0] ?? ''
 }
 
 /**
@@ -243,4 +252,181 @@ export function wardrobeBrief() {
     `- 标志性造型 ${SIGNATURE_OUTFITS.length} 套（按官方设定图）：女仆装长款、女仆装短款、女仆风上衣+长裤、藏青连衣裙+围裙、水手服+鲸尾、白色系女仆装`,
     '⚠️ 上面这些就是全部。别人问「什么衣服/哪件/什么风格」就按这个答，**不要现编这里没有的衣服**；要说今天具体穿了哪套，看上面「今天穿的」。',
   ].join('\n')
+}
+
+/* ══════════════════════════════════════════════════════════════
+ *  可编辑层（2026-11-06）
+ *
+ *  用户：「衣柜要能改吧，毕竟现在这个只是我们的预设，不代表别人喜欢」。
+ *
+ *  数据目录下放 `wardrobe.json`：
+ *  {
+ *    "home":      ["…", "…"],
+ *    "outing":    ["…"],
+ *    "sleepwear": ["…"],
+ *    "signature": ["…"],
+ *    "hairstyle": ["…"]
+ *  }
+ *
+ *  · **某类存在且非空 → 整类用文件里的**（不是追加 —— 追加的话
+ *    用户删掉的那套下次启动又回来了，删不掉等于不能改）
+ *  · 缺省 / 空数组 → 回落到内置预设（老用户无痛）
+ *  · **按 mtime 热加载**：改完下一轮就生效，不用重启
+ * ══════════════════════════════════════════════════════════════ */
+
+let WARDROBE_HOME = path.join(
+  process.env.WHALE_POD_HOME
+  ?? path.join(process.env.USERPROFILE ?? os.homedir(), '.dsh', 'whale-pod'),
+)
+
+/** 分类名（= wardrobe.json 的键） */
+export const WARDROBE_KINDS = ['home', 'outing', 'sleepwear', 'signature', 'hairstyle']
+
+/** 文件名 */
+export const WARDROBE_FILE = 'wardrobe.json'
+
+/** 告诉衣柜数据目录在哪（启动时调一次；不调就用默认路径）。 */
+export function configureWardrobe({ home } = {}) {
+  if (typeof home === 'string' && home.trim()) WARDROBE_HOME = home.trim()
+  _wardrobeCache.mtime = -1
+}
+
+/** 衣柜文件路径 */
+export function wardrobePath() {
+  return path.join(WARDROBE_HOME, WARDROBE_FILE)
+}
+
+const _wardrobeCache = { mtime: -1, data: null, error: '' }
+
+/**
+ * 读覆盖文件（按 mtime 缓存）。
+ * @returns {{data:object, error:string}}
+ */
+function readWardrobeOverrides() {
+  const file = wardrobePath()
+  let st
+  try {
+    st = fs.statSync(file)
+  } catch {
+    _wardrobeCache.mtime = -1
+    _wardrobeCache.data = null
+    _wardrobeCache.error = ''
+    return { data: {}, error: '' }
+  }
+  if (_wardrobeCache.data && st.mtimeMs === _wardrobeCache.mtime) {
+    return { data: _wardrobeCache.data, error: _wardrobeCache.error }
+  }
+  try {
+    const j = JSON.parse(fs.readFileSync(file, 'utf8'))
+    const out = {}
+    for (const k of WARDROBE_KINDS) {
+      const v = j?.[k]
+      if (!Array.isArray(v)) continue
+      const list = v.map((x) => String(x ?? '').trim()).filter(Boolean)
+      if (list.length) out[k] = list
+    }
+    _wardrobeCache.mtime = st.mtimeMs
+    _wardrobeCache.data = out
+    _wardrobeCache.error = ''
+    return { data: out, error: '' }
+  } catch (e) {
+    // 文件写坏了：**继续用预设**，但把错误留着（上层可以提示）
+    _wardrobeCache.mtime = st.mtimeMs
+    _wardrobeCache.data = null
+    _wardrobeCache.error = String(e?.message ?? e)
+    return { data: {}, error: _wardrobeCache.error }
+  }
+}
+
+/** 最近一次读取错误（文件写坏时非空） */
+export function wardrobeError() {
+  readWardrobeOverrides()
+  return _wardrobeCache.error
+}
+
+/**
+ * 生效中的池子（文件覆盖 + 内置预设的合并结果）。
+ * @returns {{home:string[],outing:string[],sleepwear:string[],signature:string[],hairstyle:string[]}}
+ */
+export function effectivePools() {
+  const { data } = readWardrobeOverrides()
+  return {
+    home: data.home ?? HOME_OUTFITS,
+    outing: data.outing ?? OUTING_OUTFITS,
+    sleepwear: data.sleepwear ?? SLEEPWEAR,
+    signature: data.signature ?? SIGNATURE_OUTFITS,
+    hairstyle: data.hairstyle ?? HAIRSTYLES,
+  }
+}
+
+/** 哪些类被文件覆盖了（给 UI/日志看） */
+export function wardrobeOverrides() {
+  const { data } = readWardrobeOverrides()
+  return Object.keys(data)
+}
+
+/**
+ * 写衣柜文件（整类替换）。
+ *
+ * ⚠️ 写入的是**完整文件**：没点名的类**原样保留文件里已有的值**，
+ *    而不是回落到预设 —— 否则"只改家居服"会把别的类的覆盖抹掉。
+ *
+ * @param {object} patch {home?:string[], outing?:string[], …}
+ * @returns {{ok:boolean, file:string, error?:string}}
+ */
+export function saveWardrobe(patch = {}) {
+  const file = wardrobePath()
+  const cur = readWardrobeOverrides().data ?? {}
+  const next = { ...cur }
+  for (const k of WARDROBE_KINDS) {
+    if (!(k in patch)) continue
+    const list = (Array.isArray(patch[k]) ? patch[k] : [])
+      .map((x) => String(x ?? '').trim())
+      .filter(Boolean)
+    if (list.length) next[k] = list
+    else delete next[k] // 空数组 = 恢复内置预设
+  }
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true })
+    const tmp = `${file}.${process.pid}.tmp`
+    fs.writeFileSync(tmp, JSON.stringify(next, null, 2) + '\n', { mode: 0o600 })
+    fs.renameSync(tmp, file)
+    _wardrobeCache.mtime = -1
+    return { ok: true, file }
+  } catch (e) {
+    return { ok: false, file, error: String(e?.message ?? e) }
+  }
+}
+
+/**
+ * 往某类里加一套（去重；已经有就原样返回）。
+ * @param {'home'|'outing'|'sleepwear'|'signature'|'hairstyle'} kind
+ * @param {string} text
+ */
+export function addOutfit(kind, text) {
+  const t = String(text ?? '').trim()
+  if (!t || !WARDROBE_KINDS.includes(kind)) return { ok: false, error: '分类或内容不合法' }
+  const cur = effectivePools()
+  const list = Array.isArray(cur[kind]) ? [...cur[kind]] : []
+  if (list.includes(t)) return { ok: true, added: false, count: list.length }
+  list.push(t)
+  const r = saveWardrobe({ [kind]: list })
+  return { ...r, added: r.ok, count: list.length }
+}
+
+/**
+ * 从某类里删掉一条（按**包含关系**匹配，方便用户只说半句）。
+ * @param {'home'|'outing'|'sleepwear'|'signature'|'hairstyle'} kind
+ * @param {string} text
+ */
+export function removeOutfit(kind, text) {
+  const t = String(text ?? '').trim()
+  if (!t || !WARDROBE_KINDS.includes(kind)) return { ok: false, error: '分类或内容不合法' }
+  const cur = effectivePools()
+  const list = Array.isArray(cur[kind]) ? [...cur[kind]] : []
+  const idx = list.findIndex((x) => x.includes(t) || t.includes(x))
+  if (idx < 0) return { ok: false, error: '没找到那一套' }
+  const removed = list.splice(idx, 1)[0]
+  const r = saveWardrobe({ [kind]: list })
+  return { ...r, removed }
 }

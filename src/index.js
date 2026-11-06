@@ -34,6 +34,8 @@ import { MemoryStore } from './memory/short.js'
 import { LongTermStore } from './memory/long.js'
 import { EventStore, EXTRACT_PROMPT } from './memory/events.js'
 import { DayPlanStore } from './memory/dayPlan.js'
+// 衣柜可编辑层（2026-11-06）：数据目录的 wardrobe.json 覆盖内置预设
+import { configureWardrobe } from './memory/wardrobe.js'
 import { HotTopicStore } from './qq/hot-topics.js'
 import { SearchQuota } from './gateway/search.js'
 // 峰谷节奏：峰期收紧搜索（"峰谷"按 DeepSeek 官网口径算，见该文件头）
@@ -590,6 +592,14 @@ export async function main(argv = process.argv.slice(2)) {
     const memoryDir = typeof cfg.memory?.dir === 'string' && cfg.memory.dir.trim()
       ? cfg.memory.dir.trim()
       : store.home
+    /*
+     * ★ 衣柜的**可编辑层**（2026-11-06。用户：「衣柜要能改吧，
+     *   毕竟现在这个只是我们的预设，不代表别人喜欢」）。
+     *
+     * 数据目录下放 `wardrobe.json`，某类存在且非空就整类替换内置预设；
+     * 按 mtime 热加载 —— 改完下一轮生效，不用重启。
+     */
+    configureWardrobe({ home: memoryDir })
     const memory = new MemoryStore({
       ...(cfg.memory?.short ?? {}),
       dir: memoryDir,
