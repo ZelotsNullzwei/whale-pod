@@ -129,6 +129,12 @@ await ok('SUMMARY_PROMPT 教模型 QQ 号从哪来', () => {
  * **这跟"我说过要留一碗米饭"是同一类问题：把一次性状态写成了长期事实。**
  */
 
+/** 【事实】那一段的正文（SUMMARY_PROMPT 是模板字符串，直接切） */
+const factsSeg = () => {
+  const m = SUMMARY_PROMPT.match(/^【事实】$/m)
+  const i = m ? m.index : -1
+  return i < 0 ? '' : SUMMARY_PROMPT.slice(i, i + 3000)
+}
 const shiSeg = () => {
   /*
    * ⚠️ 定位 `【事】` 的**正文段**，不能简单 indexOf / lastIndexOf。
@@ -166,6 +172,20 @@ await ok('【事】要给出**中性事实**的正确写法', () => {
   const seg = shiSeg()
   assert.match(seg, /中性事实/, '要指明改写成中性事实')
   assert.match(seg, /他发过几条 B 站链接/, '要有具体示范')
+})
+
+
+await ok('★ 【事实】里不许记「我们在开发她」（2026-11-06 线上翻车）', () => {
+  const seg = factsSeg()
+  assert.match(seg, /不许记「我们在开发/)
+  assert.match(seg, /测试项、日志、提交、配置/)
+  assert.match(seg, /很出戏/, '要点破后果：会在角色里谈日志')
+})
+
+await ok('★ 【事实】里也不许从创作者视角记她自己', () => {
+  const seg = factsSeg()
+  assert.match(seg, /不许从创作者视角记她自己/)
+  assert.match(seg, /定妆照/)
 })
 
 console.log(`\n通过 ${pass} / 失败 ${fail}`)
