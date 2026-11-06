@@ -3296,6 +3296,64 @@ export class QQBridge {
    * @param {object} mem 该会话的 ConversationMemory
    * @returns {Promise<null|{sender:string, text:string, isMe:boolean, source:string}>}
    */
+  /**
+   * 取回合并转发（聊天记录）的内容（2026-11-06）。
+   *
+   * ## 为什么要截断
+   * 转发动辄几十上百条。全塞进提示词会 ① 撑爆免费渠道的上下文预算
+   * ② 把当前话题淹掉 ③ 让模型以为这些是**这个群刚才说的**（它是别处的对话）。
+   * 截断逻辑在 `onebot.getForwardMsg` 里做，这里只管拼和缓存。
+   *
+   * @param {object} msg 规范化后的消息（带 `forwards: [{id}]`）
+   * @returns {Promise<null|{text:string,nodes:number,total:number,truncated:boolean}>}
+   */
+  async _resolveForwards(msg) {
+    const ids = (Array.isArray(msg?.forwards) ? msg.forwards : [])
+      .map((x) => String(x?.id ?? '').trim())
+      .filter(Boolean)
+    if (ids.length === 0) return null
+
+    // 同一条转发被反复转时只取一次（转发的 id 是稳定的）
+    if (!this._forwardCache) this._forwardCache = new Map()
+
+    const blocks = []
+    let total = 0
+    let used = 0
+    let truncated = false
+    for (const id of ids) {
+      let got = this._forwardCache.get(id)
+      if (!got) {
+        try {
+          got = await this.onebot?.getForwardMsg?.(id)
+        } catch (e) {
+          this.log.warn?.(`bridge：get_forward_msg(${id}) 失败 — ${String(e?.message ?? e)}`)
+          got = null
+        }
+        if (got) {
+          this._forwardCache.set(id, got)
+          // 转发内容也是短命的，留太多没意义
+          if (this._forwardCache.size > 30) {
+            this._forwardCache.delete(this._forwardCache.keys().next().value)
+          }
+        }
+      }
+      if (!got) continue
+      total += Number(got.total ?? 0)
+      used += Number(got.used ?? 0)
+      if (got.truncated) truncated = true
+      if (got.text) blocks.push(got.text)
+    }
+    if (blocks.length === 0) return null
+
+    const text = blocks.join('\n\n')
+    return {
+      text,
+      nodes: used || text.split('\n').filter((l) => l.startsWith('  ')).length,
+      total: total || used,
+      truncated,
+    }
+  }
+
   async _resolveQuote(msg, mem) {
     const id = msg?.replyTo != null ? String(msg.replyTo).trim() : ''
     if (!id) return null
@@ -3412,6 +3470,53 @@ export class QQBridge {
       } else if (msg.replyTo) {
         // 取不到也要留痕 —— 否则这类问题以后还是只能靠猜
         this.log.info?.(`bridge：引用了 id=${msg.replyTo}，但内容没取到`)
+      }
+
+      /*
+       * ★ **合并转发（聊天记录）取内容**（2026-11-06）。
+       *
+       * ## 为什么必须在这里做
+       * 原来 `parseMessage` 只把 `[合并转发]` 四个字塞进正文，**id 扔了**
+       * —— 她只知道"有人转了一段聊天记录"，里面一个字都看不到。
+       * 现在 id 跟着消息一起上来，这里调 `get_forward_msg` 把内容取回来。
+       *
+       * ## 三个纪律
+       * ① **失败不影响回复**：取不到就保持 `[合并转发]` 占位，warn 一句。
+       * ② **必须截断**：转发动辄几十上百条，全塞进提示词会把上下文撑爆，
+       *    而且免费渠道的上下文预算本来就紧。只留最近 `maxNodes` 条、
+       *    每行 `maxChars` 字。
+       * ③ **要和普通消息分开呈现**：它是"别人转来的一段对话"，
+       *    不是这个群刚才发生的事 —— 混进记忆会让模型以为群里真有人这么说。
+       */
+      if (Array.isArray(msg.forwards) && msg.forwards.length > 0) {
+        try {
+          const fwd = await this._resolveForwards(msg, mem)
+          if (fwd) {
+            /*
+             * ★ **就地把占位符换成内容**（2026-11-06，照 dsh-qq 的做法）。
+             *
+             * 原来是"挂个 `msg.forwardContent` 等提示词去读" —— 但那样
+             * 得再改两处（记忆写入 + 提示词拼接），而正文里本来就有一个
+             * `[合并转发]` 占位，直接替换掉最省事、也最不容易漏。
+             *
+             * ⚠️ 只替换**第一处**：一条消息里出现多个转发时，后面的
+             *    保留占位符（否则会拼成一坨，模型分不清哪段属于哪条）。
+             */
+            const placeholder = '[合并转发]'
+            const pos = String(msg.text ?? '').indexOf(placeholder)
+            msg.text = pos >= 0
+              ? `${msg.text.slice(0, pos)}${fwd.text}${msg.text.slice(pos + placeholder.length)}`
+              : `${msg.text ?? ''}${msg.text ? '\n' : ''}${fwd.text}`
+            msg.forwardContent = fwd
+            this.log.info?.(
+              `bridge：合并转发展开 ${fwd.nodes}/${fwd.total} 条`
+              + (fwd.truncated ? '（已截断）' : '')
+              + `，${fwd.text.length} 字`,
+            )
+          }
+        } catch (e) {
+          this.log.warn?.(`bridge：合并转发取内容失败 — ${String(e?.message ?? e)}`)
+        }
       }
 
       const alreadyInMemory = msg.messageId !== undefined

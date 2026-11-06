@@ -520,6 +520,102 @@ export class OneBotClient {
     }
   }
 
+  /**
+   * 取回**合并转发**（聊天记录）的内容（2026-11-06）。
+   *
+   * ## 为什么要有这个方法
+   * 原来 `parseMessage` 把 forward 段压成正文里的「[合并转发]」四个字，
+   * **id 直接扔了** —— 她只知道"有人转了一段聊天记录"，里面一个字都看不到。
+   * 现在 id 跟着消息上来，这里用 `get_forward_msg` 换内容。
+   *
+   * ## NapCat 的形状（实测参数表）
+   * ```
+   * get_forward_msg  { message_id }  →  { messages: [ { message, sender, time } ] }
+   * ```
+   * ⚠️ 返回的 `messages` 里每一条**又是一个消息段数组**，所以每个节点
+   *    都要再过一遍 `parseMessage`（图/表情/引用都得认出来）。
+   *
+   * ## 三条纪律
+   * ① **截断**：转发经常几十上百条，全塞进提示词会撑爆上下文预算、
+   *    把当前话题淹掉。只留最近 `maxNodes` 条，每行 `maxChars` 字。
+   * ② **标明是"转来的"**：标题写清楚这是别人转的一段对话 ——
+   *    不然模型会以为这些是**这个群刚才说的**。
+   * ③ **失败返回 null**，不抛：转发是加分项，绝不能因此让回复发不出去。
+   *
+   * @param {string|number} forwardId  forward 段里的 `id`
+   * @param {object} [opts]
+   * @param {number} [opts.maxNodes=16]  最多留几条
+   * @param {number} [opts.maxChars=1200] 总共最多多少字（比单条上限更重要）
+   * @param {number} [opts.nodeChars=240] 单条正文最多多少字
+   * @param {number} [opts.timeoutMs=6000]
+   * @returns {Promise<null|{text:string,total:number,used:number,truncated:boolean}>}
+   */
+  async getForwardMsg(forwardId, opts = {}) {
+    const id = String(forwardId ?? '').trim()
+    if (!id) return null
+    const maxNodes = Math.max(1, Number(opts.maxNodes) || 16)
+    const maxChars = Math.max(100, Number(opts.maxChars) || 1200)
+    const nodeChars = Math.max(20, Number(opts.nodeChars) || 240)
+
+    let res
+    try {
+      res = await this.callHttp('get_forward_msg', {
+        // ⚠️ 参数名两种都传：NapCat 认 `message_id`，dsh-qq / 部分实现认 `id`。
+        //    多传一个不存在的字段不会报错，少传才是"取不到"的根因。
+        message_id: /^\d+$/.test(id) ? Number(id) : id,
+        id: /^\d+$/.test(id) ? Number(id) : id,
+      }, Number(opts.timeoutMs) || 6000)
+    } catch {
+      return null
+    }
+
+    const d = res?.data ?? res
+    /*
+     * 三种可能形状，都要认（不同 NapCat 版本 / CQHTTP 兼容层给的不一样）：
+     *   · { messages: [ { message, sender, time } ] }   ← 标准
+     *   · { messages: [ [ {type,data}, … ] ] }          ← 直接给段数组
+     *   · { message: [ … ] }                            ← 单个
+     */
+    const raw = d?.messages ?? d?.message ?? d?.content ?? []
+    const nodes = Array.isArray(raw) ? raw : [raw]
+    if (nodes.length === 0) return null
+
+    const lines = []
+    let used = 0
+    let chars = 0
+    for (const node of nodes) {
+      if (used >= maxNodes || chars >= maxChars) break
+      const body = node?.message ?? node?.content ?? node
+      let text = ''
+      try {
+        text = parseMessage(body).text
+      } catch {
+        text = ''
+      }
+      text = String(text ?? '').replace(/\s+/g, ' ').trim()
+      if (!text) continue
+      const who = String(
+        node?.sender?.card || node?.sender?.nickname || node?.sender?.user_id
+        || node?.nickname || node?.name || '',
+      ).trim().slice(0, 24)
+      const cut = text.length > nodeChars ? `${text.slice(0, nodeChars)}…` : text
+      lines.push(`  ${who || '某人'}：${cut}`)
+      used++
+      chars += cut.length
+    }
+    if (lines.length === 0) return null
+
+    const rest = nodes.length - used
+    const head = `[转发了聊天记录·${nodes.length}条]`
+    const tail = rest > 0 ? `\n  …（后面还有 ${rest} 条没展开）` : ''
+    return {
+      text: `${head}\n${lines.join('\n')}${tail}`,
+      total: nodes.length,
+      used,
+      truncated: rest > 0,
+    }
+  }
+
   /** 发群消息。优先 HTTP，失败回落 WS。 */
   async sendGroup(groupId, message, opts = {}) {
     const params = { group_id: Number(groupId), message, auto_escape: false, ...opts }
@@ -1147,6 +1243,16 @@ export function parseMessage(raw) {
   let text = ''
   /** 被引用（回复）的那条消息的 id —— 决策层据此判断"是不是在回我" */
   let replyTo = ''
+  /**
+   * 合并转发（聊天记录）的 id（2026-11-06）。
+   *
+   * ⚠️ 原来这里只往正文塞一句 `[合并转发]`，**id 直接扔了** ——
+   * 于是她只知道"有人转了一段聊天记录"，一个字都看不到。
+   * 现在把 id 带出去，由 bridge 调 `get_forward_msg` 取回内容。
+   *
+   * 取成数组是因为一条消息里可能同时有多个转发（少见但合法）。
+   */
+  const forwards = []
 
   if (typeof raw === 'string') {
     // CQ 码：逐个替换
@@ -1243,6 +1349,16 @@ export function parseMessage(raw) {
       }
       if (type === 'record') return '[语音]'
       if (type === 'video') return '[视频]'
+      /*
+       * ★ 合并转发的 CQ 码（2026-11-06）：
+       *   `[CQ:forward,id=xxx]` / `[CQ:forward,data={"id":"xxx"}]`
+       * 和数组分支同理 —— 只留 id，正文给个占位。
+       */
+      if (type === 'forward') {
+        const fid = String(data.id ?? data.res_id ?? '').trim()
+        if (fid) forwards.push({ id: fid })
+        return '[合并转发]'
+      }
       return `[${type}]`
     })
   } else if (Array.isArray(raw)) {
@@ -1318,7 +1434,18 @@ export function parseMessage(raw) {
         //    所以只把 id 挂在解析结果上，由决策层比对。
         replyTo = String(d.id ?? d.message_id ?? '')
       }
-      else if (t === 'forward') text += '[合并转发]'
+      else if (t === 'forward') {
+        /*
+         * ★ 合并转发：把 id 留下（2026-11-06）。
+         *
+         * NapCat 推的段是 `{ type:'forward', data:{ id:'<res_id>', content? } }`。
+         * `id` 才是 `get_forward_msg` 要的参数；有些实现会给 `content`
+         * （已经展开的节点），能直接读就别再打一次协议端。
+         */
+        const fid = String(d.id ?? d.message_id ?? d.res_id ?? '')
+        if (fid) forwards.push({ id: fid })
+        text += '[合并转发]'
+      }
       /*
        * ★ **分享卡片**（2026-10-31）—— 原来这里写着「其它类型：忽略」，
        *    于是 B 站/网易云/淘宝的分享**整条消失**，`msg.text` 变成空串，
@@ -1337,6 +1464,8 @@ export function parseMessage(raw) {
     images: images.filter(Boolean),
     /** 只属于**表情包**的图片引用（供 bridge 自动收藏；不含普通图片） */
     stickerRefs: [...new Set(stickerRefs.filter(Boolean))],
+    /** 合并转发的 id 列表（`get_forward_msg` 的入参） */
+    forwards,
     /** 被引用的消息 id（''=没有引用） */
     replyTo,
     isAtMe: (selfId) => mentions.some((q) => String(q) === String(selfId)),
@@ -1377,6 +1506,12 @@ export function normalizeEvent(ev) {
     stickerRefs: parsed.stickerRefs,
     /** 被引用的消息 id（''=没有引用）—— 决策层据此判断"是不是在回我" */
     replyTo: parsed.replyTo,
+    /**
+     * 合并转发（聊天记录）的 id 列表（2026-11-06）。
+     * 由 bridge 调 `get_forward_msg` 取回内容 —— 不取的话她只看到
+     * 「[合并转发]」四个字，等于什么都没收到。
+     */
+    forwards: parsed.forwards ?? [],
     at: Number(ev.time ? ev.time * 1000 : Date.now()),
     isAtMe: parsed.isAtMe,
     raw: ev,
