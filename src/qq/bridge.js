@@ -4225,7 +4225,9 @@ export class QQBridge {
           const descKey = String(msg.scope ?? '') + '|'
             + String(hit[1] ?? '').replace(/\s+/g, '').slice(0, 40)
           const lastDraw = this._drawRecent.get(descKey) ?? 0
-          if (Date.now() - lastDraw < 600_000) {
+          /* 去重窗口可配：qq.actions.drawDupMs（0 = 不去重，测试用） */
+          const drawDupMs = Number(this.cfg.actions?.drawDupMs ?? 600_000)
+          if (drawDupMs > 0 && Date.now() - lastDraw < drawDupMs) {
             this.log.info?.('bridge：画图跳过 —— 这段描述 10 分钟内画过（换说法才会重画）')
           } else {
           this._drawRecent.set(descKey, Date.now())
