@@ -49,7 +49,7 @@ export const expressionHistory = new ExpressionHistory()
 export function planShot(o = {}) {
   const {
     scene = '', slot = 'afternoon', outfit = '', hair = '', weather = '', mood = '',
-    request = '', scope = '', sceneOnly = false, anime = false, imageCfg = {},
+    request = '', scope = '', sceneOnly = false, anime = false, imageCfg = {}, bodyOverride = '',
   } = o
 
   /* ① 该不该拍（没有值得分享的内容就不拍） */
@@ -133,7 +133,7 @@ export function planShot(o = {}) {
   /* ⑦ 组装提示词 */
   const prompt = composePhotoPrompt({
     plan, framing, scene: sceneFixed, outfit, hair, weather, mood,
-    continuity: note, hasRef: Boolean(refImage), anime,
+    continuity: note, hasRef: Boolean(refImage), anime, bodyOverride,
     expression,
     character: { faceRef: imageCfg.refImage, bodyRef: imageCfg.bodyRefImage },
   })

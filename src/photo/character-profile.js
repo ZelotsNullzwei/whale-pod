@@ -52,6 +52,16 @@ export const PROFILE = {
     upperArm: 21,
     wrist: 13,
     footSize: 35,
+    /*
+     * ★ 三围要**定死**（2026-11-06 用户：「三围每次都变，能不能定死」）：
+     *   光写厘米数模型不会照着画 —— 必须给可执行的形体词。
+     */
+    shape: '**纤细偏瘦**的少女体型（不是丰满型、不是前凸后翘、不是欧美身材）',
+    bustNote: '胸**小、平**（A~B 罩杯的观感）：胸口平顺，**不要大胸、不要事业线、不要撑出曲线**',
+    waistNote: '腰**细**，腰线明显、侧面看是收进去的',
+    hipNote: '臀**窄**，胯不宽，**不是翘臀**',
+    limbNote: '四肢细：上臂细、小臂到手腕收细、腿细直',
+    forbid: ['丰满', '大胸', '前凸后翘', 'S 曲线', '欧美身材', '肌肉感'],
     notes: [
       '成年少女体型：不是幼童比例，也不是模特的夸张长腿',
       '肩膀是自然斜肩（肩线从颈部微微下倾、肩头圆润）；不要平直的直角肩/外扩的方肩',
@@ -84,5 +94,6 @@ ${p.hands.desc}。`
 export function bodyNumbers() {
   const b = PROFILE.body
   return `身高 ${b.height}cm、头身比 ${b.headRatio}、肩宽 ${b.shoulder}cm（窄肩薄背、自然斜肩）、`
-    + `胸 ${b.bust}（A~B）／腰 ${b.waist}／臀 ${b.hip}、上臂围 ${b.upperArm}cm、手腕 ${b.wrist}cm、腿直不O型`
+    + `胸 ${b.bust}（**A~B，小而平**）／腰 ${b.waist}（**细，腰线明显**）／臀 ${b.hip}（**窄，不是翘臀**）、`
+    + `上臂围 ${b.upperArm}cm、手腕 ${b.wrist}cm、腿细直不O型`
 }

@@ -51,7 +51,7 @@ function lightByHour(h = new Date().getHours()) {
 export function composePhotoPrompt(o = {}) {
   const {
     plan = {}, framing = {}, scene = '', outfit = '', hair = '', weather = '', mood = '',
-    continuity = '', hasRef = false, anime = false, character = {}, expression = null,
+    continuity = '', hasRef = false, anime = false, character = {}, expression = null, bodyOverride = '',
   } = o
 
   const parts = []
@@ -88,7 +88,12 @@ ${noHeadpiece ? '**头上不戴任何头饰**（没有发带、没有蕾丝帽�
 **耳侧那对深蓝配白的鲸鱼鳍形耳饰每一张都要有**（不是猫耳、不是发卡、不是蝴蝶结，
 就是贴在耳侧向外张开的鳍形薄片）—— 这是她唯一的识别标志。
 身形比例也照参考图：身高 165cm、头身比 7.8、肩宽 33cm（窄肩薄背、自然斜肩）、
-胸 82（A~B）／腰 58／臀 85、上臂围 21cm、手腕 13cm、腿直不 O 型。
+${bodyOverride ? `${bodyOverride}、` : ''}
+胸 82（**A~B 罩杯，胸小** —— 这是唯一要锁定的：**别画成大胸**）／腰 58（细，腰线明显）／
+臀 85（窄，不是翘臀）、上臂围 21cm、手腕 13cm、腿细直不 O 型。
+⚠️ 整体是**纤细偏瘦**的少女体型，不是丰满型。
+⚠️ **不用刻意处理事业线**：宽松衣服没有束缚，看不到事业线是正常的；
+   有内衣托着时才会有。按衣服的实际松紧自然呈现，别硬加也别硬删。
 **不要重新设计人物，也不要照搬参考图里的姿势和背景。**`)
   } else if (plan.needsCharacterRef === false) {
     /* 第一人称/拍物：人不在画面或只露手，不写外貌 */
