@@ -4309,6 +4309,25 @@ export class QQBridge {
            * 先规划（谁在拍/用什么/相机在哪）→ 校验物理可行性 → 决定构图 → 组装提示词。
            * 逻辑全在 src/photo/，这里只调用。
            */
+          /*
+           * ★ 构图要看他**最近说的几条**，不只看最后一句（2026-11-06 实测）：
+           *   他说「要一张全身」+「你自拍」分两条发，原来只看后一条 → 画成三分之二身。
+           */
+          const drawRequest = (() => {
+            try {
+              const parts = []
+              for (const m of mem.recent(8)) {
+                if (m?.isMe) continue
+                const t = String(m?.text ?? '').trim()
+                if (!t) continue
+                // 纯图片/表情占位没有信息量
+                if (/^\[(图片|表情包?)(:[^\]]*)?\]$/.test(t)) continue
+                parts.push(t)
+              }
+              const tail = parts.slice(-3).join(' / ')
+              return (tail || String(msg.text ?? '')).slice(0, 300)
+            } catch { return String(msg.text ?? '') }
+          })()
           const shot = planShot({
             scene: String(hit?.[1] ?? '').trim(),
             slot: currentSlot().id,
@@ -4316,7 +4335,7 @@ export class QQBridge {
             hair: hairText,
             weather: (() => { try { return String(this.dayPlan?.today?.()?.weather ?? '') } catch { return '' } })(),
             mood: (() => { try { return String(this.dayPlan?.today?.()?.mood ?? '') } catch { return '' } })(),
-            request: String(msg.text ?? ''),
+            request: drawRequest,
             scope: msg.scope ?? '',
             sceneOnly: Boolean(hitScene),
             anime: Boolean(hitIll),
@@ -7101,6 +7120,12 @@ export class QQBridge {
         //    实测它 09:30 说「中午了」，被问后又改口「我当下午了呢」。
       ].filter(Boolean),
     })
+
+    /* 提示词自检（2026-11-06 加）：确认衣柜那段真的进去了 */
+    try {
+      const S = String(system ?? '')
+      this.log.info?.('提示词自检：' + S.length + ' 字 ｜ 衣柜 ' + (S.includes('你的衣柜') ? '有' : '**没有**') + ' ｜ 今天穿的 ' + (S.includes('今天穿的') ? '有' : '无'))
+    } catch { /* 自检失败不影响生成 */ }
 
     // 最近几条里有图片的话，抓成 **ImageBlock**（受大小限制）
     //
