@@ -55,5 +55,19 @@ ok('普通自拍（没提身形）→ 仍是前置自拍', () => {
   assert.equal(s.mode, 'front_selfie')
 })
 
+
+console.log('\n=== 不该有镜子的地方 → 保持前置自拍 ===')
+ok('★「坐在床边」要全身 → 仍 front_selfie（半身），不硬塞镜子', () => {
+  const s2 = planShot({
+    scene: '坐在床边自拍，穿着白色无袖连身睡裙',
+    slot: 'night',
+    outfit: '白色无袖连身睡裙',
+    request: '拍一张全身看看这一身',
+    scope: 'bed' + Date.now(),
+    imageCfg: cfg,
+  })
+  assert.equal(s2.mode, 'front_selfie')
+})
+
 console.log(`\n通过 ${pass} / 失败 ${fail}`)
 process.exit(fail === 0 ? 0 : 1)

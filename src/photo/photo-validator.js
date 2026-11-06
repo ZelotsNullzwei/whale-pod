@@ -105,7 +105,15 @@ export function validatePhotoPlan(plan, ctx = {}) {
    * 想要身形，物理上只有镜子自拍（站到镜子前）能做到。
    */
   const wantsFigure = /(身材|三围|体型|全身|腿长|比例|这一身|这身|穿搭|好不好看)/.test(String(text) + ' ' + String(ctx.request ?? ''))
-  if (plan.mode === 'front_selfie' && wantsFigure) {
+  /*
+   * ★ 但**不是所有地方都该有镜子**（2026-11-07 用户）：
+   *   「没镜子或者不应该存在镜子的地方，就正常拿着手机自拍」。
+   *   床上/被窝/餐桌/厨房/车里/地铁/公司/教室 —— 这些地方硬塞一面穿衣镜，
+   *   构图立刻假（卧室床边那张就是这么来的）。
+   *   这种地方：保持前置自拍，只拍半身，别为了全身去加镜子或加别人的手。
+   */
+  const noMirrorPlace = /(没有镜子|没镜子|床上|床边|床前|床头|床沿|被窝|躺着|趴着|餐桌|饭桌|厨房|车里|车上|地铁|公交|路上|公司|办公室|教室|工位)/.test(String(text))
+  if (plan.mode === 'front_selfie' && wantsFigure && !noMirrorPlace) {
     issues.push({ code: 'fp_figure', msg: '前置自拍拍不到全身/身形', level: 'high' })
     fix.mode = 'mirror_selfie'
     fix.reason = '前置自拍拍不到全身/身形 → 改成镜子自拍'
