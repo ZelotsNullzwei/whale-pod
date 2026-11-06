@@ -268,7 +268,7 @@ export async function eraseCornerWatermark(buf, log = {}) {
     fs.writeFileSync(tmpIn, buf)
     for (const py of candidates) {
       try {
-        execFileSync(py, ['-c', script, tmpIn, tmpOut], { timeout: 25000, stdio: 'ignore' })
+        execFileSync(py, ['-c', script, tmpIn, tmpOut], { timeout: 25000, stdio: 'ignore', windowsHide: true })
         const out = fs.readFileSync(tmpOut)
         if (out.length > 2048) {
           log.info?.(`mcp-image：右下角水印已擦（克隆上方像素，脚没被裁），${Math.round(out.length / 1024)}KB`)
@@ -306,7 +306,7 @@ export async function cropBottom(buf, ratio = 0.1, log = {}) {
     fs.writeFileSync(tmpIn, buf)
     for (const py of candidates) {
       try {
-        execFileSync(py, ['-c', script, tmpIn, tmpOut, String(ratio)], { timeout: 25000, stdio: 'ignore' })
+        execFileSync(py, ['-c', script, tmpIn, tmpOut, String(ratio)], { timeout: 25000, stdio: 'ignore', windowsHide: true })
         const out = fs.readFileSync(tmpOut)
         if (out.length > 2048) {
           log.info?.(`mcp-image：裁掉底部 ${Math.round(ratio * 100)}%（去水印），${Math.round(out.length / 1024)}KB`)

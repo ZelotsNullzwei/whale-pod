@@ -50,7 +50,7 @@ export function singlePanelRef(refPath, log = {}) {
   ].join('\n')
   for (const py of PY_CANDIDATES) {
     try {
-      execFileSync(py, ['-c', script, p, cached], { timeout: 25000, stdio: 'ignore' })
+      execFileSync(py, ['-c', script, p, cached], { timeout: 25000, stdio: 'ignore', windowsHide: true })
       const out = fs.statSync(cached)
       if (out.size > 2048) {
         log.info?.(`生图：参考图是三视图 → 只取正面那幅（${Math.round(out.size / 1024)}KB）`)

@@ -38,7 +38,7 @@ export async function shrinkForReview(buf, maxSide = 768, log = {}) {
     fs.writeFileSync(tmpIn, buf)
     for (const py of PY_CANDIDATES) {
       try {
-        execFileSync(py, ['-c', script, tmpIn, tmpOut, String(maxSide)], { timeout: 20000, stdio: 'ignore' })
+        execFileSync(py, ['-c', script, tmpIn, tmpOut, String(maxSide)], { timeout: 20000, stdio: 'ignore', windowsHide: true })
         const out = fs.readFileSync(tmpOut)
         if (out.length > 1024) {
           log.info?.(`图片审核：缩到长边 ${maxSide}，${Math.round(out.length / 1024)}KB`)

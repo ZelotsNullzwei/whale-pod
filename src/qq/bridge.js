@@ -6942,6 +6942,25 @@ export class QQBridge {
           try { return wardrobeBrief() } catch { return '' }
         })(),
         /*
+         * ★ 发群冷却要说给她听（2026-11-06 实测）：
+         *   冷却中被挡掉时她还在说「行，发群」—— 空口答应，用户以为发了。
+         */
+        (() => {
+          try {
+            const key = String(msg?.scope ?? '')
+            const last = this._crossGroupAt?.get?.(key) ?? 0
+            if (!last) return ''
+            const gap = Number(this.cfg?.actions?.crossGroupMinGapMs ?? 30 * 60 * 1000)
+            const left = gap - (Date.now() - last)
+            if (left <= 0) return ''
+            const mins = Math.ceil(left / 60000)
+            return `## 现在往群里发不出去
+⚠️ 你 **${mins} 分钟前刚往群里发过一次**，冷却还没过（要间隔 ${Math.round(gap / 60000)} 分钟）。
+所以这一轮 **[发群:] 会被直接挡掉** —— **别答应发群**，
+要说就说"刚发过，等下再说"或者"过会儿再给他们看"。`
+          } catch { return '' }
+        })(),
+        /*
          * ── 今天外面在聊什么（免费热点源）──
          *
          * ⚠️ **只注入跟你们刚说的挂得上钩的**；挂不上就返回空串，
