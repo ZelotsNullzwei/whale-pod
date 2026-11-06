@@ -115,5 +115,34 @@ export async function stitchForwardImages(o = {}) {
   }
   out.used = bufs.length
   out.note = omitted > 0 ? `（转发里共 ${refs.length} 张图，只看了前 ${take.length} 张）` : ''
+
+  /*
+   * ── ④ **单独调视觉模型转成文字**（2026-11-06，用户：「用看 b 站视频的路径」）──
+   *
+   * ## 为什么必须单独调，而不是把图塞给主模型
+   * 主模型（`deepseek-v4.1-flash-sg`）**没有视觉能力** ——
+   * 日志里那句「若模型不支持视觉，图等于没传」是实话：
+   * 图块进了上下文，但模型看不见，于是她只能说「一张都没显出来」。
+   *
+   * 而 Magpie 里**已经配了识图模型**（`settings.json` 的 `"vision": "auto/…"`），
+   * 那个字段之前只被读、**从来没被用**。这里就是它该用的地方：
+   * 用视觉模型看一遍 → 变成文字 → 拼进正文 → 主模型读文字就行。
+   *
+   * 这跟 B 站视频那条路一模一样：**画面先转成文字**（分镜说明 / 转写），
+   * 主模型永远只吃文字。
+   *
+   * ⚠️ 失败一律吞掉：视觉调用挂了就当没看，正文保持原文（不编）。
+   */
+  if (out.blocks.length > 0 && typeof o.describe === 'function') {
+    try {
+      const desc = await o.describe(out.blocks, { stitched: out.stitched })
+      if (desc && String(desc).trim()) {
+        out.description = String(desc).trim()
+        log.info?.(`bridge：转发图已转成文字（${out.description.length} 字）`)
+      }
+    } catch (e) {
+      log.warn?.(`bridge：转发图转文字失败（按没看处理）— ${String(e?.message ?? e).slice(0, 60)}`)
+    }
+  }
   return out
 }

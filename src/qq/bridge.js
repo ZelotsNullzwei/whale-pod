@@ -3546,19 +3546,37 @@ export class QQBridge {
                   refs: fwd.images,
                   fetchImage: (ref, o2) => this.onebot.fetchImage(ref, o2),
                   makeImageBlock: (o2) => this.gateway.makeImageBlock(o2),
+                  /*
+                   * ★ **单独调识图模型转成文字**（2026-11-06）。
+                   *
+                   * 主模型没有视觉能力，图塞进去它也看不见 —— 之前日志里
+                   * 「若模型不支持视觉，图等于没传」就是实话，她只能说
+                   * 「一张都没显出来」。这里照 B 站那条路：画面先转文字。
+                   */
+                  describe: (blocks, o2) => this._describeForwardImages(blocks, o2),
                   log: this.log,
                   maxImages: Number(this.cfg.reply?.maxImages ?? 4),
                   maxBytes: this.cfg.reply?.maxImageBytes ?? DEFAULT_MAX_IMAGE_BYTES,
                 })
-                if (r.blocks.length > 0) {
+                if (r.description) {
+                  /*
+                   * 描述**直接拼进正文** —— 主模型只吃文字，这条路跟
+                   * B 站分镜说明、视频转写完全一致。
+                   */
+                  msg.text = `${msg.text}\n（转发的图我看过了：${r.description}）`
+                } else if (r.blocks.length > 0) {
+                  // 没转成文字：图块留着（万一主模型支持视觉），但不假装看过
                   msg.forwardBlocks = r.blocks
+                }
+                if (r.used > 0) {
                   this.log.info?.(
                     `bridge：转发图 ${r.used} 张${r.stitched ? '（已拼成 1 张）' : ''}`
-                    + `${r.omitted > 0 ? `，另有 ${r.omitted} 张没看` : ''} → 交给视觉模型`,
+                    + `${r.omitted > 0 ? `，另有 ${r.omitted} 张没看` : ''}`
+                    + `${r.description ? ` → 已转成 ${r.description.length} 字文字` : ' → 没转成文字（主模型看不到图）'}`,
                   )
-                  // 正文里补一句"还有几张没看"，否则她会以为全看完了
-                  if (r.omitted > 0) msg.text = `${msg.text}\n（转发里还有 ${r.omitted} 张图没看）`
                 }
+                // 正文里补一句"还有几张没看"，否则她会以为全看完了
+                if (r.omitted > 0) msg.text = `${msg.text}\n（转发里还有 ${r.omitted} 张图没看）`
               } catch (e) {
                 this.log.warn?.(`bridge：转发图处理失败（跳过视觉）— ${String(e?.message ?? e).slice(0, 80)}`)
               }
@@ -7860,6 +7878,101 @@ export class QQBridge {
    * @param {object} block 已经做好的 ImageBlock（`gateway.makeImageBlock`）
    * @returns {Promise<string[]>}
    */
+  /**
+   * 让**视觉模型**描述一组图（转发拼贴图用，2026-11-06）。
+   *
+   * ## 为什么单独一个方法（而不是塞进主模型的上下文）
+   * 主模型是纯文本的（`deepseek-v4.1-flash-sg`），图块进去它也看不见 ——
+   * 日志原话「若模型不支持视觉，图等于没传」。
+   * 所以照 B 站那条路的做法：**画面先转成文字**，主模型只吃文字。
+   *
+   * ## 用哪个模型
+   * Magpie 的 `settings.json` 里 `"vision": "auto/deepseek-v4.1-flash"` ——
+   * 用户在 Magpie 界面里选的那个。`readMagpieSettings()` 早就读它了，
+   * 但**从来没被用过**（只读不用的配置 = 死的）。这里把它接上。
+   *
+   * 读不到就退回当前聊天模型（有些渠道的聊天模型也能看图）。
+   *
+   * ## 纪律（跟 `_callVisionTags` 同一套，踩过的坑不再踩）
+   * · 提示词头一句必须「只输出答案，不要写思考过程」（推理模型会把草稿吐进正文）
+   * · 收流时**跳过 reasoning-delta** —— 草稿不是答案
+   * · 输出过长就判定为 reasoning 漏出，直接丢弃
+   * · 任何失败返回空串，绝不抛（图是加分项）
+   *
+   * @param {Array} blocks ImageBlock 数组（通常只有 1 块：拼好的网格）
+   * @param {object} [o]
+   * @param {boolean} [o.stitched] 是不是拼过的网格（措辞不同）
+   * @returns {Promise<string>} 空串=没看成
+   */
+  async _describeForwardImages(blocks, o = {}) {
+    const list = (Array.isArray(blocks) ? blocks : []).filter(Boolean)
+    if (list.length === 0) return ''
+    if (typeof this.gateway?.makeImageBlock !== 'function') return ''
+
+    const grid = o.stitched === true
+    const prompt = '只输出答案本身，不要写任何思考过程、分析、标题或格式说明。\n'
+      + (grid
+        ? '下面是一张**网格拼图**，里面是聊天记录里转发的若干张图片，按从左到右、从上到下排列。\n'
+        : '下面是聊天记录里转发的图片。\n')
+      + '用中文说清楚：这些图里有什么（人物/物件/场景/画面上的字）。\n'
+      + '⚠️ 只描述你**真的看到**的，看不清就说看不清，**不要猜、不要补**。\n'
+      + '控制在 150 字以内，一两句话一段，不要列清单。\n'
+      + '现在输出：'
+
+    // 优先用 Magpie 里配的识图模型；读不到就用当前聊天模型
+    let prefer = ''
+    try {
+      const { readMagpieSettings } = await import('./mcpImage.js')
+      prefer = String(readMagpieSettings().vision ?? '').trim()
+    } catch { /* 读不到就退回 */ }
+    let candidates = []
+    if (prefer) {
+      try {
+        candidates = resolveCandidates(prefer, {
+          freeProviders: this.gateway.providers ?? [],
+          freeOrder: this.cfg.freeOrder ?? [],
+          disabledProviders: this.cfg.disabledProviders ?? [],
+          catalog: this.gateway.catalog,
+          selfModels: this.gateway.defaultModels?.() ?? {},
+          fallback: this.cfg.fallback,
+        })
+        this.log.info?.(`bridge：识图用 Magpie 里配的「${prefer}」`)
+      } catch (e) {
+        this.log.warn?.(`bridge：识图模型「${prefer}」解析失败，退回聊天模型 — ${String(e?.message ?? e).slice(0, 60)}`)
+      }
+    }
+    if (!Array.isArray(candidates) || candidates.length === 0) {
+      candidates = await this._candidatesAsync()
+    }
+    if (!Array.isArray(candidates) || candidates.length === 0) return ''
+
+    const opened = await openFirstAvailable({
+      llm: this.gateway,
+      candidates,
+      request: {
+        messages: [{
+          role: 'user',
+          content: [{ type: 'text', text: prompt }, ...list],
+        }],
+      },
+    })
+    let text = ''
+    for await (const chunk of opened.stream) {
+      if (typeof chunk === 'string') { text += chunk; continue }
+      const kind = chunk?.type
+      // ⚠️ 草稿不是答案（`reasoning-delta` 也带 `.text`，踩过）
+      if (kind === 'reasoning-delta' || kind === 'reasoning') continue
+      if (typeof chunk?.text === 'string') text += chunk.text
+    }
+    const out = text.trim()
+    // 过长基本可以断定是 reasoning 漏出来了 —— 宁可当没看
+    if (out.length > 400) {
+      this.log.warn?.(`bridge：识图输出过长（${out.length} 字，疑似思考过程）→ 丢弃`)
+      return ''
+    }
+    return out
+  }
+
   async _callVisionTags(block) {
     /*
      * ⚠️ **头一句必须是「只输出答案，不要写思考过程」**（2026-10-31）。
