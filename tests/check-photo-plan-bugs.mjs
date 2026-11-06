@@ -116,5 +116,53 @@ ok('前置自拍 + 背后有窗户 → 仍是 front_selfie（不降级）', () =
   assert.equal(r.fixedFrom, undefined, '不该被修正过')
 })
 
+console.log('\n=== 6. 「整理裙边」被当成"收拾房间" → 拍成一碗面（2026-11-06 第二张怪图）===')
+/*
+ * 现场：
+ * ```
+ * 15:45:47 画图「穿着短款女仆装站在房间里，裙摆很短，侧身低头整理裙边，
+ *              床靠着墙，窗边有绿萝，屋里」
+ *          拍摄方案 → 第一人称记录｜局部
+ * 结果：一碗面 + 手 + 筷子，她本人只露半个后脑
+ * ```
+ * 三处叠加：
+ *   ① ACTIVITY_BIAS 的「整理/收拾」→ first_person（宾语是她自己的裙子，不是屋子）
+ *   ② 同一张表里的「窗」→ rear_selfie（"窗边有绿萝"是背景，不是拍窗外）
+ *   ③ 两个表都被排除后落到 SLOT_BIAS 兜底（下午默认 first_person）
+ */
+ok('★ 线上那句 → 必须是拍人（不是第一人称）', () => {
+  const m = plan('穿着短款女仆装站在房间里，裙摆很短，侧身低头整理裙边，床靠着墙，窗边有绿萝，屋里').mode
+  assert.notEqual(m, 'first_person', '不能是"从她眼睛看出去"')
+  assert.ok(['mirror_selfie', 'front_selfie'].includes(m), `应该是拍人，实际 ${m}`)
+})
+
+ok('★ 「整理」的宾语是她自己身上东西 → 不判第一人称', () => {
+  for (const scene of ['侧身整理领口', '对着镜子整理头发', '低头整理裙摆', '整理围裙']) {
+    const m = plan(scene).mode
+    assert.notEqual(m, 'first_person', `不该是第一人称：${scene}（实际 ${m}）`)
+  }
+})
+
+ok('真在收拾屋子 → 仍是第一人称（这条不能丢）', () => {
+  for (const scene of ['坐在书桌前整理抽屉里的笔', '擦桌上的水', '站在厨房洗碗']) {
+    assert.equal(plan(scene).mode, 'first_person', `应该第一人称：${scene}`)
+  }
+})
+
+ok('★ 「窗边有绿萝」是背景 → 不判成拍窗外', () => {
+  const m = plan('穿着女仆装站在房间里，窗边有绿萝').mode
+  assert.notEqual(m, 'rear_selfie', '窗只是背景道具')
+})
+
+ok('真的拍窗外 → 仍是 rear_selfie', () => {
+  assert.equal(plan('拍一张窗外的雪').mode, 'rear_selfie')
+})
+
+ok('吃面 / 手边的饭 → 仍第一人称（不能因为修上面的就误伤）', () => {
+  for (const scene of ['低头吃面，手里拿着木勺', '桌面上摆着一碗饭', '锅里的汤在冒泡']) {
+    assert.equal(plan(scene).mode, 'first_person', `应该第一人称：${scene}`)
+  }
+})
+
 console.log(`\n${'='.repeat(44)}\n通过 ${pass} / 失败 ${fail}`)
 process.exit(fail === 0 ? 0 : 1)

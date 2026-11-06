@@ -24,6 +24,18 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { outfitForDay, sleepwearForDay, hairForDay } from './wardrobe.js'
+/*
+ * ★ **今天临时换上的那套**（2026-11-06，用户：「有要换衣服就同步一下，
+ *   临时替换？第二天或者到了晚上换睡衣的时候再换」）。
+ *
+ * 日程表里的 `outfit` 是**按日期算死的**；但聊天里她真的换了衣服之后，
+ * 提示词里「今天穿的」必须跟着变 —— 否则她嘴上说女仆装、提示词还说家居服，
+ * 生图也按家居服画，三边对不上。
+ *
+ * ⚠️ 只在**渲染时**覆盖，**不回写** `plans[dayKey].outfit` ——
+ *    第二天/到了睡衣时段 `wearingFor` 自然返回 null，日程表原样恢复。
+ */
+import { wearingFor } from './wearing.js'
 import { outingForDay } from './outing.js'
 
 /** 一天分成四个时段。带分钟会让缓存失效，所以只到时段。 */
@@ -146,7 +158,20 @@ export function renderDayPlan(plan, slotId) {
   }
   if (plan.weather) parts.push(`今天天气：${plan.weather}`)
   if (plan.hair) parts.push(`今天的头发：${plan.hair}`)
-  if (plan.outfit) parts.push(`今天穿的：${plan.outfit}`)
+  /*
+   * ★ 今天穿的：**临时换上的优先**（2026-11-06）。
+   *   `wearingFor` 只在"当天 + 还没到睡衣时段"返回内容，
+   *   第二天或晚上自动 null → 这里回落到日程表那套。
+   */
+  const worn = (() => {
+    /*
+     * ⚠️ 用**今天**的 dayKey（不是 plan 里存的）—— 这样"第二天"天然不生效，
+     *    不需要额外的清理逻辑。
+     */
+    try { return wearingFor(dayKey(), slotId) } catch { return null }
+  })()
+  if (worn?.text) parts.push(`今天穿的（刚换上的）：${worn.text}`)
+  else if (plan.outfit) parts.push(`今天穿的：${plan.outfit}`)
   if (plan.sleepwear) parts.push(`睡觉穿的：${plan.sleepwear}`)
   if (plan.outing) parts.push(`今天出门：${plan.outing}`)
   if (plan.mood) parts.push(`心情：${plan.mood}`)

@@ -36,6 +36,8 @@ import { EventStore, EXTRACT_PROMPT } from './memory/events.js'
 import { DayPlanStore } from './memory/dayPlan.js'
 // 衣柜可编辑层（2026-11-06）：数据目录的 wardrobe.json 覆盖内置预设
 import { configureWardrobe } from './memory/wardrobe.js'
+// 「今天临时换上的那套」（2026-11-06）：当天有效，晚上/第二天自动让位
+import { configureWearState } from './memory/wearing.js'
 import { HotTopicStore } from './qq/hot-topics.js'
 import { SearchQuota } from './gateway/search.js'
 // 峰谷节奏：峰期收紧搜索（"峰谷"按 DeepSeek 官网口径算，见该文件头）
@@ -600,6 +602,11 @@ export async function main(argv = process.argv.slice(2)) {
      * 按 mtime 热加载 —— 改完下一轮生效，不用重启。
      */
     configureWardrobe({ home: memoryDir })
+    /*
+     * ★ 「今天临时换上的那套」（2026-11-06）：跟衣柜同一个数据目录。
+     *   只在当天有效，晚上换睡衣 / 第二天自动让位（见 memory/wearing.js）。
+     */
+    configureWearState({ home: memoryDir })
     const memory = new MemoryStore({
       ...(cfg.memory?.short ?? {}),
       dir: memoryDir,

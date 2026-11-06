@@ -134,9 +134,18 @@ export function composeFraming(plan, o = {}) {
       // 要看身形 → 至少给到三分之二身（半身看不出来）
       if (wantsFigure(req)) framing = '三分之二身'
       break
-    case 'mirror_selfie':
-      /* 对镜：看穿搭/看身形就全身，否则三分之二身 */
-      framing = (/(穿搭|全身|这一身|衣服)/.test(req) || wantsFigure(req)) ? '全身' : '三分之二身'
+    case 'mirror_selfie': {
+      /*
+       * ★ **对镜自拍默认拍全身**（2026-11-06 用户：「但是只有一个人，理应全身」）。
+       *
+       * 她一个人在家，镜子自拍就是唯一能拍到"整身"的方式 ——
+       * 拍到膝盖上方那种半截构图，看不出这一身穿搭，也就失去了对镜自拍的意义。
+       *
+       * 所以：只要场景/请求里提到**穿着、衣服、裙子、这一身**，就给全身。
+       */
+      const all = req + ' ' + String(o.scene ?? '')
+      const showingOutfit = /(穿搭|全身|这一身|这身|衣服|裙|女仆装|睡衣|家居服|围裙|上身|穿)/.test(all)
+      framing = (showingOutfit || wantsFigure(req)) ? '全身' : '三分之二身'
       /*
        * ★ **对镜自拍的构图要说"镜子里的取景"，不是"沙发/桌边"**（2026-11-06 修）。
        *
@@ -144,8 +153,11 @@ export function composeFraming(plan, o = {}) {
        * 那句是给"坐着自拍"写的。对镜自拍是**站着对镜子**，照抄这句会让模型
        * 把人画成坐着，构图和场景打架，镜子/手机这些要素就更容易丢。
        */
-      framingNote = '镜子里取到膝盖上方（站姿，全身镜 / 穿衣镜前）'
+      framingNote = framing === '全身'
+        ? '镜子里取到全身（站姿，从头到脚都入镜，脚下留一点地面）'
+        : '镜子里取到膝盖上方（站姿，全身镜 / 穿衣镜前）'
       break
+    }
     case 'first_person':
       framing = '局部'
       break

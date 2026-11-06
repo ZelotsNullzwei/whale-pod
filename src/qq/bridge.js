@@ -48,6 +48,8 @@ import { planShot, describeShot } from '../photo/index.js'
 import { figurePoseForDay } from '../photo/photo-composer.js'
 import { dayKey } from '../memory/dayPlan.js'
 import { outingOutfitForDay, signatureOutfitForDay, wardrobeBrief } from '../memory/wardrobe.js'
+// 今天临时换上的那套（2026-11-06）：当天有效，晚上/第二天自动让位
+import { wearingFor, setWearing } from '../memory/wearing.js'
 import { hasBiliLink, resolveBvid, fetchVideoInfo, fetchTopComments, fetchDanmaku, fetchAudioCandidates, downloadAudio, formatVideoContext } from './bilibili.js'
 import { transcribeVideoCached, transcribeVideoDetailed } from './asr.js'
 // 梗百科 —— 本地词库（零成本），联网查梗之前先走它；没收录才放行联网
@@ -4144,6 +4146,8 @@ export class QQBridge {
      * 失败只 warn —— 和"找图"同理：图是锦上添花，绝不能因此丢文字。
      */
     let drawnImage = null
+    /** 这一轮到底有没有出现画图类标记（谎报闸要用它判"说了要拍却没拍"） */
+    let drewAny = false
     {
       const re = /[\[［]\s*画图\s*[:：]\s*([^\]］]+?)\s*[\]］]/g
       /*
@@ -4181,6 +4185,8 @@ export class QQBridge {
         return out.filter((x) => x.desc)
       })()
       try { msg.__extraMarks = allMarks.slice(1) } catch { /* 只读对象就算了 */ }
+      // 记「这一轮有没有要画图」—— 给谎报闸用（见 did.draw）
+      drewAny = allMarks.length > 0
       /*
        * ★ 要脸时把"背影"洗掉并强制自拍（2026-11-06 实测）：
        *   她会照搬前几轮自己说的「背影，脸不在这张里」，planner 就顺着改成第一人称。
@@ -4307,11 +4313,36 @@ export class QQBridge {
               const justWoke = currentSlot().id === 'morning' && h < 9
               const lateNight = h >= 23 || h < 5
               /*
+               * ★★ **今天临时换上的那套优先**（2026-11-06）。
+               *
+               * 用户口径：「有要换衣服就同步一下，临时替换？第二天或者到了晚上
+               * 换睡衣的时候再换」。
+               *
+               * 现场：他「那你换上去」，她「换就换，等着」+「短的那套，本鱼正在换」
+               * —— 但生图仍按日程表的家居服画（米白高领 + 深棕裤），
+               * 图和嘴对不上。
+               *
+               * 现在：`wearingFor(dayKey, slot)` 只返回**当天且还没到睡衣时段**的
+               * 临时那套；第二天 / 晚上自动让位给日程表（见 memory/wearing.js）。
+               */
+              const worn = wearingFor(dayKey(), currentSlot().id)
+              if (worn) return String(worn.text).replace(/\s+/g, ' ').slice(0, 160)
+              /*
                * ★ 标志性那套（2026-11-06 用户：「标志性的女仆带鲸尾巴那一套」）：
                *   日常不穿，只有明确要这套时才换。
                */
               const wantsSignature = /(女仆装|女仆|那套标志|标志性那套|带尾巴那套|鲸尾巴|你那套经典|cosplay|cos一下)/i.test(String(msg.text ?? ''))
-              if (wantsSignature) return String(signatureOutfitForDay(dayKey()) ?? '')
+              if (wantsSignature) {
+                const sig = String(signatureOutfitForDay(dayKey()) ?? '')
+                /*
+                 * ★ **记下"今天真的换了"**（2026-11-06）。
+                 *   只要这一轮是穿标志性那套去画图，就落一条临时穿着 ——
+                 *   之后的对话提示词、生图都读这一份，不会再变回家居服。
+                 *   （用户：「有要换衣服就同步一下，临时替换」）
+                 */
+                try { setWearing(dayKey(), { text: sig, kind: 'signature', note: '他说要这套' }) } catch { /* 落盘失败不影响出图 */ }
+                return sig
+              }
               if (outingNow) return String(outingOutfitForDay(dayKey()) ?? '')
               const v = (justWoke || lateNight) ? today?.sleepwear : today?.outfit
               return v ? String(v).replace(/\s+/g, ' ').slice(0, 120) : ''
@@ -4862,6 +4893,8 @@ export class QQBridge {
         qzone: qqNotes.some((n) => String(n).includes('发空间')),
         qzoneImage: qqNotes.some((n) => String(n).includes('发空间了') && !String(n).includes('没图')),
         qzoneDel: qqNotes.some((n) => String(n).includes('删了刚发的说说')),
+        // 这一轮有没有画图标记（说了"换就换/等着"却没画 → 谎报）
+        draw: drewAny,
       }
       const claim = this._falseClaim(text, did, msg?.text)
       if (claim) {
@@ -5415,6 +5448,41 @@ export class QQBridge {
       },
       { kind: 'recall', need: 'recall', re: /(已经)?撤回了/ },
       /*
+       * ★★ **答应了要拍图，却没画**（2026-11-06 实测，私聊）。
+       *
+       * 现场：
+       * ```
+       * 15:16:29 他「那你换上去群里招一下人」
+       * 15:16:35 她「（抬眉）短的那套？…换就换，等着。」
+       * 15:16:41 她「短的那套，本鱼正在换，别催。」
+       *          → 整段日志一条「画图」都没有，一张图也没发
+       * ```
+       * 这就是「说了就要做」被绕过：她口头答应、还说自己"正在换"，
+       * 程序里什么都没发生，他等半天发现一张图都没有。
+       *
+       * 判据收得紧（宁可漏，也别误伤正常接话）：
+       *   · 要**明确答应**：换就换 / 这就拍 / 等着 / 马上给你 / 正在换 / 我给你拍
+       *   · 且这一轮**没有任何** draw / scene / illus 标记
+       *   · 排除疑问句、否定句、"改天/下次"这种往后拖的
+       */
+      {
+        kind: 'draw',
+        need: 'draw',
+        re: /(换就换|这就拍|这就画|马上给你|这就给你|等着看|等着啊|正在换|在换了|我这就|给你拍一张|拍一张给你|给你发一张)/,
+        skip: /(下次|改天|以后|不方便|不想|不拍|拍不了|画不了|没空|等会儿再说)/,
+      },
+      /*
+       * ★ 同一条的**弱形式**：只说「等着」「等我一下」但上下文明确在要图。
+       * ⚠️ 必须带 ctx（他这一轮在要图）才生效，否则「等着」太常见。
+       */
+      {
+        kind: 'draw',
+        need: 'draw',
+        ctx: /(拍|画|图|照片|自拍|看看你|换(上|上那套|衣服))/,
+        re: /(等着|等我一下|稍等|马上|就来)/,
+        skip: /(下次|改天|以后|不方便|不想|不拍|拍不了|画不了|没空|等会儿再说)/,
+      },
+      /*
        * 空间（2026-11-05）：说"发了"但这一轮没跑 [说说] → 谎报；
        * 说"图带上了/挂上去了"但发出去的那条没图 → 也是谎报。
        */
@@ -5432,9 +5500,20 @@ export class QQBridge {
       // 跨句规则（带 `ctx` 的）：对方没提到这件事，她说的「改了」就是别的意思
       if (r.ctx && !r.ctx.test(String(ctx ?? ''))) continue
       if (r.skip && r.skip.test(around(m.index, m[0].length))) continue
-      if (/[没不未别甭]|不了/.test(around(m.index, m[0].length))) continue // 否定句
+      /*
+       * ⚠️ 否定句判据只对**紧挨着命中词**的 4 个字生效 —— 但「本鱼正在换，别催」
+       * 里那个「别」是**劝对方别催**，不是否定"正在换"（2026-11-06 实测）。
+       * 所以 `draw` 这类"答应式"规则跳过这条通用判据，改用它自己的 skip 词。
+       */
+      if (r.kind !== 'draw' && /[没不未别甭]|不了/.test(around(m.index, m[0].length))) continue // 否定句
       const after = s.slice(m.index + m[0].length, m.index + m[0].length + 1)
       if (/[吗么？?]/.test(after)) continue // 疑问句
+      /*
+       * ⚠️ 疑问句还要看**命中词前面**：「我这就拍？」里 `re` 命中的是「我这就」，
+       * 后面跟的是「拍」，`after` 检查不到问号（2026-11-06 实测）。
+       */
+      const before = s.slice(Math.max(0, m.index - 2), m.index)
+      if (r.kind === 'draw' && /[？?]/.test(after + before)) continue
       return { kind: r.kind, hit: m[0] }
     }
     return null
@@ -7032,14 +7111,39 @@ export class QQBridge {
             lines.push(
               '- 他要**看**某个东西、而那东西现实中不存在（你的房间、你现在的样子、'
               + '你想到的画面、某个场景）→ 三个标记任选：\n'
-              + '  · [画图:一句话描述画面] —— **照片**，画面里有你（背影 / 过肩 / 侧后方，不露脸）；\n'
+              + '  · [画图:一句话描述画面] —— **照片**，画面里有你；\n'
               + '    ⚠️ 描述里**只写"你在做什么、周围有什么、什么光线"**，'
               + '**不要写你的长相、发色、发型、头饰、首饰**（那些已经定死了，写了反而会画错）；\n'
+              + '    ⚠️ **要露脸就明说"自拍/对镜自拍/怼脸自拍"** —— 这三种能拍到脸；'
+              + '不写的话默认是背影/侧后方（拍不到脸）；\n'
               + '  · [场景图:一句话描述] —— **照片**，只拍眼前的东西，画面里没有人；\n'
               + '  · [插画:一句话描述] —— **日系插画**那一档，只有他明确说"画一张 / 二次元的"才用。\n'
               + '  ⚠️ 反例：他要看**真实存在的东西**（他自己发的截图、照片）→ **别画**，'
               + '画出来只会露馅。\n'
-              + '  ⚠️ 一轮最多一张，要等二十多秒 —— 别他每说一句"看看"你就画。',
+              + '  ⚠️ 一轮最多一张，要等二十多秒。\n'
+              /*
+               * ★★ **说了"换/拍/等着"就必须同时输出标记**（2026-11-06 实测）。
+               *
+               * 现场（私聊）：
+               * ```
+               * 15:16:29 他「那你换上去群里招一下人」
+               * 15:16:35 她「（抬眉）短的那套？…**换就换，等着。**」
+               * 15:16:41 她「**短的那套，本鱼正在换，别催。**」
+               *          —— 整段日志里一条「画图」都没有，一张图也没发
+               * ```
+               * 她答应了换衣服、还说自己"正在换"，程序里什么都没发生 ——
+               * 就是用户反复骂的「说了就要做」。
+               *
+               * 根因不是她不想画，而是上面那句「一轮最多一张、别每说一句看看你就画」
+               * 把"答应要拍"这种情况也一起压住了：她只敢口头应，不敢落标记。
+               * 所以这里补一条**明确的反向要求**：只要答应"换/拍/发一张"，
+               * **同一轮就得把 [画图:…] 写出来**；做不到就别答应。
+               */
+              + '  ⚠️⚠️ **答应要拍，就必须同一轮输出标记**：只要你说「换就换 / 这就拍 / 等着 / 马上给你」'
+              + '这类**答应了要发图**的话，就必须在同一条回复里写出 [画图:…]。\n'
+              + '     **没有标记 = 什么都没发生** —— 光说"正在换"、"等着看"，'
+              + '程序不会画，你就是在骗他（他等半天发现一张图都没有）。\n'
+              + '     要么真画（写标记），要么别答应（说"这会儿不方便"）。',
             )
           }
           if (a.signature === true) {
