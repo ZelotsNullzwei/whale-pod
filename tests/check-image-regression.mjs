@@ -26,12 +26,27 @@ ok('不再从整个历史里倒着找带图消息', () => {
    * ⚠️ 只查**实际代码**，不查注释 —— 修法说明里我引用了旧写法
    *    （"原来是 [...recent].reverse().find(...)"），
    *    直接全文匹配会命中那句注释，误判成没修。
+   *
+   * ⚠️ 而且只查 **`_collectImages` 这一个方法内部**（2026-11-06 修）。
+   *
+   * 原来是把整个 bridge.js 去掉注释后全文搜 —— 于是别的模块里出现
+   * 同样写法就误报。实测：`_looksIntimate`（判断"他最后一条是不是亲密话"）
+   * 用了 `[...recent].reverse().find((m) => !m?.isMe)`，它**跟配图无关**，
+   * 却被这条锁判成"又把历史旧图重发了"，测试挂了一整晚。
+   *
+   * 锁要锁在**该锁的地方**：配图职责只有 `_collectImages` 一个方法。
    */
-  const code = BRIDGE.split('\n')
+  const lines = BRIDGE.split('\n')
+  const start = lines.findIndex((l) => /async _collectImages\(/.test(l))
+  assert.ok(start > 0, '找不到 _collectImages')
+  // 从方法开头往下数 260 行（够覆盖整个方法体），遇到下一个同级方法就停
+  let end = start + 1
+  while (end < lines.length && !/^  [a-zA-Z_$][\w$]*\(|^  async [a-zA-Z_$][\w$]*\(/.test(lines[end])) end++
+  const body = lines.slice(start, end)
     .filter((l) => !l.trim().startsWith('*') && !l.trim().startsWith('//'))
     .join('\n')
-  assert.ok(!/\[\.\.\.recent\]\.reverse\(\)\.find/.test(code),
-    '应该去掉 [...recent].reverse().find —— 它会把历史旧图重发')
+  assert.ok(!/\[\.\.\.recent\]\.reverse\(\)\.find/.test(body),
+    '_collectImages 里不该再从整个历史倒着找带图消息 —— 它会把历史旧图重发')
 })
 
 ok('只取 history 最后一条（当前消息）的图', () => {

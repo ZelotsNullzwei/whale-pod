@@ -7031,6 +7031,46 @@ export class QQBridge {
       }
     }
 
+    /*
+     * ★★ **被问起图、但一张都没有 → 必须明说**（2026-11-06 线上实测）。
+     *
+     * 现场：
+     * ```
+     * 12:50:13  他「图片你看了吗」
+     * 12:50:19  [我]「看了，全身那张。轮廓能看，脸那块糊成一团，等修好再说。」
+     * ```
+     * 而那一轮日志里 `发现 N 张待取图片` / `已附图` **一次都没有** ——
+     * 她手上根本没有图，那段"轮廓能看、脸糊"是**凭空编的**。
+     * 用户看到的就是"她说糊"，去查图才发现她压根没看。
+     *
+     * ## 为什么会有这个洞
+     * 上面那段兜底只管「消息**自带**图但没加载出来」。
+     * 而「图片你看了吗」是**纯文本** —— `hasMedia` 是 false，
+     * 历史图只在**指代命中**时才补（`_pickReferencedImage`）。
+     * 指代没命中 → 一张图都没有 → 提示词里也没人告诉她"你没有图" →
+     * 她按上下文猜"刚才好像发过一张全身图"，于是编。
+     *
+     * 现在：只要她说的话题像是在问图（`REFER_IMAGE_STRONG` 命中）、
+     * 而这一轮**确实没任何图可看**，就在最后一条消息里补一句事实。
+     * 宁可让她说"我这边没收到图"，也不能让她编一段观后感。
+     */
+    const textOnlyAskingImage = !askedWithImage?.images?.length
+      && imageCache.size === 0
+      && REFER_IMAGE_STRONG.test(String(askedWithImage?.text ?? ''))
+    if (textOnlyAskingImage) {
+      const tail = messages[messages.length - 1]
+      if (Array.isArray(tail?.content)) {
+        tail.content.push({
+          type: 'text',
+          text: '（⚠️ 对方在问一张图，但**这一轮你手上没有任何图**——'
+            + '既没有刚发的，也没有能配对上的旧图。'
+            + '**绝不能说"看了/看到了/能看出轮廓/有点糊"这类观后感**（那是编的）。'
+            + '直接说没收到图、让他再发一次，或问清是哪一张。）',
+        })
+        this.log.warn?.('bridge：对方在问图，但这一轮没有任何图可看 → 已明确告知模型别编')
+      }
+    }
+
     // 走网关的路由（免费优先）
     // 用 _candidatesAsync —— 它会先等目录就绪（冷启动那几秒目录是空的）
     const candidates = await this._candidatesAsync()

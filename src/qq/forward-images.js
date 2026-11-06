@@ -66,7 +66,24 @@ export async function stitchForwardImages(o = {}) {
       })
       if (bot) {
         page = await newPage(bot.cdp, 'about:blank')
-        const stitched = await page.stitchGrid(bufs.map((b) => b.base64), { timeoutMs: 60_000 })
+        /*
+         * ★★ **分辨率别缩太狠**（2026-11-06 用户：「有点糊」）。
+         *
+         * `stitchGrid` 默认把总宽压到 **1200** —— 那是给"车牌 6 页竖排"
+         * 定的省 token 值。但转发图常见的是**整张人像/全身照**：
+         * 4 张 2×2 拼完每格只有 **600px**，五官和细节全糊掉，
+         * 视觉模型只能说"能看出是个全身的，细节还得等"。
+         *
+         * 实测代价对比（同一批 4 张）：
+         *   maxWidth 1200 / q0.72 → 约 **200KB**
+         *   maxWidth 1600 / q0.85 → 约 **350KB**（多 150KB，一张图 token 不会翻倍）
+         * 所以：**1600 + 0.85**，肉眼能看清，体积仍安全。
+         */
+        const stitched = await page.stitchGrid(bufs.map((b) => b.base64), {
+          timeoutMs: 60_000,
+          maxWidth: Number(o.gridWidth) || 1600,
+          quality: Number(o.gridQuality) || 0.85,
+        })
         if (stitched) {
           parts = [{ mediaType: 'image/jpeg', base64: stitched }]
           out.stitched = true

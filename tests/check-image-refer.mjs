@@ -42,6 +42,28 @@ ok('强指代：话里带"图"字的都认', () => {
   }
 })
 
+/*
+ * ★ 裸「图片 / 照片 / 截图」+ 问看没看（2026-11-06 线上实测）。
+ *
+ * 现场：「图片你看了吗」→ 原来一条指代都命中不了 → 一张图都没附 →
+ * 她却答「看了，全身那张，脸那块糊成一团」（纯编）。
+ * 现在这类**问图的话**也算强指代，能回溯到上一张。
+ */
+ok('★ 裸「图片/照片」+ 问看没看 → 也要认（线上那句就是漏的）', () => {
+  for (const t of [
+    '图片你看了吗', '照片看了吗', '截图收到没', '我刚发的图片看到了吗',
+    '图看到了吗', '看到图片没',
+  ]) {
+    assert.ok(REFER_IMAGE_STRONG.test(t), `应命中：${t}`)
+  }
+})
+
+ok('⚠️ 但不能把「发个图片」这种操作句也当成指代', () => {
+  for (const t of ['发个图片', '这软件能搜图片', '怎么保存照片', '帮我做个截图']) {
+    assert.ok(!REFER_IMAGE_STRONG.test(t), `不该命中：${t}`)
+  }
+})
+
 ok('强指代：不带"图"的普通话不认', () => {
   for (const t of ['你好', '吃了没', '这个好吃', '刚才下雨了', '上一条消息我看了']) {
     assert.ok(!REFER_IMAGE_STRONG.test(t), `不该命中：${t}`)
@@ -184,6 +206,37 @@ ok('⚠️ 源码锁：判断要**提前**到 system prompt 之前（_collectIma
   const lineOf = (idx) => src.slice(0, idx).split('\n').length
   assert.ok(lineOf(atEarly) < lineOf(atExtras), '提前判断的行号要小于 extras')
   assert.equal(lines.length > 0, true)
+})
+
+// ── ⑥ 看不见图时**不许编**（2026-11-06 线上实测）──────────────
+/*
+ * 现场：
+ * ```
+ * 12:50:13 他「图片你看了吗」
+ * 12:50:19 [我]「看了，全身那张。轮廓能看，脸那块糊成一团，等修好再说。」
+ * ```
+ * 那一轮日志里 `发现 N 张待取图片` / `已附图` **一次都没有** ——
+ * 她手上没图，那段观后感是编的。
+ *
+ * 修法：问图但**这一轮没有任何图可看**时，在最后一条消息里补一句事实，
+ * 明确禁止"看了/能看出轮廓/有点糊"这类话。
+ */
+ok('★ 源码锁：问图但无图时，必须补一句"你手上没有图，别编"', async () => {
+  const fs = await import('node:fs')
+  const src = fs.readFileSync(new URL('../src/qq/bridge.js', import.meta.url), 'utf8')
+  assert.match(src, /textOnlyAskingImage/, '要有这个判据')
+  assert.match(src, /这一轮你手上没有任何图/, '要明确告诉模型没有图')
+  assert.match(src, /绝不能说"看了\/看到了/, '要明确禁止观后感式的编造')
+})
+
+ok('★ 源码锁：判据要同时看「没有自带图」「imageCache 为空」「在问图」', async () => {
+  const fs = await import('node:fs')
+  const src = fs.readFileSync(new URL('../src/qq/bridge.js', import.meta.url), 'utf8')
+  const at = src.indexOf('const textOnlyAskingImage')
+  const block = src.slice(at, at + 400)
+  assert.match(block, /!askedWithImage\?\.images\?\.length/, '没有自带图')
+  assert.match(block, /imageCache\.size === 0/, '图块为空')
+  assert.match(block, /REFER_IMAGE_STRONG\.test/, '在问图')
 })
 
 console.log(`\n通过 ${pass} / 失败 ${fail}`)
