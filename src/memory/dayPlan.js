@@ -24,6 +24,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { outfitForDay, sleepwearForDay, hairForDay } from './wardrobe.js'
+import { outingForDay } from './outing.js'
 
 /** 一天分成四个时段。带分钟会让缓存失效，所以只到时段。 */
 export const SLOTS = [
@@ -147,6 +148,7 @@ export function renderDayPlan(plan, slotId) {
   if (plan.hair) parts.push(`今天的头发：${plan.hair}`)
   if (plan.outfit) parts.push(`今天穿的：${plan.outfit}`)
   if (plan.sleepwear) parts.push(`睡觉穿的：${plan.sleepwear}`)
+  if (plan.outing) parts.push(`今天出门：${plan.outing}`)
   if (plan.mood) parts.push(`心情：${plan.mood}`)
   if (plan.smallThing) parts.push(`今天的小事：${plan.smallThing}`)
   if (parts.length === 0) return ''
@@ -232,6 +234,14 @@ export class DayPlanStore {
     p.outfit = outfitForDay(k)
     p.sleepwear = sleepwearForDay(k)
     p.hair = hairForDay(k)
+    /*
+     * ★ 今天出不出去（2026-11-06 用户：「总不能一直待在家里吧」）：
+     *   按日期算，A 附近为主 / B 市区经常 / C 远门偶尔 / 少数天不出门。
+     */
+    const outing = outingForDay(k)
+    p.outing = outing.text
+    p.outingKind = outing.kind
+    p.outingSlot = outing.slot
     this.data.plans[k] = p
     this.save()
     return plan

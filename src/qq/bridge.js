@@ -92,7 +92,19 @@ export const SILENT = '[SILENT]'
  * 宁可漏（它就老实说"看不清"），也别乱挂一张不相干的图上去。
  */
 export const REFER_IMAGE_STRONG =
-  /(这图|那图|这张图|那张图|这幅图|那幅图|图里|图上|看图|图片里|刚发的图|刚才那[张幅]?图|刚刚那[张幅]?图|上面那[张幅]?图|我发的[那这][张个幅])/
+  /*
+   * ★ 2026-11-06 补：**裸「图片 / 照片 / 截图」也算指代**。
+   *
+   * 线上：「图片你看了吗」→ 没命中任何指代词 → `_pickReferencedImage` 返回 null
+   * → 一张图都没附 → 她却答「看了，全身那张，脸那块糊成一团」。
+   * （日志里 `发现 N 张待取图片` / `已附图` 一次都没有 —— 纯编。）
+   *
+   * 原来只有「图片里」，裸「图片」不在集合里。现在补上，并且带上
+   * 「看了吗 / 看到吗」这类**问图的话**。
+   * ⚠️ 但**别把「图片」单独放进任意位置**：群里「发个图片」是在说操作，
+   *    不是在指某张图。所以带「图片」时要求同时出现**看/图/发**这类词。
+   */
+  /(这图|那图|这张图|那张图|这幅图|那幅图|图里|图上|看图|图片里|刚发的图|刚才那[张幅]?图|刚刚那[张幅]?图|上面那[张幅]?图|我发的[那这][张个幅]|(?:图片|照片|截图|图)[^。！？\n]{0,6}(?:看了|看到|看见|看了吗|看到没|收到没)|(?:看了|看到|看见)(?:吗|没)?[^。！？\n]{0,4}(?:图片|照片|那张|这图))/
 
 /**
  * 「对方在指代一张图」的**弱形式** —— 只认消息**开头**的指代词。
@@ -4203,12 +4215,24 @@ export class QQBridge {
            * ★ 按时段取衣服（2026-11-06 用户：「现在服装就用的是一天固定一套」）：
            *   起床/深夜穿睡衣，白天穿家居服。两者都来自衣柜白名单（memory/wardrobe.js）。
            */
+          /*
+           * ★ 外出那一档换成**外出服**（2026-11-06）：
+           *   今天有外出、且当前时段就是外出那一档 → 穿外出的那套（牛仔裤+鞋）。
+           */
+          const outingNow = (() => {
+            try {
+              const plan = this.dayPlan?.today?.()
+              if (!plan?.outing) return false
+              return String(plan.outingSlot ?? '') === currentSlot().id
+            } catch { return false }
+          })()
           const outfitText = (() => {
             try {
               const today = this.dayPlan?.today?.()
               const h = new Date().getHours()
               const justWoke = currentSlot().id === 'morning' && h < 9
               const lateNight = h >= 23 || h < 5
+              if (outingNow) return String(outingOutfitForDay(dayKey()) ?? '')
               const v = (justWoke || lateNight) ? today?.sleepwear : today?.outfit
               return v ? String(v).replace(/\s+/g, ' ').slice(0, 120) : ''
             } catch { return '' }

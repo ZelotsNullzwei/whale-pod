@@ -48,6 +48,21 @@ export const HOME_OUTFITS = [
 ]
 
 /**
+ * 外出服（出门穿）。
+ *
+ * ⚠️ 和家居服的区别：**外面能穿的**（牛仔裤、外套、帆布鞋、包）。
+ *   家里那套不行 —— 出门不会穿拖鞋。
+ */
+export const OUTING_OUTFITS = [
+  '白色蕾丝发带，浅灰短袖针织衫，**深蓝直筒牛仔裤**，白棉袜，**白色帆布鞋**',
+  '蓝色小发夹，米白开衫（内搭白T），**浅蓝牛仔裤**，白棉袜，**白色帆布鞋**',
+  '蓝色发圈（低马尾），雾霾蓝长袖针织衫，**深灰阔腿裤**，白棉袜，**黑色小皮鞋**',
+  '白色蕾丝发带，浅灰连帽卫衣，**深蓝牛仔裤**，白棉袜，**白色运动鞋**',
+  '蓝色小发夹，**米色针织开衫外套** + 白T，深色直筒裤，白棉袜，**棕色素面单鞋**',
+  '蓝色发圈（高马尾），浅蓝衬衫（扎进裤子），**米白休闲长裤**，白棉袜，**白色帆布鞋**',
+  '白色蕾丝发带，**卡其色薄风衣** + 浅灰内搭，深蓝牛仔裤，白棉袜，**棕色短靴**',
+]
+/**
  * 睡衣（睡觉 / 刚起床穿）。
  *
  * ⚠️ **她一个人在家，怎么舒服怎么穿**（2026-11-06 用户口径：
@@ -108,6 +123,14 @@ export function outfitForDay(dayKey) {
   return HOME_OUTFITS[pickIndex(dayKey, HOME_OUTFITS.length, 0)] ?? HOME_OUTFITS[0]
 }
 
+/**
+ * 取某天的外出服。
+ * @param {string} dayKey
+ * @returns {string}
+ */
+export function outingOutfitForDay(dayKey) {
+  return OUTING_OUTFITS[pickIndex(dayKey, OUTING_OUTFITS.length, 3)] ?? OUTING_OUTFITS[0]
+}
 /**
  * 取某天的睡衣。
  * @param {string} dayKey
