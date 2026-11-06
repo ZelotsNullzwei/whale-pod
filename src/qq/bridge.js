@@ -1432,8 +1432,33 @@ export class QQBridge {
    * @param {string} [opts.home] 数据目录（写 proactive.json）
    * @param {(scope:string) => string|null} [opts.memoryOf] 取某会话的 MemoryStore
    */
+  /**
+   * 定时摘要：安静时段也把新消息归档（2026-11-06 用户：「按照时间来呢」）。
+   * 每 60 秒看一眼，到点且有新消息才摘，没新消息不花钱。
+   */
+  _summaryClock() {
+    try {
+      const minutes = Number(this.cfg?.memory?.long?.everyMinutes ?? 0)
+      if (!minutes) return
+      for (const scope of (this.memory?.scopes?.() ?? [])) {
+        const mem = this.memory.get?.(scope)
+        if (!mem) continue
+        const total = Number(mem.totalPushed ?? 0)
+        if (!total) continue
+        const long = this.longMemory?.get?.(scope)
+        if (Date.now() - Number(long?.updatedAt ?? 0) < minutes * 60_000) continue
+        if (total <= Number(long?.summarizedTotal ?? 0)) continue
+        this._maybeSummarize(scope, mem, '', { force: true })
+      }
+    } catch { /* 定时器不能把进程搞挂 */ }
+  }
+
   startProactive(opts = {}) {
     if (this._proactive) return this._proactive
+    if (!this._summaryTimer) {
+      this._summaryTimer = setInterval(() => this._summaryClock(), 60_000)
+      this._summaryTimer.unref?.()
+    }
 
     const file = opts.home ? `${opts.home}/proactive.json` : null
     const state = new ProactiveState({ file, fs: opts.fs ?? null })
@@ -10507,7 +10532,7 @@ export class QQBridge {
     if (this.recent.length > 50) this.recent.length = 50
   }
 
-  _maybeSummarize(scope, mem, scene) {
+  _maybeSummarize(scope, mem, scene, opts = {}) {
     /*
      * ★ 事件记忆的收尾（2026-11-04）：**一进一出都在这里**。
      *
@@ -10531,6 +10556,9 @@ export class QQBridge {
        * 这正是「记忆没生效」的根因。
        */
       total: mem.totalPushed,
+      /* ★ 时间触发（2026-11-06）：到了 memory.long.everyMinutes 分钟也摘一次 */
+      everyMinutes: Number(this.cfg?.memory?.long?.everyMinutes ?? 0),
+      force: opts.force === true,
       /*
        * 会话创建时间 —— 让 `long.js` 分辨「计数回退」的两种成因
        * （2026-10-29）：

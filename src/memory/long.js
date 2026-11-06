@@ -743,7 +743,19 @@ export class LongTermStore {
     }
 
     const unsummarized = total - (mem.summarizedTotal ?? 0)
-    if (unsummarized < this.summarizeAfter) return false
+    /*
+     * ★★ **时间也能触发摘要**（2026-11-06 用户：「按照时间来呢」）。
+     *
+     * 原来只按条数：满 summarizeAfter（20 条）才摘。安静的时候一小时也凑不满，
+     * 「刚说的重要的事」就得等很久才进记忆。
+     * 现在：距上次摘要超过 memory.long.everyMinutes 分钟、且确实有新消息 → 也摘。
+     * everyMinutes = 0 关闭（回到纯条数）。
+     */
+    const everyMinutes = Number(ctx.everyMinutes ?? 0)
+    const timedOut = everyMinutes > 0
+      && unsummarized > 0
+      && Date.now() - Number(mem.updatedAt ?? 0) >= everyMinutes * 60_000
+    if (ctx.force !== true && !timedOut && unsummarized < this.summarizeAfter) return false
 
     // 没有消息可摘要就别白跑一次 LLM
     if (msgs.length === 0) return false
