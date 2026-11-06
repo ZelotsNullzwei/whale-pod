@@ -33,6 +33,27 @@ export const BASE_RULES = [
   '**全身不超过三色**（含鞋包），主色占大面积，其余做点缀',
 ]
 
+/** 裙子/连衣裙专用规则（只在穿了裙子时给）。 */
+export const SKIRT_RULES = [
+  '**裙长选小腿中部**（过膝、不到脚踝）：这是最百搭的长度；太短显腿粗，太长压个子',
+  '**裙子一定要收腰**：上装塞进裙腰，或配短上衣；腰头该露出来，不要被上衣整个盖住',
+  '**下装是 A 字/伞裙/百褶 → 上装要修身或短**（上紧下松）；',
+    + '**下装是直筒/包臀/开叉 → 上装可以宽松**（上宽下窄）',
+  '**长裙配浅口鞋或短靴**（露一点脚踝）；中长裙**别配高帮鞋/大底鞋**，会把腿压短',
+  '**百褶长裙容易显胯宽**：个子不高就选短一档，或者选细褶、垂坠感强的',
+]
+
+/**
+ * 这套衣服里有没有裙子（半裙/连衣裙）。
+ * @param {string} outfit
+ * @returns {boolean}
+ */
+export function hasSkirt(outfit) {
+  const o = String(outfit ?? '')
+  // 只要带"裙"就算（半长裙/短裙/连衣裙…），排除睡裙和围裙
+  return /裙/.test(o) && !/(睡裙|围裙)/.test(o)
+}
+
 /**
  * 从衣服描述里推断版型，只在**容易出错的组合**上追加提示。
  * @param {string} outfit
@@ -73,6 +94,11 @@ export function pairingBlock(outfit) {
   const hints = pairingHints(outfit)
   const lines = ['**搭配要成立**（她是认真穿好才拍的，不是随手套上）：']
   for (const r of BASE_RULES) lines.push(`- ${r}`)
+  // 穿了裙子才给裙子那几条（裤子就不塞了，省地方）
+  if (hasSkirt(outfit)) {
+    lines.push('**这条是裙子，额外注意**：')
+    for (const r of SKIRT_RULES) lines.push(`- ${r}`)
+  }
   for (const h of hints) lines.push(`- ⚠️ ${h}`)
   return lines.join('\n')
 }
