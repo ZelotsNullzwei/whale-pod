@@ -5138,6 +5138,42 @@ export class QQBridge {
       }
       // ★ 同一个括号起手式别复读（2026-11-05）：实测群里连着 3 条都是「（撇嘴）」
       text = this._stripRepeatedOpener(text, mem)
+      /*
+       * ★★ **图发出去了，就别再补一句话**（2026-11-06 用户：
+       *    「图发出来之后是完全没必要了吧」）。
+       *
+       * 现场：
+       * ```
+       * 16:52:11 她「行，全身。」
+       * 16:52:13 她 [图]
+       * 16:52:17 她「（拍了拍裙摆，站到镜子前）行，全身给你看，别眨眼。」
+       * ```
+       * 图本身已经回答了"给你看"，后面这句纯属多余，还占一屏。
+       *
+       * 规则：**这条要发图 → 正文丢弃**（前提：这句话没有带需要他知道的信息）。
+       * 不丢的情况：
+       *   · 有动作结果要说明（禁言/改名/签名/发群/换装 —— `notes` 非空）
+       *   · 正文里有链接 or 超过一句的实质内容（>= 30 字，说明不只是"给你看"）
+       * 可配 `qq.actions.imageNoText`（默认 true，设 false 回到"图 + 文"）。
+       */
+      if (
+        coverForSend?.url
+        && this.cfg.actions?.imageNoText !== false
+        && !(banNote || nickNote || tagNote || qqNotes.length > 0)
+      ) {
+        const t = String(text ?? '').trim()
+        const substantive = t.replace(/^[（(][^）)]*[）)]/, '').trim()
+        /*
+         * ⚠️ `substantive.length === 0` 也要丢（2026-11-06）。
+         *    「（抬眼看你）」剥掉括号动作后是空串 —— 本来就只是旁白，
+         *    配上一张图已经是完整的表达了，再补什么都没有。
+         */
+        const tooShort = substantive.length < 30
+        if (tooShort && !/https?:\/\//.test(substantive)) {
+          this.log.info?.(`bridge：图已经说明白了，丢弃附带的正文「${t.slice(0, 24)}」`)
+          text = ''
+        }
+      }
       // ★ 节奏控制：生成已经花了多少，就只补剩下的（见 `_waitForPace`）
       await this._waitForPace(tStart, d)
       const sentIds = await this._send(msg, text, coverForSend)
