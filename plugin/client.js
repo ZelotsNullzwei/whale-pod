@@ -2111,7 +2111,39 @@ window.__ModuleLoader__.load({
           }, s.model ? String(s.model).split('/').pop() : ''))
         : null
 
-      return h('div', null, chatRow, drawRow)
+
+      /*
+       * ── 第三 / 四排：归档与发群（2026-11-06）──────────────
+       * 都是热生效的：改完 = 立刻写 config + 推给运行中的 bridge，不用重启。
+       */
+      const idle = Number(d.settings.idleMinutes ?? 10)
+      const idleRow = h('div', { className: 'gd_modelrow', style: { marginTop: '6px' } },
+        h('span', { className: 'gd_modelrowlabel' }, '安静归档'),
+        h('select', {
+          value: String(idle),
+          onChange: (e) => post({ idleMinutes: Number(e.target.value) }, () => data.reload()),
+          style: {
+            fontSize: '12px', padding: '2px 4px', background: 'transparent', color: 'inherit',
+            border: '1px solid rgba(120,120,120,.35)', borderRadius: '6px',
+          },
+        }, [0, 5, 10, 15, 30].map((v) => h('option', { key: v, value: String(v) }, v ? `${v} 分钟` : '关'))),
+        h('span', { className: 'gd_note', style: { marginLeft: '6px' } }, idle ? '没人说话就归档' : '不自动归档'))
+
+      const ask = d.settings.crossGroupConfirm !== false
+      const askRow = h('div', { className: 'gd_modelrow', style: { marginTop: '6px' } },
+        h('span', { className: 'gd_modelrowlabel' }, '发群先问'),
+        h('button', {
+          onClick: () => post({ crossGroupConfirm: !ask }, () => data.reload()),
+          disabled: busy,
+          style: {
+            padding: '2px 12px', fontSize: '12px', borderRadius: '999px',
+            border: '1px solid ' + (ask ? 'rgba(59,130,246,.9)' : 'rgba(120,120,120,.35)'),
+            background: ask ? 'rgba(59,130,246,.18)' : 'transparent',
+            color: 'inherit', cursor: busy ? 'default' : 'pointer',
+          },
+        }, ask ? '开' : '关'),
+        h('span', { className: 'gd_note', style: { marginLeft: '6px' } }, ask ? '发群前会问你' : '直接发'))
+      return h('div', null, chatRow, drawRow, idleRow, askRow)
     }
 
     function ChatModelSelect({ t }) {

@@ -721,6 +721,9 @@ export function createWebServer(opts) {
             freeOrder: configured,
             disabledProviders: disabled,
             qqModel: cfg.qq?.model ?? 'auto',
+            /* 2026-11-06：侧栏要能直接调这两项（热生效） */
+            idleMinutes: Number(cfg.memory?.long?.idleMinutes ?? 10),
+            crossGroupConfirm: cfg.qq?.actions?.crossGroupConfirm !== false,
             maxTokens: cfg.qq?.maxTokens ?? 1024,
             /** 生图风格：'photo'（写实照片）/ 'anime'（日系插画）。两档完全分开。 */
             drawStyle: cfg.qq?.actions?.drawStyle === 'anime' ? 'anime' : 'photo',
@@ -791,6 +794,16 @@ export function createWebServer(opts) {
         const body = await readJson(req)
         const patch = {}
         if (typeof body.strategy === 'string') patch.gateway = { ...(patch.gateway ?? {}), strategy: body.strategy }
+        /* 安静归档分钟数（0 = 关） */
+        if (Number.isFinite(body.idleMinutes)) {
+          const v = Math.round(Number(body.idleMinutes))
+          patch.memory = { ...(patch.memory ?? {}), long: { ...(patch.memory?.long ?? {}), idleMinutes: Math.max(0, Math.min(120, v)) } }
+        }
+        /* 发群前先问他 */
+        if (typeof body.crossGroupConfirm === 'boolean') {
+          const curA = store.get().qq?.actions ?? {}
+          patch.qq = { ...(patch.qq ?? {}), actions: { ...curA, crossGroupConfirm: body.crossGroupConfirm } }
+        }
         if (Array.isArray(body.freeOrder)) patch.gateway = { ...(patch.gateway ?? {}), freeProviders: body.freeOrder.map(String) }
         // 渠道开关：整批覆盖（前端每次提交完整列表，语义更清晰）
         if (Array.isArray(body.disabledProviders)) {
