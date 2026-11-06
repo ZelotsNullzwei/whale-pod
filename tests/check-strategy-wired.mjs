@@ -127,7 +127,11 @@ ok('★★ strategy 必须从配置传到 bridge（原来根本没传）', () =>
   const src = read('src/index.js')
   const at = src.indexOf('new QQBridge(')
   assert.ok(at > 0)
-  const seg = src.slice(at, at + 2500)
+  /*
+   * 2026-11-06：cfg 字面量抽成了 `bridgeCfgOf()`（为了热更新），
+   * 它在 `new QQBridge(` **之前**。所以往前多看一段，别只盯构造点后面。
+   */
+  const seg = src.slice(Math.max(0, at - 2400), at + 2500)
   assert.match(seg, /strategy: cfg\.gateway\?\.strategy/, 'bridge 的 cfg 里要有 strategy')
 })
 
