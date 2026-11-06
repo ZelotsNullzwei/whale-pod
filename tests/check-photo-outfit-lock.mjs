@@ -46,7 +46,20 @@ const prompt = composePhotoPrompt({
   plan, framing, scene: '对镜自拍，站在镜子前', outfit: OUTFIT, hasRef: true,
 })
 
-console.log('=== 1. 胸型对称 ===')
+console.log('=== 1. 胸围大小：跨图一致 ===')
+ok('★ 有"所有照片里大小必须完全一致"（用户 20:38：两张图胸不一样大）', () => {
+  assert.match(prompt, /所有照片里这个大小必须完全一致/)
+})
+ok('★ 明确"不许因为衣服松紧/姿势/镜头远近变大变小"', () => {
+  assert.match(prompt, /不许.*因为衣服松紧/)
+})
+ok('★ 只留一个锚点：平缓的 B（旧的"有明显起伏 + 不要画成平的"这对矛盾说法已删）', () => {
+  assert.match(prompt, /平缓的弧线/)
+  assert.ok(!/不要画成平的（贫乳是错的）/.test(prompt), '旧的"往上推"措辞要删掉，否则和"偏小平缓"打架')
+  assert.ok(!/有明显起伏/.test(prompt), '"有明显起伏"是把胸往大画的推手')
+})
+
+console.log('\n=== 1b. 左右对称（另一类问题，别回退）===')
 ok('★ 有"左右必须对称"', () => {
   assert.match(prompt, /左右必须对称/, '身形段要写对称')
 })
