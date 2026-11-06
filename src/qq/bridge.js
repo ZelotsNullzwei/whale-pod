@@ -4365,44 +4365,18 @@ export class QQBridge {
            *   用户连发「？」时，她每轮都重画一张（22~28 秒、每次花钱）。
            *   已经画过就跳过，直接把标记剥掉。
            */
-          if (!this._drawRecent) this._drawRecent = new Map()
           /*
-           * ★ 按**描述**去重（2026-11-06 改）：原来按会话算 10 分钟，
-           *   导致"真的要一张新图"也被挡掉 —— 她嘴上说"拍了"，实际没图。
-           *   现在：同一段描述 10 分钟内不重画；描述不同就照画。
+           * ★★ **配额统一走 _drawQuotaCheck / _drawQuotaCommit**（2026-11-06）。
+           *   原来这段是内联的，附加图那边另写了一套近似但**不生效**的逻辑 ——
+           *   结果主图受限、附加图不受限，一轮能发 1+3 张。
+           *   现在主图和附加图调同一对方法，天然一致。
            */
-          const descKey = String(msg.scope ?? '') + '|'
-            + String(hit[1] ?? '').replace(/\s+/g, '').slice(0, 40)
-          const lastDraw = this._drawRecent.get(descKey) ?? 0
-          /* 去重窗口可配：qq.actions.drawDupMs（0 = 不去重，测试用） */
-          const drawDupMs = Number(this.cfg.actions?.drawDupMs ?? 600_000)
-          /*
-           * ★★ **同一会话的画图频率上限**（2026-11-06 用户：「我叫她换他会一直发图」）。
-           *
-           * 原来的去重是**按描述**算的：描述不一样就照画。于是他一说"换那套"，
-           * 她每轮都换个说法画一张 —— 20 多秒、每次都花钱，还刷屏。
-           *
-           * 现在再加一道**按会话的次数闸**：默认 5 分钟内最多 2 张。
-           * 超了就跳过（标记照样剥掉，正文照发），日志写明原因。
-           * 可配：qq.actions.drawWindowMs / drawMaxPerWindow（0 = 不限）。
-           */
-          const drawWinMs = Number(this.cfg.actions?.drawWindowMs ?? 5 * 60_000)
-          const drawMax = Number(this.cfg.actions?.drawMaxPerWindow ?? 2)
-          if (!this._drawTimes) this._drawTimes = new Map()
-          const scopeKey = String(msg.scope ?? '')
-          const times = (this._drawTimes.get(scopeKey) ?? []).filter((t) => Date.now() - t < drawWinMs)
-          if (drawMax > 0 && times.length >= drawMax) {
-            this.log.info?.(
-              `bridge：画图跳过 —— 这个会话 ${Math.round(drawWinMs / 60000)} 分钟内已画 ${times.length} 张`
-              + `（上限 ${drawMax}，qq.actions.drawMaxPerWindow 可调）`,
-            )
-          } else if (drawDupMs > 0 && Date.now() - lastDraw < drawDupMs) {
-            this.log.info?.('bridge：画图跳过 —— 这段描述 10 分钟内画过（换说法才会重画）')
+          const quota = this._drawQuotaCheck(String(msg.scope ?? ''), String(hit[1] ?? ''))
+          if (!quota.ok) {
+            this.log.info?.(`bridge：画图跳过 —— ${quota.reason}`)
+            drawSkipReason = quota.reason
           } else {
-          this._drawRecent.set(descKey, Date.now())
-          // 记进"这一会话最近画过的时间"，给上面的次数闸用
-          times.push(Date.now())
-          this._drawTimes.set(scopeKey, times)
+          this._drawQuotaCommit(String(msg.scope ?? ''), String(hit[1] ?? ''))
           // 只留最近 40 条，避免 Map 无限长
           if (this._drawRecent.size > 40) {
             const oldest = this._drawRecent.keys().next().value
@@ -5086,15 +5060,26 @@ export class QQBridge {
                 crossGroupSkipped = 'dup'
               } else {
               await this._send(msg, String(hit[1]).trim(), cover, target)
-              try {
-                if (!this._crossGroupAt) this._crossGroupAt = new Map()
-                this._crossGroupAt.set(crossKey, Date.now())
-              } catch {}
               /*
-               * ⚠️ 这句会被拼成「正文（发群里了）」——**别嵌套括号**（2026-11-06）。
-               *    原来写「发群里了（带图）」，拼出来是「（发群里了（带图））」。
+               * ★★ 发群结果按**真实发送情况**记（2026-11-06 规格第 7 条）。
+               *   图段失败时 _send 会跳过它继续发正文 —— 只看 cover 有没有
+               *   会谎称"图发群里了"，其实群里只有一句话。
                */
-              crossGroupNote = cover ? '图发群里了' : '发群里了'
+              const sent = msg.__lastSend ?? {}
+              if (cover?.url && sent.imageSent) {
+                crossGroupNote = '图发群里了'
+              } else if (cover?.url && sent.textSent) {
+                // 图没发出去、只有话到了群里 —— 必须说清楚，不能含糊
+                crossGroupNote = '话发群里了（图没发出去）'
+                this.log.warn?.('bridge：发群只有文字到达，图片段发送失败')
+              } else if (!cover?.url && sent.textSent) {
+                crossGroupNote = '发群里了'
+              } else {
+                // 什么都没发出去：不记 note，skipped 让谎报闸拦住"我发了"
+                crossGroupNote = ''
+                crossGroupSkipped = 'send-fail'
+                this.log.warn?.('bridge：发群实际没有任何内容到达')
+              }
               this.log.info?.(`bridge：发群「${String(hit[1]).slice(0, 40)}」${cover ? '（带图）' : ''}→ ${target.groupId}`)
               }
             } catch (e) {
@@ -5283,12 +5268,25 @@ export class QQBridge {
       await this._waitForPace(tStart, d)
       const sentIds = await this._send(msg, text, coverForSend)
       /*
+       * ★ 主图**真的发出去了**吗（2026-11-06）。
+       *   读 _send 挂在 msg 上的结构化结果 —— 图段失败会被跳过、正文照发，
+       *   sentIds 非空证明不了图发成功。
+       */
+      if (coverForSend?.url && msg.__lastSend?.imageSent) drawSent = true
+      /*
        * ★ 剩下的几张：**顺序**画、画一张发一张（2026-11-06）。
        *   最多补 3 张；某张失败就跳过，不影响其它，也绝不影响刚才那条正文。
        */
       try {
+        /*
+         * ★★ 附加图和主图**同一套配额**（2026-11-06 规格第 5 条）。
+         *   原来这里只 slice(0,3) 直接画，完全不查 _drawRecent/_drawTimes ——
+         *   主图限 5 分钟 2 张，附加图却想画几张画几张。
+         *   现在每张先 _drawQuotaCheck，通过了才画、才 commit。
+         */
         const extras = Array.isArray(msg.__extraMarks) ? msg.__extraMarks.slice(0, 3) : []
         for (const [i, mark] of extras.entries()) {
+          const no = i + 2   // 第几张（主图算第 1 张）
           try {
             /* 要脸时同样把"背影"洗掉（跟主图一致） */
             let desc = String(mark.desc ?? '')
@@ -5297,6 +5295,12 @@ export class QQBridge {
                 .replace(/背对(镜头|镜子|着他)?/g, '面对镜头')
                 .replace(/背影|后脑|侧后方|侧后|不露脸|脸不在(这张里|画面里)?|别拍脸/g, '')
                 .replace(/[，,、]{2,}/g, '，').replace(/^[，,、\s]+|[，,、\s]+$/g, '').trim()
+            }
+            /* ① 配额：和主图同一对方法，每张单独查 */
+            const q = this._drawQuotaCheck(String(msg.scope ?? ''), desc)
+            if (!q.ok) {
+              this.log.info?.(`bridge：第 ${no} 张跳过 —— ${q.reason}`)
+              continue
             }
             const s2 = planShot({
               scene: desc,
@@ -5309,8 +5313,10 @@ export class QQBridge {
               anime: Boolean(mark.anime),
               imageCfg: (this.cfg?.image ?? {}),
             })
-            if (!s2 || s2.skip) { this.log.info?.(`bridge：第 ${i + 2} 张跳过（${s2?.skipReason ?? '—'}）`); continue }
-            this.log.info?.(`bridge：第 ${i + 2} 张 → ${describeShot(s2)}`)
+            if (!s2 || s2.skip) { this.log.info?.(`bridge：第 ${no} 张跳过（${s2?.skipReason ?? '—'}）`); continue }
+            /* ② 占用配额：真的开画了才记（生成失败也算花了钱） */
+            this._drawQuotaCommit(String(msg.scope ?? ''), desc)
+            this.log.info?.(`bridge：第 ${no} 张 → ${describeShot(s2)}`)
             const cfg2 = this.cfg?.image ?? {}
             const r2 = await generateImage({
               prompt: s2.prompt,
@@ -5325,23 +5331,35 @@ export class QQBridge {
               resolution: cfg2.resolution ?? '2K',
               log: this.log,
             })
-            if (!r2?.ok) { this.log.warn?.(`bridge：第 ${i + 2} 张生成失败 — ${r2?.error ?? '—'}`); continue }
+            if (!r2?.ok) { this.log.warn?.(`bridge：第 ${no} 张生成失败 — ${r2?.error ?? '—'}`); continue }
             let buf2 = null
             try {
               const resp2 = await fetch(r2.url, { signal: AbortSignal.timeout(25000) })
               if (resp2.ok) buf2 = Buffer.from(await resp2.arrayBuffer())
-            } catch (e) { this.log.warn?.(`bridge：第 ${i + 2} 张下载失败 — ${String(e?.message ?? e)}`) }
-            if (!buf2 || buf2.length < 1024) continue
+            } catch (e) { this.log.warn?.(`bridge：第 ${no} 张下载失败 — ${String(e?.message ?? e)}`) }
+            if (!buf2 || buf2.length < 1024) {
+              this.log.warn?.(`bridge：第 ${no} 张下载结果不可用（太小/为空），不发`) 
+              continue
+            }
             if (s2.framingInfo?.feet) {
               buf2 = await cropBottom(buf2, 0.06, this.log)
               buf2 = await eraseCornerWatermark(buf2, this.log)
             } else {
               buf2 = await cropBottom(buf2, Number(cfg2.cropBottom ?? 0.1), this.log)
             }
+            /* ③ 真实发送结果（2026-11-06 规格第 6 条）：
+             *   原来 await _send 之后不看结果就写"已发" —— 纯图发送曾被
+             *   空正文守卫整个拦掉，日志却报已发。现在读 __lastSend。
+             */
             await this._send(msg, '', `base64://${buf2.toString('base64')}`)
-            this.log.info?.(`bridge：第 ${i + 2} 张已发（${Math.round(buf2.length / 1024)}KB）`)
+            if (msg.__lastSend?.imageSent) {
+              drawSent = true
+              this.log.info?.(`bridge：第 ${no} 张已发（${Math.round(buf2.length / 1024)}KB）`)
+            } else {
+              this.log.warn?.(`bridge：第 ${no} 张发送失败（不记已发）`)
+            }
           } catch (e) {
-            this.log.warn?.(`bridge：补第 ${i + 2} 张失败 — ${String(e?.message ?? e).slice(0, 80)}`)
+            this.log.warn?.(`bridge：补第 ${no} 张失败 — ${String(e?.message ?? e).slice(0, 80)}`)
           }
         }
       } catch { /* 补图失败不影响已经发出去的内容 */ }
@@ -8659,6 +8677,60 @@ export class QQBridge {
     const m3 = /(?:发到|发去|发在)\s*(\d{5,12})\s*(?:群)?/.exec(s)
     if (m3) return String(m3[1])
     return ''
+  }
+
+  /**
+   * ★★ 画图配额检查（2026-11-06）：主图和附加图**共用这一对方法**。
+   *
+   * 原来主图内联一套判断、附加图那边几乎不判断 —— 结果一轮能发 1+3 张。
+   * 现在：
+   *   · 同描述去重（drawDupMs，默认 10 分钟）
+   *   · 同会话次数上限（drawWindowMs / drawMaxPerWindow，默认 5 分钟 2 张）
+   *   · 0 = 不限（跟其他开关的约定一致）
+   */
+  _drawQuotaCheck(scope, desc) {
+    const gapKey = String(scope ?? '?')
+    if (!this._drawRecent) this._drawRecent = new Map()
+    if (!this._drawTimes) this._drawTimes = new Map()
+
+    const drawDupMs = Number(this.cfg.actions?.drawDupMs ?? 600_000)
+    const descKey = gapKey + '|' + String(desc ?? '').replace(/\s+/g, '').slice(0, 40)
+    if (drawDupMs > 0) {
+      const lastDraw = this._drawRecent.get(descKey) ?? 0
+      if (Date.now() - lastDraw < drawDupMs) {
+        const mins = Math.round(drawDupMs / 60000)
+        return { ok: false, reason: `这段描述 ${mins} 分钟内画过（换说法才会重画）` }
+      }
+    }
+
+    const drawWinMs = Number(this.cfg.actions?.drawWindowMs ?? 5 * 60_000)
+    const drawMax = Number(this.cfg.actions?.drawMaxPerWindow ?? 2)
+    if (drawMax > 0 && drawWinMs > 0) {
+      const times = (this._drawTimes.get(gapKey) ?? []).filter((t) => Date.now() - t < drawWinMs)
+      if (times.length >= drawMax) {
+        return { ok: false, reason: `这个会话 ${Math.round(drawWinMs / 60000)} 分钟内已画 ${times.length} 张（上限 ${drawMax}）` }
+      }
+    }
+    return { ok: true, reason: '' }
+  }
+
+  /**
+   * ★ 配额占用：**真的开画了**才调用（生成失败也算占用 —— 已经花了钱）。
+   */
+  _drawQuotaCommit(scope, desc) {
+    const gapKey = String(scope ?? '?')
+    if (!this._drawRecent) this._drawRecent = new Map()
+    if (!this._drawTimes) this._drawTimes = new Map()
+    const descKey = gapKey + '|' + String(desc ?? '').replace(/\s+/g, '').slice(0, 40)
+    this._drawRecent.set(descKey, Date.now())
+    const drawWinMs = Number(this.cfg.actions?.drawWindowMs ?? 5 * 60_000)
+    const times = (this._drawTimes.get(gapKey) ?? []).filter((t) => Date.now() - t < drawWinMs)
+    times.push(Date.now())
+    this._drawTimes.set(gapKey, times)
+    if (this._drawRecent.size > 200) {
+      const oldest = this._drawRecent.keys().next().value
+      this._drawRecent.delete(oldest)
+    }
   }
 
   _activeGroupTarget(hint = '') {
