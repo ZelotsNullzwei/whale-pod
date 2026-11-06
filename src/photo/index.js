@@ -194,7 +194,8 @@ function pickRefImage(plan, framing, cfg = {}, anime = false) {
   /*
    * ★ 露脸就优先用**头像那张**（2026-11-05）：
    *   三视图里的脸太小，模型参考不到就自己编一张脸（用户：「主要是脸不对」）。
-   *   身材靠提示词里的尺寸段压，不靠三视图。
+   *   ⚠️ 但「身材靠文字压」这条**已被证伪**（2026-11-06）：三围每张都不一样。
+   *      现在**身体入画就优先三视图**，见下面的 body 分支。
    */
   const faceVisible = plan.mode === 'front_selfie' || plan.mode === 'mirror_selfie' || plan.mode === 'video_call'
   /*
@@ -206,8 +207,19 @@ function pickRefImage(plan, framing, cfg = {}, anime = false) {
     if (framing.framing === '面部特写' || framing.framing === '头肩') return face3 || body
     return body
   }
+  /*
+   * ★★ **身体入画就必须喂身体参考图**（2026-11-06 用户：「三围不固定」）。
+   *
+   * 原来露脸的一律回头像，注释写着"身材靠提示词里的尺寸段压，不靠三视图"。
+   * 实测结果就是**每张图三围都不一样**：全身照只有一张头像当参考，
+   * 82/58/85 那三个数字每次都被模型重新发明一遍。
+   * 三视图里脸也在，用它一次把「脸 + 头身比 + 三围」带过去。
+   * 只有脸/头肩特写才回头像（那种构图身体本来就不入画）。
+   */
+  if (framing.feet || framing.framing === '三分之二身' || framing.framing === '半身') {
+    if (body) return body
+  }
   if (faceVisible && (face3 || head)) {
-    // 全身照也先给头像（脸最重要）；确实要全身时三视图只能当补充，这里不选
     return face3 || head
   }
   if (framing.feet) return body || head || face3
