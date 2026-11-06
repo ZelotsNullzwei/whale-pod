@@ -1059,48 +1059,46 @@ export async function main(argv = process.argv.slice(2)) {
       return null
     }
   }
+  /*
+   * ★ **桥接配置的唯一来源**（2026-11-06）。
+   *
+   * 原来这段是**内联字面量**：启动时 `...cfg.qq` 展开一次就完事，之后
+   * 面板改模型/别名/路由策略都只写进 config.json，进程里那份引用永远不变 ——
+   * 这就是「换了模型还得重启」的根因（`store.update()` 是**替换** this.value，
+   * 不是原地改，所以启动时抓到的引用会失效）。
+   *
+   * 现在抽成函数：构造和热更新共用同一份映射，避免两边各写一份、慢慢漂移。
+   */
+  const bridgeCfgOf = (cfg) => ({
+    ...cfg.qq,
+    /*
+     * 主动行为的两块配置在**顶层**（不在 qq 里）——
+     * 这里必须显式带上，否则 bridge.cfg.proactive 是 undefined，
+     * 调度器 planSpeak 第一行就返回「发言未开启」，一次都不触发。
+     */
+    proactive: cfg.proactive,
+    beg: cfg.beg,
+    fallback: cfg.gateway?.fallback,
+    /*
+     * ★ 路由策略：由 `deriveRouting()` 翻译成两个真开关
+     * （fallback 开不开、哪些渠道排除）。
+     */
+    strategy: cfg.gateway?.strategy,
+    /*
+     * ★ 数据目录：bridge 要落盘禁漫可用域名的缓存（`jm-host.json`）。
+     */
+    home: args.home,
+    // 车牌内页那套（`enabled / maxShots / followUpMaxAgeMs`）显式带上
+    jmRead: cfg.jmRead,
+    // 免费渠道优先级与开关：bridge 的 auto 模式靠它们决定"先试哪个"
+    freeOrder: cfg.gateway?.freeProviders ?? [],
+    disabledProviders: cfg.gateway?.disabledProviders ?? [],
+    // 别名（鱼/鲸鱼/白饭…）：群里叫它这些词也算在叫它
+    decisionAliases: cfg.decision?.aliases,
+  })
+
   const bridge = new QQBridge({
-        cfg: {
-          ...cfg.qq,
-          /*
-           * 主动行为的两块配置在**顶层**（不在 qq 里）——
-           * 这里必须显式带上，否则 bridge.cfg.proactive 是 undefined，
-           * 调度器 planSpeak 第一行就返回「发言未开启」，一次都不触发。
-           */
-          proactive: cfg.proactive,
-          beg: cfg.beg,
-          fallback: cfg.gateway?.fallback,
-          /*
-           * ★ **路由策略**（2026-11-02 补）。
-           *
-           * 这个值以前**从来没传到这里** —— 面板上那个「路由策略」下拉
-           * 写进配置就没人读了，点了什么都不会变（详见 gateway/strategy.js 的说明）。
-           * 现在传进来，由 `deriveRouting()` 翻译成两个真开关：
-           * fallback 开不开、哪些渠道排除。
-           */
-          strategy: cfg.gateway?.strategy,
-          /*
-           * ★ 数据目录（2026-11-02 补）。
-           *
-           * bridge 里要落盘一个小缓存：**禁漫当前可用的域名**
-           * （`jm-host.json`，见 gateway/jm.js）。那个站域名一直换，
-           * 每次启动重新趟一遍死域名是 **6 次超时** —— 用户等的是回复，
-           * 不该浪费在这上面。实测：缓存命中 1124ms，首次趟域名 3991ms。
-           */
-          home: args.home,
-          /*
-           * ★ 车牌内页那套（2026-11-02）。
-           *
-           * `enabled / maxShots / followUpMaxAgeMs` 三个都在这里给到 bridge ——
-           * 别处也踩过"配置写了但没人读"的坑（路由策略那次），所以显式带上。
-           */
-          jmRead: cfg.jmRead,
-          // 免费渠道优先级与开关：bridge 的 auto 模式靠它们决定"先试哪个"
-          freeOrder: cfg.gateway?.freeProviders ?? [],
-          disabledProviders: cfg.gateway?.disabledProviders ?? [],
-          // 别名（鱼/鲸鱼/白饭…）：群里叫它这些词也算在叫它
-          decisionAliases: cfg.decision?.aliases,
-        },
+        cfg: bridgeCfgOf(cfg),
         onebot,
         gateway: llm,
         decision,
@@ -1144,6 +1142,29 @@ export async function main(argv = process.argv.slice(2)) {
       onebot.connect()
       state.onebot = onebot
       state.bridge = bridge
+      /*
+       * ★ **配置热更新**（2026-11-06）。
+       *
+       * 换模型不用重启：`store.update()` 之后这里整份重建 `bridge.cfg`，
+       * 而生成时读的就是 `this.cfg.model` —— 下一条回复立刻走新模型。
+       *
+       * 决策层那份「跟随模型」是**另一个对象**（`decisionCfg.model` 被
+       * ModelDecisionProvider 按引用持有）。不跟着改就会「回复换了、判断
+       * 还留在旧模型上」，两个模型混着用，日志看着像见鬼。所以原地改字段，
+       * 不能换对象（换了 provider 手里还是旧的）。
+       */
+      let hotModel = bridge.cfg.model
+      store.watch((next) => {
+        bridge.cfg = bridgeCfgOf(next)
+        const follow = String(next.qq?.model ?? '').trim()
+        if (follow && decisionCfg?.model && !String(next.decision?.model?.model ?? '').trim()) {
+          decisionCfg.model.model = follow
+        }
+        if (next.qq?.model !== hotModel) {
+          hotModel = next.qq?.model
+          log.info(`配置热更新：qq.model = ${next.qq?.model || '(空 → auto)'}（不用重启）`)
+        }
+      })
       shutdown.push(async () => { onebot.close() })
 
       /*

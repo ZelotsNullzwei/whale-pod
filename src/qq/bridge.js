@@ -1241,10 +1241,32 @@ export function stripWaitMarkers(text) {
    * 正常回复 / 主动续写 / 主动发言 / B 站补发都不会再漏。
    * 只剥"标记 + 内容"，不影响正常文字。
    */
-  const MARKER_RE = /[\[［]\s*(画图|场景图|插画|签名|改标签|表情|表情包|戳一戳|等)\s*[:：][^\]］]*[\]］]/g
+  /*
+   * ★★ `[换装:…]` 必须在这里剥（2026-11-06 补，一次线上事故）。
+   *
+   * 现场（群 704291282）：
+   * ```
+   * 19:35:15  她（冷场补话）「催什么催…（对着镜子把围裙系好）
+   *            [换装:白色系女仆装长款，鲸尾露在外面，白蕾丝发带]」
+   * 19:35:48  群友「怎么把后台念出来了」
+   * ```
+   * `_deadAirSpeak()` / `_sceneContinue()` 拿到 `_generate()` 的原文直接
+   * `_send()`，绕过了 `_handle` 里的标记流水线；而上面这张表**漏了换装**
+   * （只有画图/表情/签名那几族），于是标记既没被执行、又原样进了群。
+   *
+   * 顺带把 `[戳]` `[撤回]` `[SILENT]` 这种**没冒号**的控制标记也收掉 ——
+   * 它们同样只在 `_handle` 里被处理，别的出口一样会漏。
+   * ⚠️ `[表情:24]` 这类**有出站含义**的不要在这里剥（表情要真的发出去），
+   *    它在上游就已经转成表情段了；这条正则里保留 `表情` 只是为了兜旧格式。
+   */
+  const MARKER_RE = /[\[［]\s*(画图|场景图|插画|签名|改标签|改签名|表情|表情包|戳一戳|戳|撤回|禁言|改名|发群|换装|换衣服|等)\s*[:：][^\]］]*[\]］]/g
   s = s.replace(MARKER_RE, '')
+  // 没有内容的控制标记（无冒号的裸写法）
+  s = s.replace(/[\[［]\s*(?:SILENT|戳|撤回|禁言|改名|发群|换装|换衣服)\s*[\]］]/gi, '')
   // 残缺的（没有右括号）也从标记处截断
-  s = s.replace(/[\[［]\s*(画图|场景图|插画)\s*[:：][^\]]*$/, '')
+  s = s.replace(/[\[［]\s*(画图|场景图|插画|换装|换衣服)\s*[:：][^\]]*$/, '')
+  // 剥掉标记后别留下成串空格 / 行尾空白
+  s = s.replace(/[ \t]{2,}/g, ' ').replace(/[ \t]+$/gm, '')
   return { text: s, waits }
 }
 
@@ -4200,7 +4222,25 @@ export class QQBridge {
      * 失败只 warn —— 和"找图"同理：图是锦上添花，绝不能因此丢文字。
      */
     let drawnImage = null
-    /** 这一轮到底有没有出现画图类标记（谎报闸要用它判"说了要拍却没拍"） */
+    /*
+     * ★★ **生图状态拆成四个**（2026-11-06）。
+     *
+     * 原来只有一个 `drewAny`，既表示"出现过标记"，又在生成前就被置 true ——
+     * 于是生成失败、被限流、被去重跳过、他根本没确认时，谎报闸都以为"已经画了"，
+     * 她照样能说"这就发"而没人拦。
+     *
+     *   drawRequested  这一轮出现过 [画图:]/[场景图:]/[插画:] 标记
+     *   drawAllowed    通过了确认（askBeforeDraw）和功能开关
+     *   drawGenerated  至少有一张真的生成成功（拿到图）
+     *   drawSent       至少有一张真的**发出去**（OneBot 返回成功）
+     */
+    let drawRequested = false
+    let drawAllowed = false
+    let drawGenerated = false
+    let drawSent = false
+    /** 跳过/失败的原因，写日志和记忆用 */
+    let drawSkipReason = ''
+    /** 兼容旧名：`drewAny` 现在严格等于"真的画出来了" */
     let drewAny = false
     {
       const re = /[\[［]\s*画图\s*[:：]\s*([^\]］]+?)\s*[\]］]/g
@@ -4240,7 +4280,8 @@ export class QQBridge {
       })()
       try { msg.__extraMarks = allMarks.slice(1) } catch { /* 只读对象就算了 */ }
       // 记「这一轮有没有要画图」—— 给谎报闸用（见 did.draw）
-      drewAny = allMarks.length > 0
+      drawRequested = allMarks.length > 0
+      // 旧名保留，但只在"真画出来"时置 true（见下面 drawGenerated）
       /*
        * ★ 要脸时把"背影"洗掉并强制自拍（2026-11-06 实测）：
        *   她会照搬前几轮自己说的「背影，脸不在这张里」，planner 就顺着改成第一人称。
@@ -4304,9 +4345,16 @@ export class QQBridge {
         if (!this._drawAsk) this._drawAsk = new Map()
         const askedAt = this._drawAsk.get(askKey) ?? 0
         const askedFresh = askedAt > 0 && Date.now() - askedAt < 10 * 60_000
-        const saidNo = /(不用了|不用|算了|别拍了|不看了|不看|别发|不要了)/.test(String(msg.text ?? ''))
-        /* 他明确要看 —— 只认这一种，别再往里加"催图"的说法 */
-        const wantsPic = /(拍|看|图|照片|自拍|全身|半身|对镜|前置|特写|脸|发个|发张|来一张|群里发)/.test(String(msg.text ?? ''))
+        /*
+         * ★★ **意图判断走短语表，不走单字正则**（2026-11-06 规格第 1 条）。
+         *
+         * 原来 wantsPic 里有单字「看」「图」「脸」，saidNo 里有「算了」：
+         *   「我在看剧」「这个图真好笑」  -> 误判成要图
+         *   「算了，还是拍一张吧」        -> 误判成拒绝
+         * 再加词只会更糟（加「快」就命中「快递到了」）。
+         * 现在两张短语表 + 一个导出的纯函数，能直接写回归测试。
+         */
+        const { saidNo, wantsPic } = classifyDrawIntent(msg.text ?? '')
 
         let allowDraw = false
         if (saidNo) {
@@ -4325,10 +4373,16 @@ export class QQBridge {
         if (this.cfg.actions?.askBeforeDraw !== false && !allowDraw) {
           this.log.info?.('bridge：画图跳过 —— 他没说要拍（先问"拍什么、怎么拍"）')
           msg.__askInstead = true
+          drawAllowed = false
+          drawSkipReason = '没确认（已改为询问）'
           this._drawAsk.set(askKey, Date.now())
         } else if (this.cfg.actions?.draw === false) {
           this.log.info?.('bridge：画图被开关关掉了（qq.actions.draw = false）')
+          drawAllowed = false
+          drawSkipReason = '功能开关关闭'
+          this._drawAsk.delete(askKey)   // 终态：清掉确认状态
         } else {
+          drawAllowed = true
           // 真画了 → 清掉"问过"的标记，别一直挂着
           this._drawAsk.delete(askKey)
           /*
@@ -4340,44 +4394,18 @@ export class QQBridge {
            *   用户连发「？」时，她每轮都重画一张（22~28 秒、每次花钱）。
            *   已经画过就跳过，直接把标记剥掉。
            */
-          if (!this._drawRecent) this._drawRecent = new Map()
           /*
-           * ★ 按**描述**去重（2026-11-06 改）：原来按会话算 10 分钟，
-           *   导致"真的要一张新图"也被挡掉 —— 她嘴上说"拍了"，实际没图。
-           *   现在：同一段描述 10 分钟内不重画；描述不同就照画。
+           * ★★ **配额统一走 _drawQuotaCheck / _drawQuotaCommit**（2026-11-06）。
+           *   原来这段是内联的，附加图那边另写了一套近似但**不生效**的逻辑 ——
+           *   结果主图受限、附加图不受限，一轮能发 1+3 张。
+           *   现在主图和附加图调同一对方法，天然一致。
            */
-          const descKey = String(msg.scope ?? '') + '|'
-            + String(hit[1] ?? '').replace(/\s+/g, '').slice(0, 40)
-          const lastDraw = this._drawRecent.get(descKey) ?? 0
-          /* 去重窗口可配：qq.actions.drawDupMs（0 = 不去重，测试用） */
-          const drawDupMs = Number(this.cfg.actions?.drawDupMs ?? 600_000)
-          /*
-           * ★★ **同一会话的画图频率上限**（2026-11-06 用户：「我叫她换他会一直发图」）。
-           *
-           * 原来的去重是**按描述**算的：描述不一样就照画。于是他一说"换那套"，
-           * 她每轮都换个说法画一张 —— 20 多秒、每次都花钱，还刷屏。
-           *
-           * 现在再加一道**按会话的次数闸**：默认 5 分钟内最多 2 张。
-           * 超了就跳过（标记照样剥掉，正文照发），日志写明原因。
-           * 可配：qq.actions.drawWindowMs / drawMaxPerWindow（0 = 不限）。
-           */
-          const drawWinMs = Number(this.cfg.actions?.drawWindowMs ?? 5 * 60_000)
-          const drawMax = Number(this.cfg.actions?.drawMaxPerWindow ?? 2)
-          if (!this._drawTimes) this._drawTimes = new Map()
-          const scopeKey = String(msg.scope ?? '')
-          const times = (this._drawTimes.get(scopeKey) ?? []).filter((t) => Date.now() - t < drawWinMs)
-          if (drawMax > 0 && times.length >= drawMax) {
-            this.log.info?.(
-              `bridge：画图跳过 —— 这个会话 ${Math.round(drawWinMs / 60000)} 分钟内已画 ${times.length} 张`
-              + `（上限 ${drawMax}，qq.actions.drawMaxPerWindow 可调）`,
-            )
-          } else if (drawDupMs > 0 && Date.now() - lastDraw < drawDupMs) {
-            this.log.info?.('bridge：画图跳过 —— 这段描述 10 分钟内画过（换说法才会重画）')
+          const quota = this._drawQuotaCheck(String(msg.scope ?? ''), String(hit[1] ?? ''))
+          if (!quota.ok) {
+            this.log.info?.(`bridge：画图跳过 —— ${quota.reason}`)
+            drawSkipReason = quota.reason
           } else {
-          this._drawRecent.set(descKey, Date.now())
-          // 记进"这一会话最近画过的时间"，给上面的次数闸用
-          times.push(Date.now())
-          this._drawTimes.set(scopeKey, times)
+          this._drawQuotaCommit(String(msg.scope ?? ''), String(hit[1] ?? ''))
           // 只留最近 40 条，避免 Map 无限长
           if (this._drawRecent.size > 40) {
             const oldest = this._drawRecent.keys().next().value
@@ -4555,9 +4583,18 @@ export class QQBridge {
             anime: Boolean(hitIll),
             imageCfg: imgCfg,
           })
+          /*
+           * ★★ **方案不可行只跳过这张图，不能结束整轮**（2026-11-06）。
+           *
+           * 原来这里直接 `return` —— 从 `_handle` 整个返回，
+           * 后面的找图、QQ 动作、正文发送**全都没执行**。
+           * 用户看到的就是"她突然不吭声了"，日志里只有一句「这一轮不画」。
+           */
+          drawMain: {
           if (shot.skip) {
             this.log.info?.(`bridge：这一轮不画（${shot.skipReason}）`)
-            return
+            drawSkipReason = String(shot.skipReason ?? '方案不可行')
+            break drawMain
           }
           this.log.info?.(`bridge：拍摄方案 → ${describeShot(shot)}`)
           const drawPrompt = shot.prompt
@@ -4701,10 +4738,14 @@ export class QQBridge {
               }
             }
             drawnImage = { url: file }
+            drawGenerated = true
+            drewAny = true   // 兼容旧名：真的画出来了
             this.log.info?.(`bridge：画好了（${Math.round(r.ms / 1000)}s）`)
           } else {
             this.log.warn?.(`bridge：画图失败 — ${r.error}`)
+            drawSkipReason = `生成失败：${String(r.error ?? '未知').slice(0, 40)}`
           }
+          }   // ← drawMain 闭合
           }   // ← 10 分钟闸门 else 闭合
         }
       }
@@ -4770,8 +4811,15 @@ export class QQBridge {
             this.log.warn?.(`bridge：找图出错（按纯文字发）— ${String(e?.message ?? e)}`)
           }
         }
-        // 剥完标记如果什么都不剩，就只发图（不硬凑文字）
-        if (!text.trim() && !findImage) {
+        /*
+         * 剥完标记如果什么都不剩，就只发图（不硬凑文字）。
+         *
+         * ★★ **有图就不能 return**（2026-11-06）。
+         *   原来这里只看 `!text.trim() && !findImage` —— 她自己画的那张
+         *   (`drawnImage`) 不在判断里，于是"只发图、不说话"整轮被丢弃，
+         *   图生成了却没发出去。现在有图就继续走下去。
+         */
+        if (!text.trim() && !findImage && !drawnImage) {
           this.stats.silent++
           this._record(msg, d, null, 'find-image-empty')
           this._maybeSummarize(msg.scope, mem, scene)
@@ -5041,15 +5089,26 @@ export class QQBridge {
                 crossGroupSkipped = 'dup'
               } else {
               await this._send(msg, String(hit[1]).trim(), cover, target)
-              try {
-                if (!this._crossGroupAt) this._crossGroupAt = new Map()
-                this._crossGroupAt.set(crossKey, Date.now())
-              } catch {}
               /*
-               * ⚠️ 这句会被拼成「正文（发群里了）」——**别嵌套括号**（2026-11-06）。
-               *    原来写「发群里了（带图）」，拼出来是「（发群里了（带图））」。
+               * ★★ 发群结果按**真实发送情况**记（2026-11-06 规格第 7 条）。
+               *   图段失败时 _send 会跳过它继续发正文 —— 只看 cover 有没有
+               *   会谎称"图发群里了"，其实群里只有一句话。
                */
-              crossGroupNote = cover ? '图发群里了' : '发群里了'
+              const sent = msg.__lastSend ?? {}
+              if (cover?.url && sent.imageSent) {
+                crossGroupNote = '图发群里了'
+              } else if (cover?.url && sent.textSent) {
+                // 图没发出去、只有话到了群里 —— 必须说清楚，不能含糊
+                crossGroupNote = '话发群里了（图没发出去）'
+                this.log.warn?.('bridge：发群只有文字到达，图片段发送失败')
+              } else if (!cover?.url && sent.textSent) {
+                crossGroupNote = '发群里了'
+              } else {
+                // 什么都没发出去：不记 note，skipped 让谎报闸拦住"我发了"
+                crossGroupNote = ''
+                crossGroupSkipped = 'send-fail'
+                this.log.warn?.('bridge：发群实际没有任何内容到达')
+              }
               this.log.info?.(`bridge：发群「${String(hit[1]).slice(0, 40)}」${cover ? '（带图）' : ''}→ ${target.groupId}`)
               }
             } catch (e) {
@@ -5107,8 +5166,12 @@ export class QQBridge {
         qzone: qqNotes.some((n) => String(n).includes('发空间')),
         qzoneImage: qqNotes.some((n) => String(n).includes('发空间了') && !String(n).includes('没图')),
         qzoneDel: qqNotes.some((n) => String(n).includes('删了刚发的说说')),
-        // 这一轮有没有画图标记（说了"换就换/等着"却没画 → 谎报）
-        draw: drewAny,
+        /*
+         * ★★ **是否真的画出来了**（2026-11-06）。
+         * 原来这里是"出现过标记就算画了"，于是被拦/失败/去重时谎报闸失效。
+         * 现在：真的生成成功（drawGenerated）才算。
+         */
+        draw: drawGenerated,
         // 这一轮真的把消息发到群里了吗（跳过节流/发错群/找不到群 → 没发）
         crossGroup: Boolean(crossGroupNote),
         // 这一轮真的换了衣服吗（[换装:…] 或画了标志性那套）
@@ -5234,12 +5297,25 @@ export class QQBridge {
       await this._waitForPace(tStart, d)
       const sentIds = await this._send(msg, text, coverForSend)
       /*
+       * ★ 主图**真的发出去了**吗（2026-11-06）。
+       *   读 _send 挂在 msg 上的结构化结果 —— 图段失败会被跳过、正文照发，
+       *   sentIds 非空证明不了图发成功。
+       */
+      if (coverForSend?.url && msg.__lastSend?.imageSent) drawSent = true
+      /*
        * ★ 剩下的几张：**顺序**画、画一张发一张（2026-11-06）。
        *   最多补 3 张；某张失败就跳过，不影响其它，也绝不影响刚才那条正文。
        */
       try {
+        /*
+         * ★★ 附加图和主图**同一套配额**（2026-11-06 规格第 5 条）。
+         *   原来这里只 slice(0,3) 直接画，完全不查 _drawRecent/_drawTimes ——
+         *   主图限 5 分钟 2 张，附加图却想画几张画几张。
+         *   现在每张先 _drawQuotaCheck，通过了才画、才 commit。
+         */
         const extras = Array.isArray(msg.__extraMarks) ? msg.__extraMarks.slice(0, 3) : []
         for (const [i, mark] of extras.entries()) {
+          const no = i + 2   // 第几张（主图算第 1 张）
           try {
             /* 要脸时同样把"背影"洗掉（跟主图一致） */
             let desc = String(mark.desc ?? '')
@@ -5248,6 +5324,12 @@ export class QQBridge {
                 .replace(/背对(镜头|镜子|着他)?/g, '面对镜头')
                 .replace(/背影|后脑|侧后方|侧后|不露脸|脸不在(这张里|画面里)?|别拍脸/g, '')
                 .replace(/[，,、]{2,}/g, '，').replace(/^[，,、\s]+|[，,、\s]+$/g, '').trim()
+            }
+            /* ① 配额：和主图同一对方法，每张单独查 */
+            const q = this._drawQuotaCheck(String(msg.scope ?? ''), desc)
+            if (!q.ok) {
+              this.log.info?.(`bridge：第 ${no} 张跳过 —— ${q.reason}`)
+              continue
             }
             const s2 = planShot({
               scene: desc,
@@ -5260,8 +5342,10 @@ export class QQBridge {
               anime: Boolean(mark.anime),
               imageCfg: (this.cfg?.image ?? {}),
             })
-            if (!s2 || s2.skip) { this.log.info?.(`bridge：第 ${i + 2} 张跳过（${s2?.skipReason ?? '—'}）`); continue }
-            this.log.info?.(`bridge：第 ${i + 2} 张 → ${describeShot(s2)}`)
+            if (!s2 || s2.skip) { this.log.info?.(`bridge：第 ${no} 张跳过（${s2?.skipReason ?? '—'}）`); continue }
+            /* ② 占用配额：真的开画了才记（生成失败也算花了钱） */
+            this._drawQuotaCommit(String(msg.scope ?? ''), desc)
+            this.log.info?.(`bridge：第 ${no} 张 → ${describeShot(s2)}`)
             const cfg2 = this.cfg?.image ?? {}
             const r2 = await generateImage({
               prompt: s2.prompt,
@@ -5276,27 +5360,77 @@ export class QQBridge {
               resolution: cfg2.resolution ?? '2K',
               log: this.log,
             })
-            if (!r2?.ok) { this.log.warn?.(`bridge：第 ${i + 2} 张生成失败 — ${r2?.error ?? '—'}`); continue }
+            if (!r2?.ok) { this.log.warn?.(`bridge：第 ${no} 张生成失败 — ${r2?.error ?? '—'}`); continue }
             let buf2 = null
             try {
               const resp2 = await fetch(r2.url, { signal: AbortSignal.timeout(25000) })
               if (resp2.ok) buf2 = Buffer.from(await resp2.arrayBuffer())
-            } catch (e) { this.log.warn?.(`bridge：第 ${i + 2} 张下载失败 — ${String(e?.message ?? e)}`) }
-            if (!buf2 || buf2.length < 1024) continue
+            } catch (e) { this.log.warn?.(`bridge：第 ${no} 张下载失败 — ${String(e?.message ?? e)}`) }
+            if (!buf2 || buf2.length < 1024) {
+              this.log.warn?.(`bridge：第 ${no} 张下载结果不可用（太小/为空），不发`) 
+              continue
+            }
             if (s2.framingInfo?.feet) {
               buf2 = await cropBottom(buf2, 0.06, this.log)
               buf2 = await eraseCornerWatermark(buf2, this.log)
             } else {
               buf2 = await cropBottom(buf2, Number(cfg2.cropBottom ?? 0.1), this.log)
             }
+            /* ③ 真实发送结果（2026-11-06 规格第 6 条）：
+             *   原来 await _send 之后不看结果就写"已发" —— 纯图发送曾被
+             *   空正文守卫整个拦掉，日志却报已发。现在读 __lastSend。
+             */
+            /*
+             * ⚠️ **附加图暂不走审核/重拍**（2026-11-06 规格第 8 条）。
+             *   主图有 reviewImage + 不合格重拍；附加图这里没有接上 ——
+             *   不是忘了，是有意为之：补图是"同一轮的额外几张"，
+             *   每张再审核+重拍会把一轮拖到一两分钟，收益也不大
+             *   （同一套提示词、同一时段，风险面和主图一致）。
+             *   但**必须留痕**：日志里每张都标"未过审"，出问题能查。
+             */
+            this.log.info?.(`bridge：第 ${no} 张未过审核（附加图不接审核/重拍，见代码注释）`)
             await this._send(msg, '', `base64://${buf2.toString('base64')}`)
-            this.log.info?.(`bridge：第 ${i + 2} 张已发（${Math.round(buf2.length / 1024)}KB）`)
+            if (msg.__lastSend?.imageSent) {
+              drawSent = true
+              this.log.info?.(`bridge：第 ${no} 张已发（${Math.round(buf2.length / 1024)}KB）`)
+            } else {
+              this.log.warn?.(`bridge：第 ${no} 张发送失败（不记已发）`)
+            }
           } catch (e) {
-            this.log.warn?.(`bridge：补第 ${i + 2} 张失败 — ${String(e?.message ?? e).slice(0, 80)}`)
+            this.log.warn?.(`bridge：补第 ${no} 张失败 — ${String(e?.message ?? e).slice(0, 80)}`)
           }
         }
       } catch { /* 补图失败不影响已经发出去的内容 */ }
-      this.stats.replied++
+      /*
+       * ★★ **回复计数按真实发送结果记**（2026-11-06 规格第 9 条）。
+       *
+       * 原来这里无条件 `stats.replied++` —— 图段失败、正文也失败时，
+       * 统计上照样"回复了一条"，日志和实际对不上（用户看到的是她没回）。
+       *
+       *   · 什么都没发出去      -> 记 failed，不算 replied
+       *   · 正文到了、图没到    -> 算 replied，但记 sent-partial（部分成功）
+       *   · 图和正文都到        -> sent
+       */
+      const sendRes = msg.__lastSend ?? null
+      /*
+       * ⚠️ **不能只看 sentIds 空不空**（2026-11-06 全量测试抓到）。
+       *   sentIds 靠 OneBot 返回的 message_id 填；有的实现/测试桩返回
+       *   status:ok 但不带 message_id —— 只看它会误判成"什么都没发"。
+       *   所以优先用 _send 自己记的 textSent/imageSent，
+       *   只有 _send 提前返回（没内容）时才回落到 sentIds。
+       */
+      const nothingSent = sendRes
+        ? (!sendRes.textSent && !sendRes.imageSent)
+        : (sentIds.length === 0)
+      const partial = Boolean(coverForSend?.url) && !sendRes?.imageSent && !nothingSent
+      if (nothingSent) {
+        this.stats.failed++
+        this.log.warn?.(`bridge：本轮实际没有任何内容发出（正文 ${JSON.stringify(String(text ?? '').slice(0, 20))}，配图 ${coverForSend?.url ? '有' : '无'}）`)
+        // ⚠️ 这里**不要**再 _record：下面统一按 partial / nothingSent 记一次。
+        //    原来两处都记，一条失败回复在轨迹里会出现两遍（2026-11-06 自查发现）。
+      } else {
+        this.stats.replied++
+      }
       mem.push(makeMessage({
         // ⚠️ 用自己的 message_id 记录这条回复。
         //    这样别人**引用我的话**回复时，能通过 replyTo 匹配到它，
@@ -5315,7 +5449,8 @@ export class QQBridge {
         provider: this._lastRoute?.provider ?? null,
         model: this._lastRoute?.model ?? null,
       }))
-      this._record(msg, d, text, 'sent')
+      // ★ 部分成功要说"部分"（图没到），全成功才记 sent
+      this._record(msg, d, text, partial ? 'sent-partial' : (nothingSent ? 'send-fail' : 'sent'))
       /*
        * 把**自己发了什么**也写进日志。
        *
@@ -8612,6 +8747,60 @@ export class QQBridge {
     return ''
   }
 
+  /**
+   * ★★ 画图配额检查（2026-11-06）：主图和附加图**共用这一对方法**。
+   *
+   * 原来主图内联一套判断、附加图那边几乎不判断 —— 结果一轮能发 1+3 张。
+   * 现在：
+   *   · 同描述去重（drawDupMs，默认 10 分钟）
+   *   · 同会话次数上限（drawWindowMs / drawMaxPerWindow，默认 5 分钟 2 张）
+   *   · 0 = 不限（跟其他开关的约定一致）
+   */
+  _drawQuotaCheck(scope, desc) {
+    const gapKey = String(scope ?? '?')
+    if (!this._drawRecent) this._drawRecent = new Map()
+    if (!this._drawTimes) this._drawTimes = new Map()
+
+    const drawDupMs = Number(this.cfg.actions?.drawDupMs ?? 600_000)
+    const descKey = gapKey + '|' + String(desc ?? '').replace(/\s+/g, '').slice(0, 40)
+    if (drawDupMs > 0) {
+      const lastDraw = this._drawRecent.get(descKey) ?? 0
+      if (Date.now() - lastDraw < drawDupMs) {
+        const mins = Math.round(drawDupMs / 60000)
+        return { ok: false, reason: `这段描述 ${mins} 分钟内画过（换说法才会重画）` }
+      }
+    }
+
+    const drawWinMs = Number(this.cfg.actions?.drawWindowMs ?? 5 * 60_000)
+    const drawMax = Number(this.cfg.actions?.drawMaxPerWindow ?? 2)
+    if (drawMax > 0 && drawWinMs > 0) {
+      const times = (this._drawTimes.get(gapKey) ?? []).filter((t) => Date.now() - t < drawWinMs)
+      if (times.length >= drawMax) {
+        return { ok: false, reason: `这个会话 ${Math.round(drawWinMs / 60000)} 分钟内已画 ${times.length} 张（上限 ${drawMax}）` }
+      }
+    }
+    return { ok: true, reason: '' }
+  }
+
+  /**
+   * ★ 配额占用：**真的开画了**才调用（生成失败也算占用 —— 已经花了钱）。
+   */
+  _drawQuotaCommit(scope, desc) {
+    const gapKey = String(scope ?? '?')
+    if (!this._drawRecent) this._drawRecent = new Map()
+    if (!this._drawTimes) this._drawTimes = new Map()
+    const descKey = gapKey + '|' + String(desc ?? '').replace(/\s+/g, '').slice(0, 40)
+    this._drawRecent.set(descKey, Date.now())
+    const drawWinMs = Number(this.cfg.actions?.drawWindowMs ?? 5 * 60_000)
+    const times = (this._drawTimes.get(gapKey) ?? []).filter((t) => Date.now() - t < drawWinMs)
+    times.push(Date.now())
+    this._drawTimes.set(gapKey, times)
+    if (this._drawRecent.size > 200) {
+      const oldest = this._drawRecent.keys().next().value
+      this._drawRecent.delete(oldest)
+    }
+  }
+
   _activeGroupTarget(hint = '') {
     try {
       const keys = (this.memory?.scopes?.() ?? []).filter((k) => String(k).startsWith('group:'))
@@ -8654,6 +8843,14 @@ export class QQBridge {
     const maxChars = reply.maxChars ?? 500
     /** @type {string[]} */
     const sentIds = []
+    /*
+     * ★★ **结构化发送结果**（2026-11-06）。
+     *
+     * 光看 `sentIds.length > 0` 证明不了图发出去了 —— 图段失败会被跳过，
+     * 后面的正文照发，于是 `sentIds` 非空、但图其实没发。
+     * 跨群那边就是踩了这个：「图发群里了」其实群里只有文字。
+     */
+    const detail = { textSent: false, imageSent: false, failedSegments: [] }
 
     /*
      * ★ 先摘出「约定时间」标记 `[等:N]`（2026-11-03）。
@@ -8668,10 +8865,33 @@ export class QQBridge {
      *
      * 事故现场：她整段输出只有一个 `[画图:…]`，剥掉标记后变成空字符串 ——
      * 如果照样发出去，聊天里会出现一条空白消息。
-     * 这里直接返回空数组（调用方按"没发出去"处理）。
+     *
+     * ★★ **但"只有图"是合法的一条消息**（2026-11-06 修）。
+     *
+     * 现场：补第 2、3 张图时调用的是 `this._send(msg, '', 'base64://…')` ——
+     * 正文本来就是空的，于是被这条守卫拦下，**附加图一张都没发出去**，
+     * 日志还写着"已发"。所以守卫必须区分三种情况：
+     *   · 无正文 + 无图 → 不发（空消息）
+     *   · 无正文 + 有图 → **发图**（合法）
+     *   · 有正文 + 有图 → 正常发
      */
-    if (!String(wait.text ?? '').trim()) {
-      this.log.info?.('bridge：剥掉标记后没有正文，这条不发')
+    /*
+     * ★★ **配图参数两种形状都要认**（2026-11-06）。
+     *
+     * `_send` 的 `cover` 有两种调用方：
+     *   · 主图：`{ url: 'base64://…' }`   （对象）
+     *   · 附加图：`'base64://…'`          （**裸字符串**，见补图那一段）
+     * 原来所有判断都写 `cover?.url` —— 附加图那条永远取不到，等于"没有图"，
+     * 于是被空正文守卫拦下、被 buildOutgoingSegments 忽略。
+     * 这里统一成对象，后面全部用 `coverObj`。
+     */
+    const coverObj = typeof cover === 'string'
+      ? (cover.trim() ? { url: cover.trim() } : null)
+      : (cover?.url ? cover : null)
+    const hasCover = Boolean(coverObj?.url)
+    cover = coverObj
+    if (!String(wait.text ?? '').trim() && !hasCover) {
+      this.log.info?.('bridge：剥掉标记后既没有正文也没有图，这条不发')
       return []
     }
     text = wait.text
@@ -8787,6 +9007,7 @@ export class QQBridge {
          */
         if (seg.kind === 'image' || seg.kind === 'face' || seg.kind === 'mface') {
           this.log.warn?.(`bridge：${seg.kind} 段发送失败（跳过，继续发正文）— ${JSON.stringify(res).slice(0, 120)}`)
+          detail.failedSegments.push(seg.kind)
           continue
         }
         throw new Error(`OneBot 返回失败：${JSON.stringify(res).slice(0, 200)}`)
@@ -8794,6 +9015,12 @@ export class QQBridge {
       // 记下这条的 message_id（OneBot 放在 data.message_id）
       const mid = res?.data?.message_id ?? res?.message_id
       if (mid != null) sentIds.push(String(mid))
+      /*
+       * ★ 只有**真正发成功**才记（2026-11-06）：
+       *   生成成功 ≠ 下载成功 ≠ 发送成功。这里记的是最后一步。
+       */
+      if (seg.kind === 'image') detail.imageSent = true
+      else if (seg.kind === 'text') detail.textSent = true
       // 多条之间像人一样停顿
       if (i < segments.length - 1) {
         await sleep(400 + Math.random() * 600)
@@ -8806,6 +9033,22 @@ export class QQBridge {
         + `，配图=${cover?.url ? '有' : '无'}）—— 什么都没发`,
       )
     }
+    /*
+     * ★ 详细结果挂在 msg 上（兼容旧返回格式：5 个调用点在用 sentIds 数组）。
+     *   调用方要判断"图到底发出去没有"，读 `msg.__lastSend`。
+     */
+    try {
+      msg.__lastSend = {
+        ...detail,
+        sentIds: [...sentIds],
+        requestedImage: hasCover,
+        requestedText: Boolean(String(text ?? '').trim()),
+        allRequestedSegmentsSent:
+          detail.failedSegments.length === 0
+          && (!hasCover || detail.imageSent)
+          && (!String(text ?? '').trim() || detail.textSent),
+      }
+    } catch { /* 只读对象就跳过 */ }
     return sentIds
   }
 
@@ -10265,8 +10508,13 @@ export function buildOutgoingSegments(text, cover = null, opts = {}) {
     for (const c of chunks) if (String(c).trim()) segments.push({ kind: 'text', text: String(c) })
   }
 
-  // ⚠️ 配图**不**依赖已有文字 —— 见上方注释
-  if (cover?.url) segments.push({ kind: 'image', url: cover.url })
+  /*
+   * ⚠️ 配图**不**依赖已有文字 —— 见上方注释
+   * ★★ cover 两种形状都认（2026-11-06）：对象 `{url}` 或裸字符串。
+   *    补第 2/3 张图那条路传的就是裸字符串，原来在这里被静默忽略。
+   */
+  const coverUrl = typeof cover === 'string' ? cover.trim() : String(cover?.url ?? '').trim()
+  if (coverUrl) segments.push({ kind: 'image', url: coverUrl })
   return segments
 }
 
@@ -10330,4 +10578,67 @@ function splitBySentences(text, maxChars) {
     for (let i = 0; i < p.length; i += maxChars) out.push(p.slice(i, i + maxChars))
   }
   return out.filter((s) => s.trim())
+}
+
+/**
+ * ★ 要图请求的**短语**表（不是单字）。
+ * 收录原则：必须能唯一指向"让他拍/发一张"，**宁可漏收不误收** ——
+ * 漏了还有"她问过、他答了"那条路兜住；误收会白花钱还刷屏。
+ */
+export const PIC_REQUEST_PHRASES = [
+  // 拍
+  '拍一张', '拍张', '拍个', '拍一下', '拍下来', '拍个照', '拍照', '拍给我', '拍给', '拍啊', '拍吧',
+  '快拍', '再拍', '就拍', '拍不拍', '来一张', '来张', '拍嘛', '拍一个',
+  // 自拍姿势
+  '自拍', '对镜', '前置', '怼脸', '特写', '全身照', '半身照', '出镜', '露脸', '露个脸',
+  // 发
+  '发图', '发个图', '发张图', '发照片', '发张', '发个照', '图给我', '照片给我', '发一张', '发过来',
+  // 给/来（要一张图给我；带"看"的都挪到 LOOK 表走宾语检查）
+  '给我张图', '给我一张', '来点图', '有图吗', '有照片吗', '来张图', '要照片', '想看照片',  // 群
+  '群里发', '发到群', '群发一张',
+  // 催（必须配着拍/图才算，避免「快点」误伤）
+  '怎么还不拍', '还没拍', '不拍吗',
+]
+
+/**
+ * ★ 明确拒绝的短语表。
+ * ⚠️ 故意**不收**单独的「算了」「不用」—— 它们后面常跟着要图请求
+ *    （「算了，还是拍一张吧」）。要拒绝就得说完整。
+ */
+export const PIC_REFUSE_PHRASES = [
+  '不用了', '不用拍', '不用发', '不用看', '别拍了', '别发了', '别拍', '不要了', '不要拍',
+  '不拍了', '不看了', '算了不拍', '算了不用', '先不拍', '这次不拍', '不需要', '不必拍',
+]
+
+/**
+ * ★★ 「看」这一族必须**排除她在说自己看别的东西**（2026-11-06 实测）。
+ *
+ * 「给我看看」是要图，但「给我看看书」不是 —— 短语表分不出这种差别，
+ * 因为区别在**宾语**。所以命中"看"族短语后，还要看有没有跟着别的宾语。
+ */
+export const PIC_REQUEST_LOOK_PHRASES = [
+  '看看你', '看你的', '让我看', '我看看', '给我看', '给我看看', '看下你', '看效果', '看成品', '看片',
+  '发来看看', '看下效果',
+]
+/** 后面跟这些 = 他在看别的东西，不是在要图 */
+export const PIC_LOOK_BLOCK = /看(书|剧|电影|电视|球|直播|视频|新闻|微博|抖音|漫画|小说|片源|B站|b站|案例|教程|评论|弹幕|资料|消息|手机|电脑|屏幕|镜子|外面)/
+
+/**
+ * 判断他这句话是要图、还是拒绝（导出的纯函数，给回归测试用）。
+ *
+ * 规则：
+ *   · 命中要图短语 -> wantsPic
+ *   · 命中拒绝短语**且没有**要图短语 -> saidNo
+ *     （两者同时出现时要图赢：「算了，还是拍一张吧」是请求不是拒绝）
+ * @param {string} text
+ * @returns {{wantsPic:boolean, saidNo:boolean}}
+ */
+export function classifyDrawIntent(text) {
+  const s = String(text ?? '')
+  if (!s.trim()) return { wantsPic: false, saidNo: false }
+  // 「看」族要过宾语检查：「给我看看书」不是要图
+  const lookHit = PIC_REQUEST_LOOK_PHRASES.some((p) => s.includes(p)) && !PIC_LOOK_BLOCK.test(s)
+  const wantsPic = PIC_REQUEST_PHRASES.some((p) => s.includes(p)) || lookHit
+  const refused = PIC_REFUSE_PHRASES.some((p) => s.includes(p))
+  return { wantsPic, saidNo: refused && !wantsPic }
 }

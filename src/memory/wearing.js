@@ -40,8 +40,36 @@ let HOME = path.join(
 /** 文件名 */
 export const WEAR_FILE = 'wearing.json'
 
-/** 到这些时段，临时那套自动作废（该换睡衣了） */
-const SLEEP_SLOTS = ['evening', 'night']
+/**
+ * 到这些**时段**临时那套自动作废（该换睡衣了）。
+ *
+ * ⚠️ 这里**只剩 night**（2026-11-06 修）。
+ *
+ * 原来是 `['evening','night']`，而 `currentSlot()` 的 evening 是
+ * **18:00–次日 05:00** —— 等于「晚上六点就算该穿睡衣」，临时那套全部作废。
+ *
+ * 实测代价（群 704291282，2026-11-06）：
+ * ```
+ * 19:32:53  他「我要看女仆装」
+ * 19:35:15  她（冷场补话）「…[换装:白色系女仆装长款…]」   ← 标记还漏到了群里
+ * 19:35:22  wearing.json 写入成功（kind=signature）
+ * 19:39:39  生图 → wearingFor(day, 'evening') 返回 null → 用日程表的家居服
+ * 19:41     群里：「而且衣服没换过来」
+ * ```
+ * 也就是说：**晚上是群里最活跃的时段，恰恰是换装唯一不生效的时段**。
+ * 现在改成按钟点判（见 SLEEP_HOUR），时段只留 night 兜底。
+ */
+const SLEEP_SLOTS = ['night']
+
+/**
+ * 到几点算「该换睡衣了」（本地时间）。
+ *
+ * 22 点前临时换的那套一律有效；22 点之后 / 凌晨 0–5 点让位给睡裙
+ * （她总不能穿着女仆装睡觉）。用户口径也是「到了晚上换睡衣的时候再换」——
+ * 那个"到点"指的是真去洗漱睡觉，不是六点。
+ */
+const SLEEP_HOUR = 22
+const WAKE_HOUR = 5
 
 /**
  * 告诉它数据目录在哪（启动时调一次）。
@@ -128,20 +156,22 @@ export function setWearing(dayKey, { text, kind, note } = {}) {
  *
  * ## 什么时候算过期
  * ① `dayKey` 不是今天（第二天自然恢复日程表）
- * ② 现在是**该穿睡衣的时段**（`slotId` 在 SLEEP_SLOTS 里）——
- *    临时那套让位给睡衣（她总不能穿着女仆装睡觉）
+ * ② 现在是**真的该穿睡衣的时候**：钟点 ≥ 22:00 或 < 05:00
+ *    （只按 slot 判会把 18:00–22:00 这段最活跃的时间一起判掉，见 SLEEP_SLOTS 的注释）
  *
  * @param {string} dayKey  今天
- * @param {string} [slotId] 当前时段（evening/night → 让位）
+ * @param {string} [slotId] 当前时段（只有 night 会让位）
+ * @param {Date}   [now]    注入当前时间（测试用；缺省 new Date()）
  * @returns {null|{text:string, kind:string, at:number, note:string}}
  */
-export function wearingFor(dayKey, slotId = '') {
+export function wearingFor(dayKey, slotId = '', now = new Date()) {
   const k = String(dayKey ?? '').trim()
   if (!k) return null
   const rec = readAll()[k]
   if (!rec || !String(rec.text ?? '').trim()) return null
-  // 该换睡衣了 → 临时那套不再生效
-  if (SLEEP_SLOTS.includes(String(slotId ?? ''))) return null
+  // 该换睡衣了 → 临时那套不再生效（按钟点，不按时段）
+  const hour = (now instanceof Date ? now : new Date(now)).getHours()
+  if (SLEEP_SLOTS.includes(String(slotId ?? '')) || hour >= SLEEP_HOUR || hour < WAKE_HOUR) return null
   /*
    * ★★ **读的时候再对一次衣柜**（2026-11-06 实测）。
    *

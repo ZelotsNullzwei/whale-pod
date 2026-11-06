@@ -160,8 +160,10 @@ export function renderDayPlan(plan, slotId) {
   if (plan.hair) parts.push(`今天的头发：${plan.hair}`)
   /*
    * ★ 今天穿的：**临时换上的优先**（2026-11-06）。
-   *   `wearingFor` 只在"当天 + 还没到睡衣时段"返回内容，
-   *   第二天或晚上自动 null → 这里回落到日程表那套。
+   *   `wearingFor` 只在"当天 + 还没到该穿睡衣的钟点（22:00）"返回内容，
+   *   第二天或深夜自动 null → 这里回落到日程表那套。
+   *   ⚠️ 别按 slot 判 —— evening 覆盖 18:00–05:00，会把晚上最活跃那段
+   *      一起判掉（2026-11-06 群里「衣服没换过来」就是这么来的）。
    */
   const worn = (() => {
     /*
