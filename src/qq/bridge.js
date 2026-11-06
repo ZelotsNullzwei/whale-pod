@@ -6523,17 +6523,26 @@ export class QQBridge {
         let slot = ''
         try {
           const s = currentSlot()
-          if (s?.label) slot = `（**${s.label}**）`
+          if (s?.label) slot = s.label
         } catch { /* 时段算不出来就不写，不影响其它 */ }
         const gap = mem.sinceMyLast?.()
-        return `## 现在（**唯一准的时钟，报时间只照这里念**）
-现在是 ${new Date().toLocaleString('zh-CN', { hour12: false })}${slot}。
+        const now = new Date()
+        const hh = now.getHours()
+        const mm = String(now.getMinutes()).padStart(2, '0')
+        /* 中文念法：九点三十七分（用户说"老是搞错具体到多少分钟"） */
+        const CN = ['零', '一', '二', '三', '四', '五', '六', '七', '八', '九', '十']
+        const cn = (n) => (n <= 10 ? CN[n] : n < 20 ? `十${CN[n - 10]}` : `${CN[Math.floor(n / 10)]}十${n % 10 ? CN[n % 10] : ''}`)
+        const cnHour = cn(hh === 0 ? 12 : hh > 12 ? hh - 12 : hh)
+        const cnMin = mm === '00' ? '' : (mm[0] === '0' ? `零${CN[Number(mm)]}分` : `${cn(Number(mm))}分`)
+        return `## 现在（**唯一准的时钟**）
+⏰ **现在就是 ${hh}:${mm}**（${slot || '—'}）—— ${cnHour}点${cnMin || '整'}。
+   （每轮都会重新取一次；**上一轮说过的时间不能沿用**）
 
-⚠️ **报钟点只能照上面那串念。** 11:21 就是「十一点二十一」或「刚过十一点」，
-  **不许四舍五入、不许推算成「十二点多」「快一点」**。${slot ? `
-  ⚠️ 括号里的「${slot.replace(/[（）]/g, '')}」只是**时段粗分类**（早上/中午/下午/晚上），不是钟点 ——
-  看到「中午」不许自己脑补成 12 点。` : ''}
-⚠️ 说"该吃饭了/该睡了/中午了"这类话之前**先看这一行**；拿不准就别说钟点。
+报钟点规则（硬性，别绕开）：
+- 说「现在几点 / 多久之前 / 过了几分钟」时，**分钟必须照 ⏰ 那行念**，一个不差。
+- **不许估、不许四舍五入、不许说"大概/差不多"**，也不许把上一轮的钟点再用一次。
+- 只提时段（早上/中午/下午/晚上）时，也以 ⏰ 那行为准 —— 别自己脑补成 12 点之类。
+- 真拿不准就**别提钟点**，改成"刚才""一会儿前"；编一个数字出来是最差的。
 距你上次说话：${Number.isFinite(gap) ? Math.round(gap / 1000) + ' 秒' : '很久/还没说过'}
 你已连续发言：${mem.consecutiveTurns} 轮`
       })(),
