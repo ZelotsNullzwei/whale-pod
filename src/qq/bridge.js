@@ -431,6 +431,53 @@ export function buildChatMessages({ system, history = [], imageCache = new Map()
 }
 
 /**
+ * 把**没人引用的图块**补挂到最后一条 user 消息上（2026-11-06）。
+ *
+ * ## 为什么需要
+ * `buildChatMessages` 挂图的逻辑是「遍历消息的 `m.images`，按 ref 去
+ * `imageCache` 里取块」。也就是说：**只有消息自己列出的 ref 才会被挂**。
+ *
+ * 而转发图（`fwd:img:1`）、B 站分镜图（`bili:shot:1`）、车牌截图这些
+ * 是走 `extraBlocks` 塞进缓存的，**键是自造的** —— 没有任何消息的
+ * `images` 会引用它。于是它们躺在缓存里，从来没被塞进请求：
+ * ```
+ * 13:13:47  转发图 1 块进上下文（视觉模型能看到）   ← 我以为挂上了
+ * 13:13:49  本条带 1 张图发给 …                    ← imgCount 算得对
+ * 13:14:01  [我]「这次没收到图啊，本鱼这边是空的」   ← 她是真看不见
+ * ```
+ * 典型的"日志全对、实际没传"。
+ *
+ * ## 为什么挂到最后一条 user
+ * 上游普遍不认 assistant 消息里的图（那是"它自己发过的图"，
+ * 语义上也确实不该再喂一遍）。而这些无主图块都属于"这一轮要看的"，
+ * 所以挂最后一条 user 最贴近语义。
+ *
+ * @param {Array} messages `buildChatMessages` 的产物（就地修改）
+ * @param {Array} history  原始记忆消息
+ * @param {Map}   imageCache ref → ImageBlock
+ * @returns {number} 补挂了几块（0 = 没有无主的）
+ */
+export function attachOrphanBlocks(messages, history, imageCache) {
+  if (!Array.isArray(messages) || !imageCache || imageCache.size === 0) return 0
+  const used = new Set()
+  for (const m of history ?? []) for (const r of (m.images ?? [])) used.add(String(r))
+  const orphans = []
+  for (const [key, blk] of imageCache) {
+    if (blk && !used.has(String(key))) orphans.push(blk)
+  }
+  if (orphans.length === 0) return 0
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i]?.role !== 'user') continue
+    if (!Array.isArray(messages[i].content)) {
+      messages[i].content = [{ type: 'text', text: String(messages[i].content ?? '') }]
+    }
+    messages[i].content.push(...orphans)
+    return orphans.length
+  }
+  return 0
+}
+
+/**
  * 把消息正文里"媒体标记"改写成**给模型的说明**。
  *
  * ## 为什么不能直接用 `[表情包:猫猫]`
@@ -7012,6 +7059,41 @@ export class QQBridge {
       selfId: this.selfId ?? '',
       selfName: this.selfName ?? '',
     })
+
+    /*
+     * ★★ **没人引用的图块要补挂到最后一条消息上**（2026-11-06 实测踩到）。
+     *
+     * ## 现场
+     * ```
+     * 13:13:47  转发图 1 块进上下文（视觉模型能看到）      ← 我以为挂上了
+     * 13:13:49  本条带 1 张图发给 …（若模型不支持视觉，图等于没传）
+     * 13:14:01  [我]「这次没收到图啊，本鱼这边是空的。」    ← 她是真看不见
+     * ```
+     *
+     * ## 根因
+     * `buildChatMessages` 挂图的逻辑是：
+     * ```js
+     * for (const ref of (m.images ?? [])) { const blk = imageCache.get(ref); if (blk) blocks.push(blk) }
+     * ```
+     * 也就是说：**只有消息自己 `images` 数组里列出的 ref 才会被挂**。
+     *
+     * 而转发图 / B 站分镜图 / 车牌截图这些是走 `extraBlocks` 进去的，
+     * 键是 `fwd:img:1` / `bili:shot:1` 这种**自造 key**，
+     * 没有任何消息的 `images` 会引用它 —— 于是它们**躺在缓存里，
+     * 从来没被塞进请求**。日志里 `imgCount` 算得出"有 1 张"，
+     * 但那 1 张根本没发出去：典型的"看起来全对，实际没传"。
+     *
+     * ## 修法
+     * 把「所有消息的 images 里出现过的 ref」算成 used，
+     * 剩下的（orphan）**补挂到最后一条 user 消息**。
+     * 这同时修好了 B 站分镜图和车牌截图 —— 它们走的是同一个口子。
+     */
+    try {
+      const n = attachOrphanBlocks(messages, history, imageCache)
+      if (n) this.log.info?.(`bridge：补挂 ${n} 张无主图块到最后一条消息（转发/分镜/截图这类）`)
+    } catch (e) {
+      this.log.warn?.(`bridge：补挂无主图块失败（不影响回复）— ${String(e?.message ?? e).slice(0, 60)}`)
+    }
 
     /*
      * ⚠️ 图没加载出来时**必须如实告诉模型**（2026-10-28）。
