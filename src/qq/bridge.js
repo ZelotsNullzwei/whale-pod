@@ -4609,7 +4609,12 @@ export class QQBridge {
             request: drawRequest,
             scope: msg.scope ?? '',
             sceneOnly: Boolean(hitScene),
-            anime: Boolean(hitIll),
+            /*
+             * ★ 面板的「生图风格」也要算数（2026-11-06 用户：「这个按键没生效」）。
+             *   原来只认 [插画:…] 标记，面板上的「生图风格」这个开关
+             *   在 bridge 里**从来没被读过** —— 点了等于没点。
+             */
+            anime: Boolean(hitIll) || String(this.cfg?.actions?.drawStyle ?? '') === 'anime',
             imageCfg: imgCfg,
           })
           /*
@@ -5406,7 +5411,7 @@ export class QQBridge {
               request: (() => { try { return String(msg.text ?? '') } catch { return '' } })(),
               scope: msg.scope ?? '',
               sceneOnly: Boolean(mark.sceneOnly),
-              anime: Boolean(mark.anime),
+              anime: Boolean(mark.anime) || String(this.cfg?.actions?.drawStyle ?? '') === 'anime',
               imageCfg: (this.cfg?.image ?? {}),
             })
             if (!s2 || s2.skip) { this.log.info?.(`bridge：第 ${no} 张跳过（${s2?.skipReason ?? '—'}）`); continue }
