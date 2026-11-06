@@ -4784,6 +4784,11 @@ export class QQBridge {
      *   只在私聊生效（群里用这个标记没意义，直接剥掉）。
      */
     let crossGroupNote = ''
+    /**
+     * 这一轮 [发群] 被跳过的原因（throttle/dup/target）。
+     * 谎报闸要用它：**跳过了她却说"发群里了"** 就是撒谎（2026-11-06）。
+     */
+    let crossGroupSkipped = ''
     {
       const reCross = /[\[［]\s*发群\s*[:：]\s*([^\]］]+?)\s*[\]］]/g
       const hit = reCross.exec(text)
@@ -4794,9 +4799,22 @@ export class QQBridge {
         } else if (this.cfg.actions?.crossGroup === false) {
           this.log.info?.('bridge：[发群] 被开关关掉了')
         } else {
-          const target = this._activeGroupTarget()
+          /*
+           * ★★ **发群要发到他说的那个群**（2026-11-06）。
+           *
+           * 原来 `_activeGroupTarget()` 只选「最近有人说话的群」——
+           * 他在私聊说「发到 XX 群」，她可能发到另一个群。这是**公开动作，收不回**。
+           *
+           * 现在：先从他那句话里抠群名/群号；抠到了就**只**发那个群，
+           * 对不上就**不发**（宁可没发，也不能发错群）。
+           */
+          const hint = this._groupHintFromText(msg.text)
+          const target = this._activeGroupTarget(hint)
           if (!target) {
-            this.log.warn?.('bridge：[发群] 找不到目标群')
+            crossGroupSkipped = hint ? 'target' : 'no-target'
+            this.log.warn?.(hint
+              ? `bridge：[发群] 他说的是「${hint}」，但没找到这个群 → 不发`
+              : 'bridge：[发群] 找不到目标群')
           } else {
             try {
               /*
@@ -4826,9 +4844,11 @@ export class QQBridge {
                 const mins = Math.round((Date.now() - lastCross) / 60000)
                 this.log.info?.(`bridge：发群跳过 —— 这个私聊 ${mins} 分钟前刚发过（间隔要 ${Math.round(crossGapMs / 60000)} 分钟）`)
                 crossGroupNote = ''
+                crossGroupSkipped = 'throttle'
               } else if (this._groupSendDup(target.groupId, hit[1])) {
                 this.log.info?.(`bridge：发群跳过 —— 「${String(hit[1]).slice(0, 30)}」5 分钟内刚发过`)
                 crossGroupNote = ''
+                crossGroupSkipped = 'dup'
               } else {
               await this._send(msg, String(hit[1]).trim(), cover, target)
               try {
@@ -4895,6 +4915,8 @@ export class QQBridge {
         qzoneDel: qqNotes.some((n) => String(n).includes('删了刚发的说说')),
         // 这一轮有没有画图标记（说了"换就换/等着"却没画 → 谎报）
         draw: drewAny,
+        // 这一轮真的把消息发到群里了吗（跳过节流/发错群/找不到群 → 没发）
+        crossGroup: Boolean(crossGroupNote),
       }
       const claim = this._falseClaim(text, did, msg?.text)
       if (claim) {
@@ -5445,6 +5467,20 @@ export class QQBridge {
         ctx: /签名|个性签名|个人资料/,
         re: /改(好|完|了)/,
         skip: /主意|想法|计划|行程/,
+      },
+      /*
+       * ★★ **说"发群里了"但其实没发**（2026-11-06）。
+       *
+       * 三种真实现场：
+       *   · 30 分钟节流：她这一轮写了 [发群]，但被间隔拦住 → 群里什么都没有
+       *   · 同内容 5 分钟去重：同上
+       *   · 他点名了某个群，但那个群没找到 → 一条都不发
+       * 前两种时代码只把 note 清空，**她正文里的"我发群里了"照样发出去**。
+       */
+      {
+        kind: 'crossGroup',
+        need: 'crossGroup',
+        re: /(发群里了|群里发了|已经发群|发到群里了|群里已经(有|发)|刚发群里)/,
       },
       { kind: 'recall', need: 'recall', re: /(已经)?撤回了/ },
       /*
@@ -8215,9 +8251,59 @@ export class QQBridge {
     return false
   }
 
-  _activeGroupTarget() {
+  /**
+   * 从他的话里抠「要发到哪个群」（2026-11-06）。
+   *
+   * 现场问题：他在私聊说「发到 XX 群」，而 `_activeGroupTarget()` 只会挑
+   * **最近有人说话的那个群** —— 可能根本不是他说的那个。发错群是公开动作，收不回。
+   *
+   * @param {string} text
+   * @returns {string} 群名或群号；没点名返回 ''
+   */
+  _groupHintFromText(text) {
+    const s = String(text ?? '')
+    if (!s) return ''
+    /*
+     * 只认**明确指向某个群**的说法：
+     *   「发到 XX 群」「发去 XX 群」「XX 群里发一下」「发到群里 XX」
+     * 不认「发群里」（没点名 → 走默认目标）。
+     */
+    const m = /(?:发到|发去|发在|分享到|丢到|丢去)\s*[「"'《]?\s*([^\s，。！？、,.!?「」"'《》]{1,16}?)\s*群/.exec(s)
+    if (m) return String(m[1]).trim()
+    const m2 = /([^\s，。！？、,.!?]{1,16}?)\s*群里\s*(?:发|丢|分享)/.exec(s)
+    if (m2) return String(m2[1]).trim()
+    // 纯数字群号
+    const m3 = /(?:发到|发去|发在)\s*(\d{5,12})\s*(?:群)?/.exec(s)
+    if (m3) return String(m3[1])
+    return ''
+  }
+
+  _activeGroupTarget(hint = '') {
     try {
       const keys = (this.memory?.scopes?.() ?? []).filter((k) => String(k).startsWith('group:'))
+      /*
+       * ★ 他点名了某个群 → **只在那个群里找**（2026-11-06）。
+       *   对不上就返回 null，让上层"不发"——发错群比没发严重得多。
+       */
+      const h = String(hint ?? '').trim()
+      if (h) {
+        // ① 群号（他直接给了数字）
+        if (/^\d{5,12}$/.test(h)) {
+          const id = `group:${h}`
+          return keys.includes(id) ? { groupId: h } : null
+        }
+        // ② 群名（用缓存的群名做包含匹配，忽略空白和大小写）
+        const norm = (x) => String(x ?? '').replace(/\s+/g, '').toLowerCase()
+        const want = norm(h)
+        for (const k of keys) {
+          const cached = this._groupNames?.get?.(String(k).slice(6))?.name
+          if (!cached) continue
+          const have = norm(cached)
+          if (have.includes(want) || want.includes(have)) return { groupId: String(k).slice(6) }
+        }
+        // 群名缓存还没热起来 → 不猜，交给上层不发
+        return null
+      }
       let best = null
       for (const k of keys) {
         const mem = this.memory.get(k)
