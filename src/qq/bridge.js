@@ -8009,6 +8009,24 @@ export class QQBridge {
       const { readMagpieSettings } = await import('./mcpImage.js')
       prefer = String(readMagpieSettings().vision ?? '').trim()
     } catch { /* 读不到就退回 */ }
+    /*
+     * ★★ **Magpie 里存的是两段，走网关要三段**（2026-11-06 修）。
+     *
+     * 现场（13:13:45）：
+     *   识图用 Magpie 里配的「auto/deepseek-v4.1-flash」
+     *   ✗ 所有候选渠道都失败：auto/deepseek-v4.1-flash: 未配置的渠道：auto
+     *   → 转发图没转成文字（主模型看不到图）
+     *
+     * 原因：`resolveCandidates` 把第一段当**渠道名**（pk = 'auto'），
+     * 而网关注册的渠道只有 `magpie` / `free` / `deepseek-official`。
+     * Magpie 的 settings.json 写的是「供应商/模型」（`auto/deepseek-v4.1-flash`），
+     * 少了渠道前缀 —— 补成 `magpie/auto/deepseek-v4.1-flash` 就通了（实测 200）。
+     *
+     * 已经带前缀（`magpie/…` / `free/…`）的不重复加。
+     */
+    if (prefer && prefer.split('/').length === 2 && !/^(free|magpie|deepseek-official)\//.test(prefer)) {
+      prefer = `magpie/${prefer}`
+    }
     let candidates = []
     if (prefer) {
       try {
