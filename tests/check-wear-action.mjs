@@ -217,5 +217,17 @@ ok('★ 历史记录也会被解析成衣柜原文（过膝白丝不能丢）', 
   assert.match(src, /读的时候再对一次衣柜/)
 })
 
+console.log('\n=== 10. 垫场别每次都发（用户：「发了图之后必带一句话」）===')
+ok('★ 源码里有垫场间隔控制，且默认值有限', () => {
+  const src = fs.readFileSync(new URL('../src/qq/bridge.js', import.meta.url), 'utf8')
+  assert.match(src, /fillerGapMs/)
+  assert.match(src, /fillerGapMs \?\? 2 \* 60_000/, '默认 2 分钟')
+})
+
+ok('★ 跳过垫场不能当成报错（要单独记一条）', () => {
+  const src = fs.readFileSync(new URL('../src/qq/bridge.js', import.meta.url), 'utf8')
+  assert.match(src, /跳过垫场/)
+})
+
 console.log(`\n${'='.repeat(44)}\n通过 ${pass} / 失败 ${fail}`)
 process.exit(fail === 0 ? 0 : 1)

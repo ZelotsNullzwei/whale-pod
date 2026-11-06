@@ -4348,6 +4348,22 @@ export class QQBridge {
            *   ⚠️ 垫场失败绝不能影响画图本身（图才是主角）。
            */
           try {
+            /*
+             * ★★ **垫场别每次都发**（2026-11-06 用户：「发了图之后必带一句话」）。
+             *
+             * 原来是**每一张图**都先甩一句「等着，本鱼这就拍一张」。
+             * 于是聊天记录变成：垫场一句 → 图 → 正文一句，一屏三行都在说她拍照。
+             *
+             * 现在：同一会话 **2 分钟内最多垫一句**（他要第二张时，人已经在等了，
+             * 不需要再报备）。可配 `qq.actions.fillerGapMs`（0 = 每次都垫）。
+             */
+            if (!this._fillerAt) this._fillerAt = new Map()
+            const fillerKey = String(msg.scope ?? '')
+            const lastFiller = this._fillerAt.get(fillerKey) ?? 0
+            const fillerGapMs = Number(this.cfg.actions?.fillerGapMs ?? 2 * 60_000)
+            if (fillerGapMs > 0 && Date.now() - lastFiller < fillerGapMs) {
+              throw Object.assign(new Error('__skip__'), { skip: true })
+            }
             const FILLERS = [
               '等着，本鱼这就拍一张。',
               '别催，正找角度呢。',
@@ -4362,9 +4378,11 @@ export class QQBridge {
             ]
             const filler = FILLERS[Math.floor(Math.random() * FILLERS.length)]
             await this._send(msg, filler)
+            this._fillerAt.set(fillerKey, Date.now())
             this.log.info?.(`bridge：画图垫场「${filler}」`)
           } catch (e) {
-            this.log.warn?.(`bridge：画图垫场失败（不影响画图）— ${String(e?.message ?? e).slice(0, 60)}`)
+            if (e?.skip) this.log.info?.('bridge：跳过垫场（这个会话刚垫过）')
+            else this.log.warn?.(`bridge：画图垫场失败（不影响画图）— ${String(e?.message ?? e).slice(0, 60)}`)
           }
           /*
            * ★ **画面跟今日日程对齐**（2026-11-04 用户提的「和每日计划日志联动」）。
