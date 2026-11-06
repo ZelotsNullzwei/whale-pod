@@ -3701,9 +3701,15 @@ export class QQBridge {
        *   在干嘛 → 场景图（拍碗拍窗台）也合理；看看你/你的脸 → 必须自拍。
        */
       const wantsFace = String(msg.scope ?? '').startsWith('private')
-        && /(看看你|看你|你的脸|露个脸|长什么样|什么样子|自拍|照片|拍照|发张|来一张|发一张|拍一张|拍张)/.test(String(msg.text ?? ''))
+        && /(看看你|看你|你的脸|露个脸|长什么样|什么样子|自拍|照片|拍照|发张|来一张|发一张|拍一张|拍张|身材|三围|体型|胖了|瘦了|腰|腿|身高)/.test(String(msg.text ?? ''))
       // 画图块要读这两个意图（挂在 msg 上，作用域最稳）
-      try { msg.__wantsPicture = wantsPicture; msg.__wantsFace = wantsFace } catch { /* 只读对象就跳过 */ }
+      /*
+       * ★ 要**看身材** → 必须全身构图（2026-11-06）：
+       *   半身图看不到身形，用户「三围看不出来，无法判断」。
+       */
+      const wantsFigure = String(msg.scope ?? '').startsWith('private')
+        && /(身材|三围|体型|身高|腿长|比例|胖了|瘦了|腰细|腰粗|好不好看)/.test(String(msg.text ?? ''))
+      try { msg.__wantsPicture = wantsPicture; msg.__wantsFace = wantsFace; msg.__wantsFigure = wantsFigure } catch { /* 只读对象就跳过 */ }
       const picNote = wantsPicture
         ? '★ 他这条是在**要画面**（看看 / 什么样子 / 你在干嘛）。这一轮**必须**用 '
           + '[画图:一句话描述画面] 回答，**不要用文字描述** —— 文字他已经会问了。\n'
@@ -3909,7 +3915,11 @@ export class QQBridge {
           .replace(/背对(镜头|镜子|着他)?/g, '面对镜头')
           .replace(/背影|后脑|侧后方|侧后|不露脸|脸不在(这张里|画面里)?|别拍脸/g, '')
           .replace(/[，,、]{2,}/g, '，').replace(/^[，,、\s]+|[，,、\s]+$/g, '').trim()
-        hit[1] = cleaned ? `自拍，${cleaned}` : '自拍一张，正脸看镜头'
+        /*
+         * 要看身材 → 对镜自拍 + 全身（半身看不出三围）；否则 → 自拍正脸。
+         */
+        const prefix = msg.__wantsFigure ? '对镜自拍，全身，看看这一身，' : '自拍，'
+        hit[1] = cleaned ? `${prefix}${cleaned}` : (msg.__wantsFigure ? '对镜自拍，全身，看看这一身' : '自拍一张，正脸看镜头')
         sceneOnly = false // 要脸就不要"只拍东西"
         if (before !== cleaned) {
           this.log.info?.(`bridge：要脸 → 描述已洗掉背影「${String(hit[1]).slice(0, 40)}」`)

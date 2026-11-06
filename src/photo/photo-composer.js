@@ -73,6 +73,14 @@ export const FRAMINGS = {
  * @param {string} [o.request] 用户原话（他要"看看你""自拍""站起来"之类，会影响构图）
  * @returns {{framing:string, desc:string, feet:boolean, groundGap:number, showFace:boolean, cameraAngle:string, notes:string[]}}
  */
+/**
+ * 他是不是**要看身形**（2026-11-06 用户：「三围我看不出来，无法判断」）。
+ * 这类要求必须给能看全身的构图，半身/头肩看不出来。
+ */
+function wantsFigure(req) {
+  return /(身材|三围|体型|身高|腿长|比例|胖了|瘦了|腰细|腰粗|好不好看|看看这一身|全身)/.test(String(req ?? ''))
+}
+
 export function composeFraming(plan, o = {}) {
   const req = String(o.request ?? '')
   const notes = []
@@ -83,10 +91,12 @@ export function composeFraming(plan, o = {}) {
       /* 自拍：他要"看看你/自拍"就头肩或面部；否则半身 */
       framing = /(脸|正脸|长什么样|自拍)/.test(req) ? '头肩' : '半身'
       if (/(特写|近一点|凑近)/.test(req)) framing = '面部特写'
+      // 要看身形 → 至少给到三分之二身（半身看不出来）
+      if (wantsFigure(req)) framing = '三分之二身'
       break
     case 'mirror_selfie':
-      /* 对镜：看穿搭就全身，否则三分之二身 */
-      framing = /(穿搭|全身|这一身|衣服)/.test(req) ? '全身' : '三分之二身'
+      /* 对镜：看穿搭/看身形就全身，否则三分之二身 */
+      framing = (/(穿搭|全身|这一身|衣服)/.test(req) || wantsFigure(req)) ? '全身' : '三分之二身'
       break
     case 'first_person':
       framing = '局部'
