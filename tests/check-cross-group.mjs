@@ -11,7 +11,7 @@
  * ③ **抠群名**：只认"发到/发去/发在 + XX + 群"，不能把「发群里」也当点名。
  */
 import assert from 'node:assert/strict'
-import { QQBridge } from '../src/qq/bridge.js'
+import { QQBridge, pickPrivateCover } from '../src/qq/bridge.js'
 
 const p = QQBridge.prototype
 let pass = 0
@@ -97,6 +97,35 @@ ok('普通提到群 ≠ 谎报（不误伤）', () => {
   for (const t of ['群里在聊什么呢', '他们群里太吵了', '我不想发群']) {
     assert.equal(claim(t, {}), null, `不该抓：${t}`)
   }
+})
+
+console.log('\n=== 4. 图只给群（用户选 B）===')
+/*
+ * 现场：
+ * ```
+ * 15:45:21  画好了（20s）
+ * 15:45:24  发群「短的那套上身了，谁要来看」（带图）
+ * 15:45:26  [我] private「…好了，这就发。」   ← 嘴上说"这就发"，私聊什么都没有
+ * ```
+ * 用户口径：**图只给群**，但私聊那句不能说"这就发"。
+ */
+const img = { url: 'base64://IMG' }
+
+ok('★ 图已经进群了 → 私聊不再重复带同一张', () => {
+  assert.equal(pickPrivateCover({ drawnImage: img, sentToGroup: true }), null)
+})
+
+ok('★ 图没发成（节流/去重/找不到群）→ 图留在私聊，不能丢', () => {
+  assert.deepEqual(pickPrivateCover({ drawnImage: img, sentToGroup: false }), img)
+})
+
+ok('找图（findImage）优先级最高，和发群无关', () => {
+  const r = pickPrivateCover({ findImage: { buffer: Buffer.from('abc') }, drawnImage: img, sentToGroup: true })
+  assert.ok(String(r?.url ?? '').startsWith('base64://'))
+})
+
+ok('什么都没画 → null（不硬凑）', () => {
+  assert.equal(pickPrivateCover({}), null)
 })
 
 console.log(`\n${'='.repeat(44)}\n通过 ${pass} / 失败 ${fail}`)

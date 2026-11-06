@@ -4855,7 +4855,11 @@ export class QQBridge {
                 if (!this._crossGroupAt) this._crossGroupAt = new Map()
                 this._crossGroupAt.set(crossKey, Date.now())
               } catch {}
-              crossGroupNote = cover ? '发群里了（带图）' : '发群里了'
+              /*
+               * ⚠️ 这句会被拼成「正文（发群里了）」——**别嵌套括号**（2026-11-06）。
+               *    原来写「发群里了（带图）」，拼出来是「（发群里了（带图））」。
+               */
+              crossGroupNote = cover ? '图发群里了' : '发群里了'
               this.log.info?.(`bridge：发群「${String(hit[1]).slice(0, 40)}」${cover ? '（带图）' : ''}→ ${target.groupId}`)
               }
             } catch (e) {
@@ -4968,9 +4972,28 @@ export class QQBridge {
     try {
       // findImage 的 buffer 走 base64 data URL —— OneBot 的 image 段
       // 能直接收 URL，也能收 base64，但 URL 更省带宽。
-      const coverForSend = findImage
-        ? { url: `base64://${findImage.buffer.toString('base64')}` }
-        : (drawnImage ?? cover)
+      /*
+       * ★★ **图已经进群了，私聊就不再重复发同一张**（2026-11-06 用户选 B）。
+       *
+       * 现场：
+       * ```
+       * 15:45:21  画好了（20s）
+       * 15:45:24  发群「短的那套上身了，谁要来看」（带图）→ 704291282
+       * 15:45:26  [我] private「…好了，这就发。」   ← 嘴上说"这就发"，私聊却什么都没有
+       * ```
+       * 用户口径：**图只给群**，但私聊那句不能说"这就发"——得说"发群里了"。
+       *
+       * 所以：这一轮真的把图发进群了（`crossGroupNote` 有值）→ 私聊不再带图，
+       * 并在正文里附一句「发群里了」，让他知道图去哪了。
+       * 反之（节流/去重/找不到群 → 没发成）→ 图留在私聊，不丢。
+       */
+      const sentToGroupWithPic = Boolean(crossGroupNote)
+      const coverForSend = pickPrivateCover({
+        findImage,
+        drawnImage,
+        cover,
+        sentToGroup: sentToGroupWithPic,
+      })
       // 禁言结果附一句说明 —— 当事人得知道发生了什么，别偷偷摸摸的。
       // 没写正文（只给了标记）时，就用这句当正文。
       if (banNote || nickNote || tagNote || qqNotes.length > 0) {
@@ -9898,6 +9921,28 @@ export class QQBridge {
  * @param {{maxChars?:number, segment?:boolean}} [opts]
  * @returns {Array<object>} 段列表，kind ∈ text|face|mface|image
  */
+/**
+ * 私聊这条要不要带图（2026-11-06 用户选 B）。
+ *
+ * ## 规则
+ * - **图已经进群了**（`sentToGroup`）→ 私聊**不带**这张图，正文会附「图发群里了」
+ *   （用户口径：图只给群，别一张图刷两遍）
+ * - 没进群（节流 / 去重 / 找不到群）→ 图**留在私聊**，不能丢
+ * - 找图（findImage）优先级最高，和发群无关
+ *
+ * @param {object} o
+ * @param {{buffer:Buffer}|null} o.findImage
+ * @param {{url:string}|null} o.drawnImage
+ * @param {{url:string}|null} o.cover
+ * @param {boolean} o.sentToGroup
+ * @returns {{url:string}|null}
+ */
+export function pickPrivateCover({ findImage, drawnImage, cover, sentToGroup } = {}) {
+  if (findImage?.buffer) return { url: `base64://${findImage.buffer.toString('base64')}` }
+  if (sentToGroup) return null
+  return drawnImage ?? cover ?? null
+}
+
 export function buildOutgoingSegments(text, cover = null, opts = {}) {
   const maxChars = Number.isFinite(opts.maxChars) ? opts.maxChars : 500
   const segment = opts.segment === true
