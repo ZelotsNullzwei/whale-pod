@@ -1438,16 +1438,28 @@ export class QQBridge {
    */
   _summaryClock() {
     try {
-      const minutes = Number(this.cfg?.memory?.long?.everyMinutes ?? 0)
-      if (!minutes) return
+      /*
+       * ★ 触发条件改成**安静**（2026-11-06 用户：「一定时间没人说话就自动归档」）。
+       *
+       * 按"距上次摘要多久"是机械的：正在热聊时也会到点，白花一次调用；
+       * 而真正该归档的时刻恰恰是**场子冷下来**的时候 ——
+       * 这轮聊完、没人再说话，把这几条收进长期档案。
+       */
+      const idleMinutes = Number(this.cfg?.memory?.long?.idleMinutes ?? 10)
+      if (!idleMinutes) return
+      const now = Date.now()
       for (const scope of (this.memory?.scopes?.() ?? [])) {
         const mem = this.memory.get?.(scope)
         if (!mem) continue
         const total = Number(mem.totalPushed ?? 0)
         if (!total) continue
         const long = this.longMemory?.get?.(scope)
-        if (Date.now() - Number(long?.updatedAt ?? 0) < minutes * 60_000) continue
+        // 没有新消息就不用摘（这就是"不白花钱"的那道闸）
         if (total <= Number(long?.summarizedTotal ?? 0)) continue
+        const lastMsgAt = Number((mem.recent?.(1) ?? [])[0]?.at ?? 0)
+        if (!lastMsgAt) continue
+        // 还在聊 → 等安静下来再摘
+        if (now - lastMsgAt < idleMinutes * 60_000) continue
         this._maybeSummarize(scope, mem, '', { force: true })
       }
     } catch { /* 定时器不能把进程搞挂 */ }
