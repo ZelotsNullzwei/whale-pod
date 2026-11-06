@@ -28,6 +28,8 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import os from 'node:os'
+// 读的时候要对一次衣柜（见 wearingFor 的注释）
+import { resolveOutfitText } from './wardrobe.js'
 
 /** 数据目录（`configureWearState` 会覆盖） */
 let HOME = path.join(
@@ -140,8 +142,25 @@ export function wearingFor(dayKey, slotId = '') {
   if (!rec || !String(rec.text ?? '').trim()) return null
   // 该换睡衣了 → 临时那套不再生效
   if (SLEEP_SLOTS.includes(String(slotId ?? ''))) return null
+  /*
+   * ★★ **读的时候再对一次衣柜**（2026-11-06 实测）。
+   *
+   * 现场：她 16:31 写的是
+   *   [换装:短款女仆装，藏青连身裙加白蕾丝围裙，裙摆到膝上]
+   * 这句**没有过膝白丝**（衣柜里那套有）。写进文件之后，
+   * 后面每次生图都读这句残缺版 —— 腿上就是光腿。
+   *
+   * 写入口已经会解析（resolveOutfitText），但**历史记录**还在文件里，
+   * 所以读取时也解析一遍：能对上衣柜就用衣柜原文。
+   * ⚠️ 解析失败（她自己编的）就原样返回，不硬套。
+   */
+  let text = String(rec.text)
+  try {
+    const r = resolveOutfitText(text)
+    if (r.matched && r.text) text = r.text
+  } catch { /* 解析失败不影响主流程 */ }
   return {
-    text: String(rec.text),
+    text,
     kind: String(rec.kind ?? ''),
     at: Number(rec.at ?? 0),
     note: String(rec.note ?? ''),

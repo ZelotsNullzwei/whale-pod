@@ -181,5 +181,41 @@ ok('★ 已经说全了的，允许当轮直接画（不能一律卡死）', () 
   assert.match(src, /才可以当轮直接画，不用再问/)
 })
 
+console.log('\n=== 8. 没说要拍就不许画（机械闸）===')
+ok('★ 源码里有"他没说要拍 → 不画、改问"的闸', () => {
+  const src = fs.readFileSync(new URL('../src/qq/bridge.js', import.meta.url), 'utf8')
+  assert.match(src, /askInstead/)
+  assert.match(src, /画图跳过 —— 他没说要拍/)
+})
+
+ok('★ 拦下之后要补一句真的问话（否则这条什么都没发）', () => {
+  const src = fs.readFileSync(new URL('../src/qq/bridge.js', import.meta.url), 'utf8')
+  assert.match(src, /拍什么？全身还是半身、只拍脸？对镜自拍还是前置？/)
+})
+
+ok('★ 判据覆盖"？"这种没内容的（不能算 go-ahead）', () => {
+  const src = fs.readFileSync(new URL('../src/qq/bridge.js', import.meta.url), 'utf8')
+  const m = /const goAhead = (\/.*?\/)\.test/.exec(src)
+  assert.ok(m, '找不到 goAhead 正则')
+  const re = eval(m[1]) // 同一条正则
+  assert.equal(re.test('？'), false, '「？」不该算要拍')
+  assert.equal(re.test(''), false, '空消息不该算要拍')
+  assert.equal(re.test('拍一张'), true)
+  assert.equal(re.test('全身'), true)
+  assert.equal(re.test('对镜'), true)
+})
+
+console.log('\n=== 9. 衣着以「今天穿着」为准，场景句里的衣服不算 ===')
+ok('★ 提示词里有"衣着只按那一行"的优先级说明', () => {
+  const src = fs.readFileSync(new URL('../src/photo/photo-prompt.js', import.meta.url), 'utf8')
+  assert.match(src, /衣着\*\*只按上面/)
+})
+
+ok('★ 历史记录也会被解析成衣柜原文（过膝白丝不能丢）', () => {
+  const src = fs.readFileSync(new URL('../src/memory/wearing.js', import.meta.url), 'utf8')
+  assert.match(src, /resolveOutfitText/)
+  assert.match(src, /读的时候再对一次衣柜/)
+})
+
 console.log(`\n${'='.repeat(44)}\n通过 ${pass} / 失败 ${fail}`)
 process.exit(fail === 0 ? 0 : 1)

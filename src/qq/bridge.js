@@ -4268,9 +4268,31 @@ export class QQBridge {
       }
       if (hit) {
         text = text.replace(hitScene ? reScene : (hitIll ? reIll : re), '').replace(/[ \t]{2,}/g, ' ').trim()
-        if (this.cfg.actions?.draw === false) {
+        /*
+         * ★★ **机械闸：他没说要拍，就不许画**（2026-11-06 实测）。
+         *
+         * 现场：
+         * ```
+         * 16:44:41 他「？」            ← 什么都没要
+         * 16:44:44 她 画图「对镜自拍，穿着藏青连身短款女仆装…」  ← 直接画了
+         * ```
+         * 光在提示词里写"先问拍什么、怎么拍"没用 —— 模型照样画。
+         * 用户口径「询问就已经是变量控制了」：那就让**程序**来问。
+         *
+         * 判据：他这一轮有没有"让我拍"的意思（要/拍/看/来一张/全身/半身/对镜…）。
+         * 没有 → 不画，把这句话改成问句（问拍什么、怎么拍）。
+         */
+        const goAhead = /(要|拍|看|来一张|发一张|可以|行吧|好啊|嗯|对镜|前置|全身|半身|特写|脸|这张|那张|自拍)/.test(String(msg.text ?? ''))
+        if (this.cfg.actions?.askBeforeDraw !== false && !goAhead) {
+          this.log.info?.('bridge：画图跳过 —— 他没说要拍（先问"拍什么、怎么拍"）')
+          msg.__askInstead = true
+        } else if (this.cfg.actions?.draw === false) {
           this.log.info?.('bridge：画图被开关关掉了（qq.actions.draw = false）')
         } else {
+          /*
+           * 真开始画了 —— 谎报闸的 `did.draw` 认这个（跳过的情况不算画过）。
+           */
+          drewAny = true
           /*
            * ★ 同一会话 10 分钟内只画一张（2026-11-05）：
            *   用户连发「？」时，她每轮都重画一张（22~28 秒、每次花钱）。
@@ -4626,6 +4648,19 @@ export class QQBridge {
           }   // ← 10 分钟闸门 else 闭合
         }
       }
+    }
+    /*
+     * ★ **没说要拍 → 改成问她"拍什么、怎么拍"**（2026-11-06）。
+     *
+     * 上面把画图拦下来了，但正文可能只剩空（她整条就只有一个 [画图:]）。
+     * 这时必须给一句真的话，否则这条回复会变成"什么都没发"。
+     * 用户口径「询问就已经是变量控制了」—— 问清楚，变量就定了。
+     */
+    if (msg.__askInstead) {
+      if (!text.trim()) {
+        text = '拍什么？全身还是半身、只拍脸？对镜自拍还是前置？'
+      }
+      this.log.info?.('bridge：改问"拍什么、怎么拍"（没画）')
     }
 
     let findImage = null
