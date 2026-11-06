@@ -248,6 +248,94 @@ export function outfitForSlot(slotId, dayKey, justWoke = false) {
  *    但足够她回答「你有什么衣服」「都什么风格」。
  * @returns {string}
  */
+/**
+ * 把她随口说的那句「换装」**对上衣柜里的那一套**（2026-11-06）。
+ *
+ * ## 为什么需要
+ * 她写标记时喜欢**自己概括**：
+ * ```
+ * [换装:短款女仆装，藏青连身裙加白蕾丝围裙，裙摆到膝上]
+ * ```
+ * 这句里没有「过膝白丝 / 袜口蕾丝花边 / 玛丽珍鞋 / 鲸鱼尾巴」——
+ * 衣柜里那套明明是写全的。结果：
+ *   · `wearing.json` 记的是这句残缺版
+ *   · 生图按这句画 → 腿上是光腿，跟她嘴上说的不是同一套
+ *
+ * 所以：先拿她这句去衣柜里找最像的那条，**找到就用衣柜原文**。
+ *
+ * @param {string} desc 她自己写的那句
+ * @returns {{text:string, kind:string, matched:boolean}}
+ */
+export function resolveOutfitText(desc) {
+  const raw = String(desc ?? '').trim()
+  if (!raw) return { text: '', kind: '', matched: false }
+  const pools = effectivePools()
+
+  /*
+   * ① **显式别名优先**（2026-11-06 实测：只靠字面打分，「短款女仆」会匹配到
+   *    「长款」—— 两套的裙子描述高度重合，长款那条更长所以命中更多）。
+   *    这里按"她平时怎么叫"直接钉死。
+   */
+  const SIG = pools.signature ?? []
+  const alias = [
+    { re: /短款|短的|短的那套|膝上/, idx: 1 },      // 女仆装短款
+    { re: /长款|长的|长的那套|过膝的?那套/, idx: 0 }, // 女仆装长款
+    { re: /水手/, idx: 4 },
+    { re: /白色系|全白/, idx: 5 },
+    { re: /上衣.{0,4}长裤|长裤那套/, idx: 2 },
+    { re: /连衣裙.{0,4}围裙/, idx: 3 },
+  ]
+  if (/女仆|maid/i.test(raw)) {
+    for (const a of alias) {
+      if (a.re.test(raw) && SIG[a.idx]) return { text: SIG[a.idx], kind: 'signature', matched: true }
+    }
+  }
+  /*
+   * 没提"女仆"但说的是「短款/短的那套/长款」——她平时就这么指那两套。
+   * ⚠️ 排除掉明显是别的衣物（外套/衬衫/裤/T恤），否则「短款外套」会被认成女仆装。
+   */
+  if (!/(外套|衬衫|上衣|裤|T恤|卫衣|针织)/.test(raw)) {
+    for (const a of alias.slice(0, 2)) {
+      if (a.re.test(raw) && SIG[a.idx]) return { text: SIG[a.idx], kind: 'signature', matched: true }
+    }
+  }
+  // 不带"女仆"但明显是某套标志性的（"水手服"/"白色系"）
+  for (const a of alias) {
+    if (a.idx >= 4 && a.re.test(raw) && SIG[a.idx]) return { text: SIG[a.idx], kind: 'signature', matched: true }
+  }
+
+  /*
+   * ② 字面打分兜底。
+   */
+  /*
+   * 打分：她写的那句里出现了多少个"这一套的特征词"。
+   * 特征词取衣柜原文里的 2 字片段（跳过标点和 **），出现得多就更像。
+   */
+  const grams = (s) => {
+    const clean = String(s).replace(/[*＊\s，,。.、（）()「」]/g, '')
+    const out = new Set()
+    for (let i = 0; i + 2 <= clean.length; i++) out.add(clean.slice(i, i + 2))
+    return out
+  }
+  const want = grams(raw)
+  let best = null
+  for (const kind of ['signature', 'home', 'outing', 'sleepwear']) {
+    for (const entry of pools[kind] ?? []) {
+      const have = grams(entry)
+      let hit = 0
+      for (const g of want) if (have.has(g)) hit++
+      /*
+       * 归一化：短句 vs 长条目，直接比命中数会让长条目占便宜。
+       * 用"命中数 / 她那句的片段数"，再要求至少命中 3 个片段。
+       */
+      const score = hit / Math.max(1, want.size)
+      if (hit >= 3 && (!best || score > best.score)) best = { entry, kind, score, hit }
+    }
+  }
+  if (!best) return { text: raw, kind: 'custom', matched: false }
+  return { text: best.entry, kind: best.kind, matched: true }
+}
+
 export function wardrobeBrief() {
   const total = HOME_OUTFITS.length + OUTING_OUTFITS.length + SLEEPWEAR.length + SIGNATURE_OUTFITS.length
   return [

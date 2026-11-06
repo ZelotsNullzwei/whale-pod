@@ -129,5 +129,57 @@ ok('★ 默认上限是有限值（不是 0 = 不限）', () => {
   assert.match(src, /drawMaxPerWindow \?\? 2/)
 })
 
+console.log('\n=== 6. [换装:] 要"对上衣柜"，不能照抄她的概括 ===')
+/*
+ * 现场：她写的是
+ *   [换装:短款女仆装，藏青连身裙加白蕾丝围裙，裙摆到膝上]
+ * 这句里没有「过膝白丝 / 袜口蕾丝花边 / 玛丽珍鞋 / 鲸鱼尾巴」，
+ * 衣柜里那套明明是写全的 → 按残缺版记录，生图腿上就是光腿。
+ */
+const W2 = await import('../src/memory/wardrobe.js')
+
+ok('★ 「短款女仆装…裙摆到膝上」→ 对上**短款**（不是长款）', () => {
+  const r = W2.resolveOutfitText('短款女仆装，藏青连身裙加白蕾丝围裙，裙摆到膝上')
+  assert.equal(r.matched, true)
+  assert.match(r.text, /女仆装短款/)
+  assert.match(r.text, /过膝/, '要带上过膝白丝')
+  assert.match(r.text, /袜口一圈蕾丝花边/, '要带上蕾丝花边')
+})
+
+ok('「长款女仆装」→ 对上长款（不能反过来）', () => {
+  const r = W2.resolveOutfitText('长款女仆装')
+  assert.match(r.text, /女仆装长款/)
+})
+
+ok('「短的那套」→ 也认（她平时这么叫）', () => {
+  const r = W2.resolveOutfitText('短的那套')
+  assert.equal(r.matched, true)
+  assert.match(r.text, /女仆装短款/)
+})
+
+ok('「短款外套」不该被认成女仆装（不误伤别的衣物）', () => {
+  const r = W2.resolveOutfitText('短款外套')
+  assert.equal(r.matched, false)
+})
+
+ok('她自己编的衣服 → 原样保留（不能硬套）', () => {
+  const r = W2.resolveOutfitText('一件豹纹吊带')
+  assert.equal(r.matched, false)
+  assert.equal(r.text, '一件豹纹吊带')
+})
+
+console.log('\n=== 7. 拍之前先问"拍什么、怎么拍" ===')
+ok('★ 提示词里有这两问（不是笼统的"要不要拍"）', () => {
+  const src = fs.readFileSync(new URL('../src/qq/bridge.js', import.meta.url), 'utf8')
+  assert.match(src, /拍之前先问/)
+  assert.match(src, /拍什么/)
+  assert.match(src, /怎么拍/)
+})
+
+ok('★ 已经说全了的，允许当轮直接画（不能一律卡死）', () => {
+  const src = fs.readFileSync(new URL('../src/qq/bridge.js', import.meta.url), 'utf8')
+  assert.match(src, /才可以当轮直接画，不用再问/)
+})
+
 console.log(`\n${'='.repeat(44)}\n通过 ${pass} / 失败 ${fail}`)
 process.exit(fail === 0 ? 0 : 1)
