@@ -46,7 +46,7 @@ import { extractQQMarkers, runQQMarkers, buildEmojiHint } from './qqActions.js'
 import { generateImage, cropBottom, eraseCornerWatermark } from './mcpImage.js'
 /* 摄影决策链（v2.0）：规划 → 校验 → 构图 → 提示词，见 src/photo/ */
 import { planShot, describeShot } from '../photo/index.js'
-import { figurePoseForDay } from '../photo/photo-composer.js'
+import { figurePoseForDay, detectBodyPart } from '../photo/photo-composer.js'
 import { dayKey } from '../memory/dayPlan.js'
 import { outingOutfitForDay, signatureOutfitForDay, wardrobeBrief, resolveOutfitText } from '../memory/wardrobe.js'
 // 今天临时换上的那套（2026-11-06）：当天有效，晚上/第二天自动让位
@@ -5079,6 +5079,17 @@ export class QQBridge {
           drawAllowed = false
           drawSkipReason = '纯图片/表情不触发生图'
           msg.__askInstead = false
+        } else if (String(msg.kind ?? '') === 'group' && detectBodyPart(String(hit[1] ?? ''))) {
+          /*
+           * ★ **群里不拍部位特写**（2026-11-07 定的边界）。
+           *
+           * 用户问「看看脚 / 手 / 腿 / 小肚子 / 胸」这类能不能生 ——
+           * 私聊可以，**群里不行**：一群人在看着，这种图不该发到群里。
+           * 这里直接不画，让她用文字接（她也可以说「这张不发群里」）。
+           */
+          this.log.info?.('bridge：画图跳过 —— 群里不拍部位特写（只有私聊给）')
+          drawAllowed = false
+          drawSkipReason = '群里不拍部位特写'
         } else if (saidNo) {
           // 明确拒绝 → 不画，并且退出"等确认"状态
           this._drawAsk.delete(askKey)
@@ -11825,7 +11836,18 @@ export function classifyDrawIntent(text) {
   if (!s.trim()) return { wantsPic: false, saidNo: false }
   // 「看」族要过宾语检查：「给我看看书」不是要图
   const lookHit = PIC_REQUEST_LOOK_PHRASES.some((p) => s.includes(p)) && !PIC_LOOK_BLOCK.test(s)
-  const wantsPic = PIC_REQUEST_PHRASES.some((p) => s.includes(p)) || lookHit
+  /*
+   * ★ **点名看部位也算要图**（2026-11-07 用户：「看看脚，看看手，
+   *   看看腿，看看小肚子，看看胸一类的」）。
+   *
+   * 这些说法原来一条都进不了 PIC_REQUEST_PHRASES ——
+   * 实测「看看脚」「看看腿」「看看小肚子」「看看锁骨」「看看胸」全是 wantsPic=false，
+   * 于是闸门判「他没说要拍」→ 她先去问"拍什么"，部位特写永远触发不了。
+   *
+   * ⚠️ 「手」要排除手机/手表/手环：「看看手机」不是要看手。
+   */
+  const PART_LOOK = /看看?(?:你的)?(?:脚趾|脚|手指|手(?!机|表|环|套|链|册)|腿|小肚子|小腹|锁骨|胸|腰)/
+  const wantsPic = PIC_REQUEST_PHRASES.some((p) => s.includes(p)) || lookHit || PART_LOOK.test(s)
   const refused = PIC_REFUSE_PHRASES.some((p) => s.includes(p))
   return { wantsPic, saidNo: refused && !wantsPic }
 }

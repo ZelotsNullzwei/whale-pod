@@ -259,6 +259,21 @@ ${(framing.notes ?? []).map((n) => '- ' + n).join('\n')}
   }
 
   /*
+   * ★ **部位特写**（2026-11-07 用户：「看看脚，看看手，看看腿，
+   *   看看小肚子，看看胸一类的」）。
+   *
+   * 这种图的关键是"只拍那一块"：不写死，模型一定把整个人画进来
+   * （它默认"人物照就该有脸"）。所以单独一段，明确"脸在画外"。
+   */
+  if (framing.bodyPart) {
+    parts.push(`【部位特写：只拍${framing.bodyPart}】
+- 画面**只框住${framing.bodyPart}**，其余身体在画外 —— **不出现脸、不出现全身**。
+- 不要拼贴、不要"一格里两个视角"、不要在角落补一张小图。
+- ${framing.bodyPart}的肤色、质感、指甲/衣着细节，跟人物设定和当天穿搭一致。
+- 贴近拍（俯拍或平视），像她自己举手机随手拍的近景；不要影棚打光。`)
+  }
+
+  /*
    * ★ 连身睡裙要看得见裙摆（2026-11-06 实测）：
    *   被子盖住下半身时模型只剩上衣可画，补了个短裤 → 睡裙变 T 恤+短裤。
    */
@@ -362,7 +377,8 @@ ${lightByHour()}
 
   if (plan.hidePhone) bans.push('手机')
   if (plan.needsCharacterRef === false) bans.push('她自己的完整脸部')
-  if (!framing.feet) bans.push('完整双脚（这一张不拍脚）')
+  // 部位特写如果是「脚」，这条禁令必须让路（否则自己把自己禁掉）
+  if (!framing.feet && framing.bodyPart !== '脚') bans.push('完整双脚（这一张不拍脚）')
   parts.push(`【禁止】\n${bans.map((b) => '- ' + b).join('\n')}`)
 
   parts.push(`【输出】竖版 9:16，单张。`)
