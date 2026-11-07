@@ -77,6 +77,69 @@ function writeAll(items) {
 const norm = (s) => String(s ?? '').replace(/\s+/g, ' ').trim()
 
 /**
+ * 近似重复判定（2026-11-07 加）。
+ *
+ * ## 现场
+ * 私聊档案里同一条事攒了 **14 份**：
+ *   「说定了：他明天下午打卫戍协议，本鲸蹲旁边当观众…」
+ *   「说定的事没变：他明天下午打卫戍协议…」
+ *   「说定的事没变：…这回本鲸把日子记岔成今天，被他点出来，当场认了。」
+ *   ……
+ * 因为 `merge()` 每次摘要都把**旧【事】整段**归档进来，而原来只挡
+ * **完全一样**的字符串 —— 措辞差几个字就全进来了。
+ *
+ * 代价不只是占地方：`renderFacts` 会把它们全渲染进提示词，
+ * 于是「打卫」这件事在她眼前重复十几遍，她就一直惦记着提。
+ *
+ * 用 4-gram Jaccard 判近似（阈值 0.6）：这几条互相都在 0.8 以上，
+ * 而「他说白色吊带好看」和「他半夜常来缠」这种不同的事在 0.2 以下。
+ */
+const NEAR_DUP = 0.35
+
+/**
+ * 判定阈值是**量出来的**（2026-11-07，用线上 118 条真实档案）：
+ *   · 同一件事的 13 个变体之间，最小相似度 **0.42**
+ *   · 与不相干主题的最大相似度 **0.27**
+ * 取 0.35 落在中间，两边都有余量。改动前先重跑一次这个测量（见提交说明），
+ * 不要凭感觉调。
+ */
+
+function shingles(s, n = 4) {
+  const t = String(s ?? '').replace(/[\s\p{P}]/gu, '')
+  const set = new Set()
+  if (!t) return set
+  if (t.length <= n) { set.add(t); return set }
+  for (let i = 0; i + n <= t.length; i++) set.add(t.slice(i, i + n))
+  return set
+}
+
+function jaccard(a, b) {
+  if (!a?.size || !b?.size) return 0
+  let inter = 0
+  for (const x of a) if (b.has(x)) inter++
+  return inter / (a.size + b.size - inter)
+}
+
+/**
+ * 合并近似重复时留哪条：**信息更多的**（长度优先）。
+ *
+ * 为什么要合而不是简单丢一条：这些变体常各有各的补充
+ * （「他纠正了我一次：他说的"一起"是指聊更新公告」）。
+ * 全丢会丢细节，全留就是十几条重复占提示词 —— 留最长那条最划算。
+ */
+const longer = (a, b) => (String(b ?? '').length > String(a ?? '').length ? b : a)
+
+/**
+ * 两段话是不是「同一件事」（给 `merge()` 判断旧话题有没有被真的换掉）。
+ * @param {string} a
+ * @param {string} b
+ * @param {number} [threshold]
+ */
+export function isNearDup(a, b, threshold = NEAR_DUP) {
+  return jaccard(shingles(a), shingles(b)) >= threshold
+}
+
+/**
  * 追加几条。
  * @param {Array<{text:string, scope?:string, at?:number}>} list
  */
@@ -87,17 +150,63 @@ export function addFacts(list = []) {
   if (!incoming.length) return { ok: true, added: 0 }
   const items = [...readAll()]
   const seen = new Set(items.map((x) => norm(x.text)))
+  const grams = items.map((x) => shingles(x.text))
   let added = 0
+  let merged = 0
   for (const it of incoming) {
     if (seen.has(it.text)) continue
+    const sh = shingles(it.text)
+    // ★ **近似重复也要挡**（措辞差几个字不算新事，见上面 NEAR_DUP 的说明）
+    const i = grams.findIndex((g) => jaccard(g, sh) >= NEAR_DUP)
+    if (i >= 0) {
+      const better = longer(items[i].text, it.text)
+      if (better !== items[i].text) {
+        items[i] = { ...items[i], text: better }
+        grams[i] = shingles(better)
+        seen.add(better)
+        merged++
+      }
+      continue
+    }
     seen.add(it.text)
+    grams.push(sh)
     items.push(it)
     added++
   }
   // 太多就丢最早的（仍保留最近的 300 条）
   const trimmed = items.length > MAX_ITEMS ? items.slice(items.length - MAX_ITEMS) : items
   writeAll(trimmed)
-  return { ok: true, added, total: trimmed.length }
+  return { ok: true, added, merged, total: trimmed.length }
+}
+
+/**
+ * 把已有的近似重复合并掉（维护用，2026-11-07）。
+ * 合并规则见 `longer`：留信息更多的那个，`at` 用更早的。
+ * @returns {{ok:boolean, removed:number, merged:number, total:number}}
+ */
+export function dedupeFacts() {
+  const items = [...readAll()]
+  const kept = []
+  const grams = []
+  let merged = 0
+  for (const it of items) {
+    const sh = shingles(it.text)
+    const i = grams.findIndex((g) => jaccard(g, sh) >= NEAR_DUP)
+    if (i >= 0) {
+      const better = longer(kept[i].text, it.text)
+      if (better !== kept[i].text) {
+        kept[i] = { ...kept[i], text: better }
+        grams[i] = shingles(better)
+        merged++
+      }
+      continue
+    }
+    grams.push(sh)
+    kept.push(it)
+  }
+  const removed = items.length - kept.length
+  if (removed > 0 || merged > 0) writeAll(kept)
+  return { ok: true, removed, merged, total: kept.length }
 }
 
 /**

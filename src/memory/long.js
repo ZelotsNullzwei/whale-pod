@@ -20,7 +20,7 @@
 
 import fs from 'node:fs'
 import path from 'node:path'
-import { addFacts } from './facts.js'
+import { addFacts, isNearDup } from './facts.js'
 
 /** 一个会话的长期记忆。 */
 export class LongTermMemory {
@@ -62,7 +62,28 @@ export class LongTermMemory {
     if (!this.summary) return ''
     const text = clipForPrompt(this.summary, this.limits.inject)
     if (!text) return ''
-    const base = `【关于这个会话你已经知道的】\n${text}`
+    /*
+     * ★ **摘要要带上「写于哪天」**（2026-11-07 修「卫的日子记岔」）。
+     *
+     * 现场：私聊摘要连着三代都写着「他**明天**下午打卫戍协议」——
+     * 每过一天「明天」就指向另一天，她照着念就把日子记岔了
+     * （用户：「不知道是她没表达清楚还是记不清日子」）。
+     *
+     * 提示词层已经要求写绝对日期（见 SUMMARY_PROMPT），
+     * 但旧摘要和模型偶尔的偷懒还得兜住 —— 带上写入日期，她自己能换算。
+     */
+    let dateLine = ''
+    const at = Number(this.updatedAt ?? 0)
+    if (at > 0) {
+      try {
+        const d = new Date(at).toLocaleString('zh-CN', {
+          year: 'numeric', month: 'numeric', day: 'numeric', hour12: false,
+        })
+        dateLine = `\n（这段摘要写于 ${d}。里面凡是「明天 / 后天 / 昨天 / 这周」这类说法，`
+          + `都是**那天的口径** —— 换算成今天再开口，别把「明天」当今天。）`
+      } catch { dateLine = '' }
+    }
+    const base = `【关于这个会话你已经知道的】\n${text}${dateLine}`
     /*
      * ★ 梗表是「词典」不是「素材」（2026-11-07 实测）：
      *   群里那套【梗】被当成话题来源 —— 她反复提「青蛙」，群友直接说
@@ -109,7 +130,23 @@ export class LongTermMemory {
      */
     try {
       const oldTopics = parseTopics(this.summary)
-      if (oldTopics && oldTopics.length >= 8) {
+      /*
+       * ★★ **只有旧话题真的被换掉了，才留底**（2026-11-07 修）。
+       *
+       * 原来无条件归档：每次摘要都把旧【事】复制进档案库。而【事】
+       * 经常连着几代几乎不变（「说定的事没变：他明天下午打卫戍协议…」），
+       * 于是同一件事在 memory-facts.json 里攒了 **14 份**，
+       * 再被 `renderFacts` 全渲染进提示词 —— 她眼前这件事重复十几遍，
+       * 自然一直惦记着提（用户：「又在提」「日子记不清」）。
+       *
+       * 现在：新旧话题**近似**（同一件事）就不归档 —— 没新信息可留。
+       */
+      let replaced = true
+      try {
+        const newTopics = parseTopics(incoming)
+        if (oldTopics && newTopics) replaced = !isNearDup(oldTopics, newTopics)
+      } catch { /* 判不出来就按"换掉了"处理，宁可多留一条 */ }
+      if (oldTopics && oldTopics.length >= 8 && replaced) {
         const scope = String(this.scope ?? '').startsWith('group:') ? 'group' : 'private'
         addFacts([{ text: oldTopics.slice(0, 300), scope }])
       }
@@ -962,6 +999,9 @@ export const SUMMARY_PROMPT = `你在维护一个 QQ 群聊机器人的长期记
   （你说「我给你留一碗饭」← 这不是他的事，别写进【事实】）
 - ⚠️ **承诺和计划**要等对方**明确回应过**才算（他说「行，你留吧」才算）
 - ⚠️ **临时安排不升格为长期特征**：「今天没吃饭」不等于「他不吃饭」
+- ⚠️ **时间也要写绝对日期**：「明天有课」要写「11 月 8 日上午有课」，
+  或者干脆只写「课多」。相对词「明天/后天」在长期记忆里过一天就是错的
+  （2026-11-07 修：事实库里躺过一条「明天有课」）。
 - ⚠️ 玩笑、猜测、传闻、反话、角色扮演一律不记
 - ⚠️⚠️ **不许记「我们在开发 / 调试她」这类过程**（2026-11-06 加，线上翻车）：
   测试项、日志、提交、配置、部署、代码、仓库、版本号、API 费用、模型开销 ——
@@ -975,6 +1015,18 @@ export const SUMMARY_PROMPT = `你在维护一个 QQ 群聊机器人的长期记
 
 【事】
 这个会话最近在聊什么，**最多 2 句**。只写**明天还会影响对话**的事。
+
+⚠️⚠️ **时间一律写绝对日期，不许写「明天 / 后天 / 昨天 / 今晚 / 这周」**（2026-11-07 修）。
+摘要会被**留好几天**，而相对词每过一天就指向另一天 —— 实测连着三代摘要
+都写着「他明天下午打卫戍协议」，于是她每天把日子记岔一次，被用户抓到
+（「不知道是她没表达清楚还是记不清日子」）。
+   ✅ 「11 月 8 日下午他打卫戍协议，我在旁边当观众」
+   ❌ 「他明天下午打卫戍协议」
+不知道具体哪天就问清楚再写；实在不知道就写「最近」，别写「明天」。
+
+⚠️ **已经过去的事要删掉，不要留「说定的事没变」这种续命句式**：
+上一版摘要里有的，不代表现在还成立 —— 日子过了、事做完了，就整条删。
+（实测那句「说定的事没变」连着复制了三代。）
 
 写完逐条过这三问，任何一问答案是"不会"就删掉：
   ① 明天他还会需要我记着这件事吗？（约好时间、欠着的事、还没做完的事 → 会）
