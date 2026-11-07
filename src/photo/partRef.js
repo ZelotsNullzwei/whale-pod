@@ -49,7 +49,7 @@ const PART_BAND = {
   手: [0.45, 0.98],
   /* 背/肩：只在**对镜拍**时才走到这里（画面里是她 + 镜子） */
   背: [0.10, 0.72],
-  肩: [0.08, 0.55],
+  肩: [0.10, 0.78],
 }
 
 /**
@@ -63,7 +63,8 @@ const SELF_SAFE_BAND = {
   腰: [0.50, 0.80],
   手: [0.55, 0.98],
   背: [0.25, 0.80],
-  肩: [0.22, 0.60],
+  /* 肩：对镜时落在画面中段（取 0.42~0.62）；拿不到脸位置也能安全裁 */
+  肩: [0.42, 0.62],
 }
 
 /** 有裁切方案吗（手没有 → 调用方回退原参考图）。 */
@@ -205,7 +206,7 @@ export async function buildPartRef({ part, home, imageCfg = {}, faceBand = null,
 
   const resolved = resolveBand(key, fb)
   if (!resolved) {
-    log.warn?.(`部位参考图：${key} 拿不到脸位置，也不在"无脸安全"表里 → 不生成（回退原参考图）`)
+    log.warn?.(`部位参考图：${key} 没有可用的裁切区间（既没脸位置信息、也不在无脸安全表里，或被脸占住）→ 不生成`)
     return { file: null, reason: '无法保证不含脸 → 停止' }
   }
   const [top, bottom] = resolved.band
