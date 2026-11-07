@@ -1730,6 +1730,16 @@ export class QQBridge {
     const file = opts.home ? `${opts.home}/proactive.json` : null
     const state = new ProactiveState({ file, fs: opts.fs ?? null })
     const memoryOf = opts.memoryOf ?? (() => null)
+    /*
+     * ★ 把「按会话取记忆」注册给 `_speakUp`（2026-11-07 修的真 bug）。
+     *
+     * `_speakUp` 里写着「先按会话取回记忆（`this._memOf`，startProactive 里注册）」
+     * —— 但**从来没人赋值**。于是催话路径（`_tickNudges` 传 `mem = null`）
+     * 一直拿到那个空壳（`recent: () => []`）：
+     * 生成时**提示词里没有半句上下文**，只能凭空说一句，所以催话老是
+     * 不看前文（「人呢」倒还正常，一旦想接话就接不上）。
+     */
+    if (typeof memoryOf === 'function') this._memOf = memoryOf
     // 白名单为空时，scopes() 要靠「实际有记录的会话」来枚举 —— 由宿主注入。
     if (typeof opts.scopesSource === 'function') this._scopesSource = opts.scopesSource
 
@@ -3499,6 +3509,41 @@ export class QQBridge {
   }
 
   /**
+   * 这个会话最近是不是在「连着聊」（用来判断"戳一戳 = 催"）。
+   *
+   * ## 用户口径（2026-11-07）
+   *
+   * 「前面有连续的聊天接，戳一戳就是催促，直接回复就行了，
+   *   不用对戳一戳反应」
+   *
+   * 也就是说：**冷场时**被戳 = 有人来打招呼/逗你 → 回「干嘛」「？」；
+   * **正聊着**被戳 = 他等急了在催 → 直接接住话题往下说，
+   * 别问「干嘛」（那等于装作没看见前面聊的内容）。
+   *
+   * @param {string} scope 形如 `group:704291282` / `private:2129024700`
+   * @param {number} [windowMs] 多久之内算"还连着"
+   * @returns {{fresh:boolean, ageMs:number, lastFromHim:boolean, lastText:string}}
+   */
+  _recentChatState(scope, windowMs = 10 * 60_000) {
+    const none = { fresh: false, ageMs: Infinity, lastFromHim: false, lastText: '' }
+    try {
+      const list = this.memory?.get?.(scope)?.recent?.(6) ?? []
+      if (list.length === 0) return none
+      const last = list[list.length - 1] ?? {}
+      const at = Number(last.at ?? 0)
+      const ageMs = at > 0 ? Date.now() - at : Infinity
+      // 至少要有一条"他"说的 —— 全是她自己的话不算聊天
+      const fromHim = list.some((m) => m && !m.isMe)
+      return {
+        fresh: ageMs <= windowMs && fromHim,
+        ageMs,
+        lastFromHim: !last.isMe,
+        lastText: String(last.text ?? ''),
+      }
+    } catch { return none }
+  }
+
+  /**
    * 被戳时那句回话（2026-11-07 用户：「被戳也只用两固定回复」）。
    *
    * 原来从一个 6 句固定池随机 —— 戳多了就那两句来回。
@@ -3625,6 +3670,49 @@ export class QQBridge {
     const cfg = this.cfg.poke ?? {}
     if (cfg.enabled === false) return
     this.stats.received++
+
+    /*
+     * ★★ **正聊着的时候，戳 = 催**（2026-11-07 用户）
+     *
+     * 原话：「前面有连续的聊天接 戳一戳就是催促，直接回复就行了，
+     *        不用对戳一戳反应」
+     *
+     * 所以先看这个会话最近有没有在聊：
+     *   · 有（10 分钟内还有他说的话）→ 当成催促，走正常生成链接话，
+     *     明确禁用「干嘛」、禁用"把戳当话题"、禁用戳回去；
+     *   · 没有（冷场） → 落到下面的常规反应（干嘛 / ？ / 戳回去）。
+     */
+    const pokeScope = groupId ? `group:${groupId}` : `private:${fromId}`
+    const chat = this._recentChatState(pokeScope)
+    if (chat.fresh) {
+      this.log.info?.(
+        `bridge：被 ${fromId} 戳了，但那边 ${Math.round(chat.ageMs / 1000)} 秒前还在聊 → 当成催促，直接接话`,
+      )
+      const hint = '## 他戳了你一下 —— 这是**催**，不是新话题\n'
+        + `你俩前面正聊着（${Math.round(chat.ageMs / 1000)} 秒前还有消息`
+        + `${chat.lastFromHim ? '，他最后那句还没被接住' : ''}）。\n`
+        + '他这一戳是嫌你回得慢 / 想让你接着说。\n'
+        + '〔提示：**直接接住刚才那个话题往下说**。\n'
+        + '  ❌ 别问「干嘛」「怎么了」—— 那等于装作没看见前面聊的内容；\n'
+        + '  ❌ 别把「戳一戳」本身当话题；❌ 不用戳回去；❌ 不要 [SILENT]。〕'
+      let nudged = false
+      try {
+        let mem2 = null
+        try { mem2 = this._memOf?.(pokeScope) ?? this.memory?.get?.(pokeScope) ?? null } catch { mem2 = null }
+        nudged = (await this._speakUp(
+          { scope: pokeScope, kind: groupId ? 'group' : 'private', groupId, userId: groupId ? null : fromId },
+          mem2,
+          hint,
+        )) === true
+      } catch (e) {
+        this.log.warn?.(`bridge：戳当催促的接话失败 — ${String(e?.message ?? e)}`)
+      }
+      if (nudged) {
+        this._recordPoke(groupId, fromId, null, 'poke-nudge')
+        return
+      }
+      this.log.info?.('bridge：戳当催促没接上（SILENT/失败）→ 退回常规反应')
+    }
 
     // 概率：不是每次戳都理 —— 真人也有懒得回的时候
     //
