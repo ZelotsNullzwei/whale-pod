@@ -202,7 +202,9 @@ await ok('补发必须从 gen.text 取文本（_generate 返回 {text, cover}，
   const src = fs.readFileSync(new URL('../src/qq/bridge.js', import.meta.url), 'utf8')
   const i = src.indexOf('async _videoFollowUp(')
   assert.ok(i > 0, '找不到 _videoFollowUp')
-  const body = src.slice(i, i + 3000)
+  // ⚠️ 窗口 6000（2026-11-07）：方法前加了几段"话题翻篇/已说过就不补"的闸，
+  //    3000 字符已经切不到 gen.text 那一行。窗口大小问题，不是行为变了。
+  const body = src.slice(i, i + 6000)
   assert.match(body, /gen\.text/, '要从 gen.text 取文本')
   assert.match(body, /typeof gen\?\.text !== 'string'/, '要有类型闸 —— 不是字符串就不发（别再让 [object Object] 到用户眼前）')
   assert.ok(!/cleanModelText\(String\(text \?\? ''\)\)/.test(body),
@@ -243,5 +245,24 @@ await ok('★★ ASR 失败必须说清是哪一种（不许只返回空字符�
     'python 起不来这种事不该只写 debug —— 等于藏起来')
 })
 
+
+await ok('★★ 话题已翻篇 / 她已经就这条说过 → 不补（2026-11-07 线上：同一件事说三遍）', () => {
+  /*
+   * 现场：
+   *   12:40:32 他发链接
+   *   12:40:38 她「看了，雪地里那个大镰刀转起来挺唬人…」
+   *   12:40:46 他「能一直平推？」   12:40:50 她「看着像能的…」
+   *   12:40:57 后台听完补一句「标题自己都写了并非学会，你说呢」← 第三遍，还插错话题
+   *
+   * 原来只有「≤5 分钟」「同一条只补一次」两道闸 —— 24 秒当然 <5 分钟，
+   * 于是话题早翻篇了它还硬补。
+   */
+  const src = fs.readFileSync(new URL('../src/qq/bridge.js', import.meta.url), 'utf8')
+  const at = src.indexOf('async _videoFollowUp(')
+  assert.ok(at > 0, '找不到 _videoFollowUp')
+  const body = src.slice(at, at + 6000)
+  assert.match(body, /mineAfter\.length >= 2/, '她已经就这条说过 ≥2 轮就别再补')
+  assert.match(body, /话题已经翻篇/, '后来聊的是别的 → 别插回去')
+})
 console.log(`\n通过 ${pass} / 失败 ${fail}`)
 process.exit(fail > 0 ? 1 : 0)
