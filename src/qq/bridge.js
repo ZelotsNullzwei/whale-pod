@@ -2482,6 +2482,21 @@ export class QQBridge {
         at: Date.now(),
       }
       /*
+       * ★★ **这个会话正在生成回复时，主动发言让路**（2026-11-07 实测）。
+       *
+       * 现场：
+       * ```
+       * 12:37:03  proactive 主动发言「哦，这张啊…图里这意思我懂了」
+       * 12:37:04  正常回复「图我这边还是没出来，你重发一张试试」
+       * ```
+       * 两条生成同时跑、互不知道对方，用户看到同一秒两条互相打脸。
+       * 主动发言本来就是"锦上添花"，正常回复优先。
+       */
+      if (this._queueBusy(msg.scope)) {
+        this.log.info?.('proactive：这个会话正在生成回复，主动发言让路')
+        return
+      }
+      /*
        * ⚠️ `_generate` 返回 `{ text, cover }`，不是字符串。
        *    早先直接 `String(text)` 会把整个对象转成 "[object Object]"
        *    发出去 —— 实测就是这样翻的车。
@@ -7402,9 +7417,36 @@ export class QQBridge {
     const baseAt = Number(msg?.at ?? Date.now())
     const timer = setTimeout(() => {
       this._deadAirTimers?.delete(scope)
+      /*
+       * ★★ **这个会话正在生成时，别来抢**（2026-11-07 实测）。
+       *
+       * 现场（群 704291282）：
+       * ```
+       * 12:36:56  她「…你刚发的那张我没看着」
+       * 12:37:03  proactive 主动发言「哦，这张啊…图里这意思我懂了」
+       * 12:37:04  正常回复「图我这边还是没出来，你重发一张试试」
+       * ```
+       * 两条生成各说各话、互相不知道对方 —— 用户看到同一秒两条打脸。
+       *
+       * `_queueBusy` 有现成的入队/生成计数（`_markBusy`/`_unmarkBusy`），
+       * 这里直接问"有没有人在跑"就够了。
+       */
+      if (this._queueBusy(scope)) {
+        this.log.info?.('bridge/deadair：这个会话正在生成，跳过补话')
+        return
+      }
       // 这期间有人说话了 → 场子没冷，不用她补
       const lastMsg = (mem?.recent?.(1) ?? [])[0]
       if (lastMsg && Number(lastMsg.at ?? 0) > baseAt) return
+      /*
+       * ★ 她已经对这条（或更晚的）说过话了 → 不用再补。
+       *   原来只比 at，可她的回复可能**先于** baseAt 的 at 入列（时钟不同源），
+       *   于是"已经回过"被当成"没人接"，又补一句 —— 表现为同一件事说两遍。
+       */
+      if ((mem?.recent?.(6) ?? []).some((m) => m?.isMe && Number(m.at ?? 0) >= baseAt)) {
+        this.log.info?.('bridge/deadair：这条已经回过了，跳过补话')
+        return
+      }
       this._deadAirLastAt.set(scope, Date.now())
       void this._deadAirSpeak({ msg, mem, scene, self })
     }, c.delayMs)
