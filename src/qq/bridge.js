@@ -5598,17 +5598,24 @@ export class QQBridge {
             log: this.log,
           })
           /*
-           * ★ **「胸」被上游拒了就降级重试一次**（2026-11-07 实测）。
-           *   纯胸口参考图 + 「胸口」措辞会直接 400（invoke model error）；
-           *   腿 / 脚 / 腰 / 手 都不受影响 —— 只有这一类会被挡。
-           *   降级办法：**换回原来的头像基准图**（构图回到正常自拍），
-           *   并把措辞里的 胸/胸口 换成「领口、肩」，走穿搭而不是部位。
+           * ★ **部位特写失败时的诊断性重试**（2026-11-07，按 GPT 交接改）。
+           *
+           * 不再把 400 一律归因于某个词 —— 部位词已经换成服装术语了（partPromptMap），
+           * 所以这里验证的是**另一个更可能的原因：参考图本身触发过滤**。
+           * 做法：换回头像基准图再试一次；同时把原始错误、参考图、提示词长度写进日志，
+           * 方便以后判断到底是词、是图、还是参数/格式。
            */
-          if (!r.ok && shot.framingInfo?.bodyPart === '胸部') {
-            const degraded = String(drawPrompt).replace(/胸口|胸部|胸/g, '领口和肩')
-            this.log.info?.('bridge：部位「胸部」被拒 → 降级成领口/肩重试一次')
+          if (!r.ok && shot.framingInfo?.bodyPart) {
+            this.log.warn?.([
+              'bridge：部位特写生成失败',
+              '部位=' + shot.framingInfo.bodyPart,
+              '参考图=' + (String(useRefPath ?? '').split(/[\\/]/).pop() || '无'),
+              '提示词长度=' + String(drawPrompt ?? '').length,
+              '原始=' + String(r.error ?? '').slice(0, 140),
+            ].join(' | '))
+            this.log.info?.('bridge：疑似参考图触发过滤 → 换回头像基准图重试一次')
             r = await generateImage({
-              prompt: degraded,
+              prompt: drawPrompt,
               url: imgCfg.url,
               provider: imgCfg.provider ?? 'magpie-mcp',
               baseUrl: imgCfg.baseUrl,

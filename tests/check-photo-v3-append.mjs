@@ -47,7 +47,7 @@ ok('★ 还写清了「进入画面 / 不进入画面」', () => {
 })
 ok('★ 局部照：部位=脚、不露脸、距离很近', () => {
   const p = mk('看看脚', 'daily')
-  assert.match(p, /拍摄部位：脚/)
+  assert.match(p, /拍摄部位：鞋袜穿搭细节/)
   assert.match(p, /是否露脸：\*\*不露脸\*\*/)
   assert.match(p, /镜头距离：很近/)
   assert.match(p, /不进入画面：脸/)

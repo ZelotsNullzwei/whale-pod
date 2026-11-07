@@ -150,11 +150,11 @@ ok('★ 靠上的部位（锁骨/胸部）起点必须低于下巴线', () => {
   assert.ok(partBandOf('锁骨')[0] >= 0.4, '锁骨起点太低会裁到脸')
   assert.ok(partBandOf('胸部')[0] >= 0.4, '胸部起点太低会裁到脸')
 })
-ok('★ bridge：部位特写换参考图 + 胸部被拒降级重试', () => {
+ok('★ bridge：部位特写换参考图 + 失败时做诊断性重试（不再归因单个词）', () => {
   const b = fs.readFileSync(new URL('../src/qq/bridge.js', import.meta.url), 'utf8')
   assert.match(b, /buildPartRef\x28/, '没接部位参考图')
-  assert.match(b, /bodyPart === '胸部'/, '没有胸部降级')
-  assert.match(b, /领口和肩/, '降级措辞不在')
+  assert.match(b, /部位特写生成失败/, '没有失败诊断日志')
+  assert.match(b, /疑似参考图触发过滤/, '没有换参考图重试')
 })
 
 

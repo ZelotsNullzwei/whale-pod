@@ -16,6 +16,7 @@ import { pairingBlock } from '../memory/outfitRules.js'
 import { FACE_CLOSEUP_RULES } from './photo-modes.js'
 import { FRAMINGS } from './photo-composer.js'
 import { renderExpression } from './photo-expression.js'
+import { upstreamPartName } from './partPromptMap.js'
 
 /**
  * @param {object} o
@@ -232,20 +233,30 @@ ${bodyOverride ? `${bodyOverride}、` : ''}
    * ★ 面部特写：三条冲突规则都要让路（见 patch 注释）。
    *   实测不处理的话，脸会低下去、构图变成三分之二身。
    */
+  /*
+   * ★ **发给上游的文字里不许出现原始部位词**（2026-11-07，GPT 交接）。
+   *   framing.desc / framing.notes 是 composeFraming 生成的，里面会带「胸部」这类词；
+   *   上游对它们会 400。这里统一洗成中性说法（内部 ID 不变，只改发送文案）。
+   */
+  const sanitizePartText = (t) => {
+    if (!framing.bodyPart) return String(t ?? '')
+    const alias = upstreamPartName(framing.bodyPart)
+    return String(t ?? '').replace(/胸部|胸口/g, alias).replace(/\b胸部\b/g, alias)
+  }
   const isCloseup = framing.framing === '面部特写'
   const shot = [
     `拍摄者：${plan.shooter}`,
     `设备：${plan.device}`,
     `相机位置：${plan.camera}`,
     `视角高度：${framing.cameraAngle ?? '平视'}`,
-    `构图：${framing.desc ?? '半身'}`,
+    `构图：${sanitizePartText(framing.desc ?? '半身')}`,
     `视线：${isCloseup ? '**直视镜头**，眼神落在镜头上（不许看屏幕、不许往下看）' : plan.look}`,
   ]
   if (plan.hidePhone) shot.push('手机不出现（不要画出手机）')
   parts.push(`【摄影方案】
 ${shot.join('\n')}
 ${(plan.rules ?? []).filter((r) => !isCloseup || !/(别瞪着镜头|别把脸怼满屏|多留白)/.test(r)).map((r) => '- ' + r).join('\n')}
-${(framing.notes ?? []).map((n) => '- ' + n).join('\n')}
+${(framing.notes ?? []).map((n) => '- ' + sanitizePartText(n)).join('\n')}
 ⚠️ **线上陪伴关系**：她在自己家、用**自己的手机**拍，然后发到 QQ 上。
 - **不要虚构现实中的朋友、家人或摄影师**，画面里只有她一个人。
 - **不要假设他在她身边**，也不要生成"从他的视角"拍的照片。
@@ -283,19 +294,38 @@ ${(framing.notes ?? []).map((n) => '- ' + n).join('\n')}
       手: '一只手（手指、手背、指甲），可以再带一点袖口',
       小腹: '胸口下方到髋部（衣摆、裤腰、皮肤交界）',
       腰: '腰线 + 衣摆/裤腰，站姿或坐姿',
-      锁骨: '锁骨到胸口这一小段（衣领、皮肤交界）',
+      锁骨: '领口与肩部这一小段（衣领、皮肤交界）',
       胸部: '肩到腰的上衣（衣领、面料、褶皱）',
       肩颈: '肩膀、衣领、散下来的头发',
     }
-    const content = PART_CONTENT[framing.bodyPart] ?? `只有${framing.bodyPart}这一块`
-    parts.push(`【局部构图：这一张只拍${framing.bodyPart}（我举着手机拍的近景）】
+    const partName = upstreamPartName(framing.bodyPart)
+    const content = PART_CONTENT[framing.bodyPart] ?? `只有${partName}这一块`
+    /*
+     * ★ **手要单独降难度**（2026-11-07 用户两次反馈「手反了，不符合人体结构」）。
+     *
+     * 病根：之前写「举起手机拍自己的手」—— 自拍视角下手心朝谁、手背朝谁，
+     * 模型自己拿不准，最常见的错法是**镜像**（拇指跑到外侧、手背当掌心画）。
+     * 正解是把姿势锁成**唯一解**：手放在床单/膝盖上，镜头从正上方俯拍 ——
+     * 这个角度只可能看到手背 + 指节，没有第二种解释。
+     */
+    const handRule = framing.bodyPart === '手'
+      ? [
+        '',
+        '【这只手必须是俯拍的手背】',
+        '- 手**平放在床单或膝盖上**，放松、手指自然微微分开或轻握；**不要举起来、不要伸向镜头**。',
+        '- 镜头在**正上方**俯拍 —— 所以看到的是**手背、指节、指甲**，不是掌心。',
+        '- 朝向只有一种：**拇指在内侧**（靠身体那一边）。出现"反手"、拇指在外侧、手心手背同时可见 = 画错了。',
+        '- 五指各一根、关节方向一致；不要多指、不要粘连。',
+      ].join('\n')
+      : ''
+    parts.push(`【局部构图：这一张只拍${partName}（我举着手机拍的近景）】
 - **画面里只有**：${content}，以及紧挨着的床单/衣物褶皱。
 - 镜头离它很近（30~50cm），从上往下俯拍；像随手抬起手机拍一张。
 - ⚠️ **上面凡是讲"脸、五官、眼神、表情、留白、三分线"的要求，这一张全部不适用** ——
   这张**没有头**，别把脸补进来、也别为了露脸把镜头拉远。
-- 入画的身体部分必须**和人物设定是同一具身体**：肤色、体型比例、当天的衣着部件要对得上。
+- 入画的部分必须**和人物设定是同一具身体**：肤色、体型比例、当天的衣着部件要对得上。
 - 手机本体不入画；最多一条拿手机的胳膊从画面边缘进来，**不要第二只手**。
-- 不要拼贴、不要"一格里两个视角"、不要在角落补小图；不要影棚打光。`)
+- 不要拼贴、不要"一格里两个视角"、不要在角落补小图；不要影棚打光。${handRule}`)
   }
 
   /*
@@ -419,7 +449,8 @@ ${lightByHour()}
    *    也不改上面已有的【摄影方案】【人物】【生活状态】。
    */
   {
-    const part = framing.bodyPart || ''
+    const partRaw = framing.bodyPart || ''
+    const part = partRaw ? upstreamPartName(partRaw) : ''
     const faceOn = framing.showFace !== false
     const dist = part
       ? '很近（30~50cm，镜头几乎贴着这一块）'
