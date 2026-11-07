@@ -7308,7 +7308,16 @@ export class QQBridge {
       for (const k of keys.slice(0, 2)) {
         let s = String(this.longMemory?.get?.(k)?.summary ?? '')
         if (!s.trim()) continue
-        // 事实段由 people.json 单独提供，这里去掉免得重复占预算
+        /*
+         * 事实段由 people.json 单独提供，这里去掉免得重复占预算。
+         *
+         * ⚠️ **不要在这里按「私/公」再砍摘要**（2026-11-07 讨论后确定）：
+         *   用户：「知道可以吧，[私] 的事没出去不就说明没问题吗」——
+         *   可见性是在**数据层**控制的（memory-facts 每条带 scope，
+         *   群只注入 group+shared），摘要这一层保持"她都知道"是有意的：
+         *   她知道，但**说不说**由人格里的口风规则决定
+         *   （内容能说、来路别提）。
+         */
         s = s.replace(/【事实】[\s\S]*?(?=【|$)/, '').trim().slice(0, 1200)
         if (!s) continue
         blocks.push(`（${wantGroup ? '群里' : '私下'} ${k.split(':')[1]}）\n${s}`)
