@@ -1455,6 +1455,60 @@ export class QQBridge {
   }
 
   /**
+   * 把「谁最近跟它说话最多」落盘（2026-11-07）。
+   *
+   * ## 为什么不能只靠 shutdown
+   *
+   * `index.js` 里确实挂了 `shutdown.push(() => 写 interactions.json)`，
+   * 但这台机器上的鲸鱼**几乎每次都是被硬杀的**
+   * （`taskkill /F`、`Stop-Process -Force`、或工具调用结束时 job 关闭）——
+   * shutdown 钩子根本没机会跑。
+   *
+   * 实测：`interactions.json` 从 2026-11-06 13:33 起一直是 `[]`，
+   * 里面一个人都没有。于是讨钱时 `decideBeg` 拿到空 tracker →
+   * 「还没有人跟它说过话，不知道该找谁」→ 永远讨不出去。
+   *
+   * 现在每 5 分钟写一次（见 `startProactive` 的 `_interTimer`）：
+   * 硬杀最多丢 5 分钟的记录，而不是丢全部。
+   */
+  _saveInteractions() {
+    try {
+      const home = this.cfg?.home || this._home || ''
+      if (!home) return
+      const data = this._interactions?.toJSON?.()
+      if (!data) return
+      fs.writeFileSync(path.join(home, 'interactions.json'), JSON.stringify(data, null, 2), 'utf8')
+    } catch { /* 存不上不影响讨钱以外的东西 */ }
+  }
+
+  /**
+   * 互动记录为空时的兜底：@「这个群里最后说话的人」。
+   *
+   * 为什么需要：`_interactions` 是内存里的（重启清零），
+   * 而讨钱大多数时候发生在**刚重启不久**（余额偏低是持续状态）。
+   * 这时候用群记忆里最后一条他人消息的发送者，比「干脆不讨」合理得多
+   * —— 那个人确实刚在这个群里说过话。
+   *
+   * @param {string} scope 形如 `group:704291282`
+   * @returns {{id:string,name:string}|null}
+   */
+  _fallbackBegTarget(scope) {
+    try {
+      const mem = this.memory?.get?.(scope) ?? null
+      const list = mem?.recent?.(30) ?? []
+      for (let i = list.length - 1; i >= 0; i--) {
+        const m = list[i]
+        if (!m || m.isMe) continue
+        const id = String(m.sender ?? '').trim()
+        if (!/^\d{4,12}$/.test(id)) continue      // 只认 QQ 号
+        if (id === String(this.selfId ?? '')) continue
+        return { id, name: String(m.senderName ?? id) }
+      }
+    } catch { /* 拿不到就当没有 */ }
+    return null
+  }
+
+  /**
    * 启动时算一次「我离线了多久」。
    * 超过 10 分钟才当回事（几秒钟的重连不值得说）。
    */
@@ -1606,6 +1660,17 @@ export class QQBridge {
       this._aliveTimer = setInterval(() => { try { this._touchAlive() } catch { } }, 60_000)
       this._aliveTimer.unref?.()
     }
+    /*
+     * ★ 互动记录定期落盘（2026-11-07）。
+     *
+     * 原来只有 `index.js` 的 shutdown 钩子会写 interactions.json，
+     * 而鲸鱼几乎每次都是硬杀重启的 —— 钩子没跑，文件一直是 `[]`，
+     * 讨钱永远「不知道该找谁」。每 5 分钟写一次，硬杀最多丢 5 分钟。
+     */
+    if (!this._interTimer) {
+      this._interTimer = setInterval(() => { try { this._saveInteractions() } catch { } }, 5 * 60_000)
+      this._interTimer.unref?.()
+    }
     if (!this._summaryTimer) {
       this._summaryTimer = setInterval(() => this._summaryClock(), 60_000)
       this._summaryTimer.unref?.()
@@ -1646,23 +1711,54 @@ export class QQBridge {
      *
      * @returns {string[]}
      */
+    /**
+     * 「可以主动开口的群」—— 白名单 + allowAllWhenEmpty 两套规则收口到一处。
+     *
+     * ## 为什么单独提取（2026-11-07）
+     *
+     * 原来的 `computeScopes()`（主动发言用）**已经**处理了「白名单为空但
+     * allowAllWhenEmpty=true → 用实际有记录的群」这个分支；
+     * 而 `onBeg()`（讨钱）**没跟着改**，它只看 `cfg.allow.groups`。
+     *
+     * 于是用户这台机器上（白名单空、allowAllWhenEmpty=true）：
+     * ```
+     * proactive：没有白名单群，不讨钱      ← 每个小时一条，永远不会真讨
+     * ```
+     * 余额 ¥1.46 掉到阈值以下了，钱也讨不出去 —— 用户看到的就是
+     * 「乞讨怎么找不到人」。这不是配置问题，是**两处逻辑没对齐**。
+     *
+     * @returns {string[]} scope 列表（形如 `group:704291282`），已按「有聊天记录」过滤
+     */
+    const candidateGroupScopes = () => {
+      const out = []
+      const groups = (this.cfg.allow?.groups ?? []).map(String).filter(Boolean)
+      if (groups.length > 0) {
+        for (const g of groups) {
+          const scope = `group:${g}`
+          if (hasHistory(scope)) out.push(scope)
+        }
+        return out
+      }
+      /*
+       * 白名单为空：只有 allowAllWhenEmpty=true 才算「所有群都行」。
+       * 这时候选就是**实际聊过天的群**（`_knownScopes` 来自记忆里现有的会话）。
+       * ⚠️ 不能连这个条件都不判 —— 白名单空 + allowAllWhenEmpty=false
+       * 意味着它谁也不理，那就真的不该跑去哪个群里讨钱。
+       */
+      if (this.cfg.allow?.allowAllWhenEmpty === true) {
+        for (const scope of this._knownScopes('group')) {
+          if (hasHistory(scope)) out.push(scope)
+        }
+      }
+      return out
+    }
+
     const computeScopes = () => {
       const out = []
       const p = this.cfg.proactive ?? {}
       if (p.inGroups !== false) {
-        const groups = (this.cfg.allow?.groups ?? []).map(String)
-        if (groups.length > 0) {
-          for (const g of groups) {
-            const scope = `group:${g}`
-            if (hasHistory(scope)) out.push(scope)
-          }
-        } else if (this.cfg.allow?.allowAllWhenEmpty === true) {
-          // 白名单为空但允许所有人用 —— 这时「可发言的群」就是**实际有记录的群**。
-          // 早先只遍历白名单，空数组时永远拿不到 scope，主动发言一次都不会触发。
-          for (const scope of this._knownScopes('group')) {
-            if (hasHistory(scope)) out.push(scope)
-          }
-        }
+        // 白名单/allowAllWhenEmpty 的判定见上面 candidateGroupScopes()
+        for (const scope of candidateGroupScopes()) out.push(scope)
       }
       if (p.inPrivate === true) {
         const users = (this.cfg.allow?.private ?? []).map(String)
@@ -1707,19 +1803,37 @@ export class QQBridge {
       },
       // 讨钱：走已有实现，但**不看 msg** —— 主动发，不依赖有人说话
       onBeg: async () => {
-        const groups = (this.cfg.allow?.groups ?? []).map(String).filter(Boolean)
-        if (groups.length === 0) {
-          this.log.info?.('proactive：没有白名单群，不讨钱')
+        /*
+         * ★ 和白名单解耦（2026-11-07 修）。
+         *
+         * 原来这里只看 `cfg.allow.groups`，白名单为空时直接 return。
+         * 于是「白名单为空 + allowAllWhenEmpty=true（谁都理）」的机器上，
+         * 讨钱**永不触发** —— 日志每小时刷一条
+         * 「proactive：没有白名单群，不讨钱」，
+         * 而余额已经 ¥1.46（阈值 ¥2）掉到线下了。
+         * 用户看到的就是「乞讨怎么找不到人」。
+         *
+         * 现在走 `candidateGroupScopes()` —— 和主动发言**同一套**判定。
+         */
+        const scopes = candidateGroupScopes()
+        if (scopes.length === 0) {
+          this.log.info?.('proactive：没有可讨钱的群（白名单为空、也没有聊过天的群），不讨钱')
           return false
         }
-        // 从白名单里挑一个「最近有人说过话」的群 —— 没互动过的群 @ 谁都不知道
-        const picked = groups.find((g) => memoryOf(`group:${g}`)?.recent?.(1)?.length > 0) ?? null
+        // 挑「最近有人说过话」的那一个 —— 冷群 @ 谁都不知道
+        let picked = null
+        let bestAt = -1
+        for (const scope of scopes) {
+          const at = Number((memoryOf(scope)?.recent?.(1) ?? [])[0]?.at ?? 0)
+          if (at > bestAt) { bestAt = at; picked = scope }
+        }
         if (!picked) {
-          this.log.info?.('proactive：白名单群都还没有聊天记录，不知道 @ 谁')
+          this.log.info?.('proactive：有群但都没有聊天记录，不知道 @ 谁')
           return false
         }
+        const groupId = picked.slice('group:'.length)
         const cny = Number(this._balance?.cny)
-        return await this._maybeBeg({ kind: 'group', groupId: picked, scope: `group:${picked}` }, Number.isFinite(cny) ? cny : 0)
+        return await this._maybeBeg({ kind: 'group', groupId, scope: picked }, Number.isFinite(cny) ? cny : 0)
       },
       // 主动发言：在某个会话说一句
       onSpeak: async (scope) => {
@@ -8912,11 +9026,34 @@ export class QQBridge {
    */
   async _maybeBeg(msg, cny) {
     try {
+      /*
+       * ★ 互动记录为空时的兜底（2026-11-07）。
+       *
+       * `_interactions` 是内存里的，刚重启时是空的（落盘也常常是空的，
+       * 见 `_saveInteractions` 的说明）。而余额偏低是**持续状态**，
+       * 讨钱多半就发生在「刚重启」那段时间 —— 于是每次都卡在
+       * 「还没有人跟它说过话，不知道该找谁」。
+       *
+       * 兜底：用这个群里最后一条他人消息的发送者。
+       */
+      let tracker = this._interactions
+      let topLen = 0
+      try { topLen = (tracker?.top?.({ limit: 1 }) ?? []).length } catch { topLen = 0 }
+      if (topLen === 0) {
+        const fb = this._fallbackBegTarget(msg.scope)
+        if (fb) {
+          this.log.info?.(`bridge：互动记录为空 → 兜底 @ 群里最后说话的人 ${fb.name}(${fb.id})`)
+          tracker = {
+            top: ({ limit = 3, exclude = [] } = {}) => (exclude.map(String).includes(String(fb.id)) ? [] : [fb]),
+          }
+        }
+      }
+
       const r = decideBeg({
         cny,
         threshold: this.cfg.search?.lowBalanceCny ?? 3,
         state: this._begState,
-        tracker: this._interactions,
+        tracker,
         exclude: [this.selfId].filter(Boolean),
       })
 
@@ -8952,6 +9089,12 @@ export class QQBridge {
         `bridge：余额 ¥${cny} 偏低 → 已 @${r.target.name}(${r.target.id}) 讨钱，` +
         `今日第 ${this._begState.snapshot().count}/${this._begState.maxPerDay} 次，话术「${r.line.id}」`,
       )
+      /*
+       * 兜底初始化：消息**已经发出去了**，别因为一个计数器没初始化
+       * 就走到下面的 catch 里、把这次成功报成失败（2026-11-07 实测：
+       * `Cannot read properties of undefined (reading 'begged')`）。
+       */
+      this.stats = this.stats ?? {}
       this.stats.begged = (this.stats.begged ?? 0) + 1
       return true
     } catch (e) {
