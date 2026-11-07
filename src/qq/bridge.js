@@ -47,6 +47,7 @@ import { generateImage, cropBottom, cropRegion, eraseCornerWatermark } from './m
 /* 摄影决策链（v2.0）：规划 → 校验 → 构图 → 提示词，见 src/photo/ */
 import { planShot, describeShot } from '../photo/index.js'
 import { figurePoseForDay, detectBodyPart } from '../photo/photo-composer.js'
+import { buildPartRef } from '../photo/partRef.js'
 import { dayKey } from '../memory/dayPlan.js'
 import { outingOutfitForDay, signatureOutfitForDay, wardrobeBrief, resolveOutfitText } from '../memory/wardrobe.js'
 // 今天临时换上的那套（2026-11-06）：当天有效，晚上/第二天自动让位
@@ -5521,8 +5522,27 @@ export class QQBridge {
           }
           this.log.info?.(`bridge：拍摄方案 → ${describeShot(shot)}`)
           const drawPrompt = shot.prompt
-          const useRefPath = shot.refImage
-          const r = await generateImage({
+          /*
+           * ★★ **部位特写：参考图换成该部位的裁图**（2026-11-07 实测）。
+           *
+           * 生图走 /v1/images/edits —— 一张参考图就是**构图基准**：
+           *   喂全身 → 画整个人；喂局部 → 原生只画那一块（连跑两次都是）。
+           * 所以「看看腿/脚/腰」这类请求，先换参考图，比改提示词有效得多。
+           *
+           * ⚠️ 手不做（位置不固定，硬裁会把脸裁进去）；裁不出来就回退原参考图。
+           */
+          let useRefPath = shot.refImage
+          try {
+            const bp = shot.framingInfo?.bodyPart
+            if (bp) {
+              const pr = await buildPartRef({ part: bp, home: this.cfg?.home || this._home || '', imageCfg: imgCfg, log: this.log })
+              if (pr) {
+                useRefPath = pr
+                this.log.info?.(['部位特写', bp, '→ 换用局部参考图（构图跟着参考图走）'].join(''))
+              }
+            }
+          } catch { /* 换参考图失败就沿用原来的 */ }
+          let r = await generateImage({
             prompt: drawPrompt,
             /*
              * 生图走**独立渠道**（`qq.image`，2026-11-05）——
@@ -5555,6 +5575,30 @@ export class QQBridge {
              */
             log: this.log,
           })
+          /*
+           * ★ **「胸」被上游拒了就降级重试一次**（2026-11-07 实测）。
+           *   纯胸口参考图 + 「胸口」措辞会直接 400（invoke model error）；
+           *   腿 / 脚 / 腰 / 手 都不受影响 —— 只有这一类会被挡。
+           *   降级办法：**换回原来的头像基准图**（构图回到正常自拍），
+           *   并把措辞里的 胸/胸口 换成「领口、肩」，走穿搭而不是部位。
+           */
+          if (!r.ok && shot.framingInfo?.bodyPart === '胸部') {
+            const degraded = String(drawPrompt).replace(/胸口|胸部|胸/g, '领口和肩')
+            this.log.info?.('bridge：部位「胸部」被拒 → 降级成领口/肩重试一次')
+            r = await generateImage({
+              prompt: degraded,
+              url: imgCfg.url,
+              provider: imgCfg.provider ?? 'magpie-mcp',
+              baseUrl: imgCfg.baseUrl,
+              apiKeyEnv: imgCfg.keyEnv,
+              model: imgCfg.model,
+              size: imgCfg.size,
+              refImage: shot.refImage,
+              aspect: imgCfg.aspect ?? '9:16',
+              resolution: imgCfg.resolution ?? '2K',
+              log: this.log,
+            })
+          }
           if (r.ok) {
             /*
              * ⚠️ **先把图下下来，再用 base64 发**（2026-11-04 实测踩到）。

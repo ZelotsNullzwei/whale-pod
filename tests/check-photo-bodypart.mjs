@@ -15,6 +15,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import { detectBodyPart, composeFraming } from '../src/photo/photo-composer.js'
 import { classifyDrawIntent } from '../src/qq/bridge.js'
+import { partBandOf, buildPartRef } from '../src/photo/partRef.js'
 
 const SRC_PROMPT = fs.readFileSync(new URL('../src/photo/photo-prompt.js', import.meta.url), 'utf8')
 const SRC_BRIDGE = fs.readFileSync(new URL('../src/qq/bridge.js', import.meta.url), 'utf8')
@@ -137,6 +138,23 @@ ok('★ 手不裁（位置不定，裁了容易切半只手）', () => {
 ok('★ framingInfo 要把 bodyPart 带出来（否则裁切永远不触发）', () => {
   const f = fs.readFileSync(new URL('../src/photo/index.js', import.meta.url), 'utf8')
   assert.match(f, /framingInfo: framing/)
+})
+
+
+console.log('\\n=== 8. 部位参考图（参考图就是构图基准，2026-11-07 实测）===')
+ok('★ 腿/脚/腰/小腹/锁骨/胸部 都有裁切区间，手没有', () => {
+  for (const p of ['腿', '脚', '腰', '小腹', '锁骨', '胸部']) assert.ok(partBandOf(p), p)
+  assert.equal(partBandOf('手'), null, '手不该有区间（位置不固定，会裁到脸）')
+})
+ok('★ 靠上的部位（锁骨/胸部）起点必须低于下巴线', () => {
+  assert.ok(partBandOf('锁骨')[0] >= 0.4, '锁骨起点太低会裁到脸')
+  assert.ok(partBandOf('胸部')[0] >= 0.4, '胸部起点太低会裁到脸')
+})
+ok('★ bridge：部位特写换参考图 + 胸部被拒降级重试', () => {
+  const b = fs.readFileSync(new URL('../src/qq/bridge.js', import.meta.url), 'utf8')
+  assert.match(b, /buildPartRef\x28/, '没接部位参考图')
+  assert.match(b, /bodyPart === '胸部'/, '没有胸部降级')
+  assert.match(b, /领口和肩/, '降级措辞不在')
 })
 
 console.log(`\n通过 ${pass} / 失败 ${fail}`)
