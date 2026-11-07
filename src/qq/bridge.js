@@ -1271,6 +1271,16 @@ export function stripWaitMarkers(text) {
   return { text: s, waits }
 }
 
+/**
+ * 余额「偏低」的默认阈值（元）。
+ *
+ * ⚠️ **只留这一个默认值**（2026-11-07 修）：原来 bridge 里三处 `?? 3`、
+ * 两处 `?? 2`，而 config/store.js 的默认是 2 —— 同一个意思五个数字两种，
+ * 读代码时根本分不清线上到底按几算（用户实际配置是 2）。
+ * 现在统一走这个常量，且和 store 的默认一致。
+ */
+const LOW_BALANCE_DEFAULT = 2
+
 export class QQBridge {
   /**
    * @param {object} opts
@@ -1856,7 +1866,7 @@ export class QQBridge {
         const b = await checkBalance(this.searchKey, 8000)
         if (!b?.ok) return false
         this._balance = b
-        const threshold = this.cfg.search?.lowBalanceCny ?? 3
+        const threshold = this.cfg.search?.lowBalanceCny ?? LOW_BALANCE_DEFAULT
         const low = b.cny <= threshold
         this._balanceLow = low
         this.log.info?.(`proactive：余额 ¥${b.cny}（阈值 ¥${threshold}）${low ? ' —— 偏低' : ''}`)
@@ -4462,6 +4472,24 @@ export class QQBridge {
        *
        * @see _shouldLookAtImage
        */
+      /*
+       * ★★ **群里冷场时，他只发了个表情包 → 回一个「？」或一个表情**
+       * （2026-11-07 用户：「我在无上下文管理的情况发表情，应该扣'？'
+       *   或者同类意义的表情而不是现在这样」）。
+       *
+       * 「现在这样」是两条路：
+       *   · 落到决策层 → 模型判「先不接，还在听」→ 沉默（实测连发 5 次都沉默）
+       *   · 或者被 `_shouldLookAtImage` 抓走 → **调模型看图**，还容易说一串
+       * 冷场时这两条都不对：没有上下文可看，也没有话可接 —— 回个「？」最像人。
+       *
+       * ⚠️ 只在**冷场**时走这条路：最近 8 条里她自己说过话、或有人 @/引用她，
+       *    就还是走原来的决策/看图逻辑（那时她有上下文，该正常接）。
+       */
+      if (this._isColdSticker(msg, mem)) {
+        await this._replyColdSticker(msg, mem)
+        return
+      }
+
       if (this._shouldLookAtImage(msg, mem)) {
         /*
          * ⚠️ 字段名必须是 `provider` / `reason` —— 这是 `decision.explain()`
@@ -7336,6 +7364,72 @@ export class QQBridge {
    * 「就比如说我刚刚发的马上」「她就可用扣「?」或者同类的表情」。
    * 所以不是禁回，而是**只回一个「？」或一个表情**，别写正文。
    */
+  /**
+   * 「群里冷场，他只发了个表情包」—— 该直接回「？」或一个表情。
+   *
+   * ## 用户口径（2026-11-07）
+   * 「我在无上下文管理的情况发表情，应该扣'？'或者同类意义的表情而不是现在这样」
+   *
+   * ## 判据（三条同时成立才算冷场）
+   *   ① 群里；② 这条**只有**表情包标记（没有别的话）；③ 最近 8 条里她自己没说过话，
+   *      而且没人在 @ / 引用她 —— 也就是说，这里没有"她的上下文"。
+   *
+   * @param {object} msg
+   * @param {object} mem 会话记忆
+   * @returns {boolean}
+   */
+  _isColdSticker(msg, mem) {
+    try {
+      if (String(msg?.kind ?? '') !== 'group') return false
+      const raw = String(msg?.text ?? '').trim()
+      // 只认「单独一个表情包/表情」，混在文字里的不算
+      if (!/^(?:\[表情包(?::[^\]\[]*)?\]|\[表情\])$/.test(raw)) return false
+      if (msg?.mentionsMe) return false
+      const recent = mem?.recent?.(8) ?? []
+      // 她刚说过话 / 有人接着她的话说 → 不算冷场，交回原来的逻辑
+      if (recent.some((m) => m?.isMe)) return false
+      if (msg?.replyTo && (mem?.recent?.(20) ?? []).some(
+        (m) => m?.isMe && String(m.id ?? '') === String(msg.replyTo),
+      )) return false
+      return true
+    } catch { return false }
+  }
+
+  /**
+   * 冷场表情的回应：**不调模型**，直接回一个「？」或一张收藏表情。
+   *
+   * 为什么不用决策层：那里会走模型判断（实测连续 5 次都是「先不接，还在听」），
+   * 或者被看图路径抓去调一次带图的模型 —— 冷场时既浪费又容易说一串。
+   *
+   * 「？」占三成：真人被丢个表情，有时就回一个问号，有时回个表情。
+   */
+  async _replyColdSticker(msg, mem) {
+    try {
+      await sleep(400 + this._rand() * 1200)
+      const useQuestion = this._rand() < 0.35
+      const text = useQuestion ? '？' : '[表情包]'
+      const ids = await this._send(msg, text)
+      this.stats.replied++
+      if (useQuestion) this.stats.emojiReplied = (this.stats.emojiReplied ?? 0) + 1
+      try {
+        mem?.push?.(makeMessage({
+          id: Array.isArray(ids) && ids.length ? ids[ids.length - 1] : undefined,
+          sender: this.selfId ?? '0',
+          senderName: this.selfName,
+          text,
+          at: Date.now(),
+          isMe: true,
+          provider: null,
+          model: null,
+        }))
+      } catch { /* 记不上不影响发消息 */ }
+      this._record(msg, { reply: true, probability: 1, reason: '冷场纯表情 → 回个表情/？' }, text, 'cold-sticker')
+      this.log.info?.(`bridge：群里冷场 + 只发了个表情包 → 回了「${text}」（未调模型）`)
+    } catch (e) {
+      this.log.warn?.(`bridge：冷场表情回应失败 — ${String(e?.message ?? e)}`)
+    }
+  }
+
   _groupNoiseHint(msg, mem) {
     if (String(msg?.kind ?? '') !== 'group') return ''
     const selfId = this.selfId ?? ''
@@ -8000,7 +8094,7 @@ export class QQBridge {
                 const b = await checkBalance(this.searchKey, 6000)
                 if (b.ok) {
                   this._balance = b
-                  this._balanceLow = b.cny <= (this.cfg.search?.lowBalanceCny ?? 3)
+                  this._balanceLow = b.cny <= (this.cfg.search?.lowBalanceCny ?? LOW_BALANCE_DEFAULT)
                   if (this._balanceLow) {
                     this.log.warn?.(`bridge：搜索余额偏低 ¥${b.cny}`)
                     // 余额见底 —— 顺手讨一次（每天上限、话术不重样由 BegState 管）
@@ -8057,9 +8151,9 @@ export class QQBridge {
               const b = await checkBalance(this.searchKey, 6000)
               if (b.ok) {
                 this._balance = b
-                if (b.cny <= (this.cfg.search?.lowBalanceCny ?? 2)) {
+                if (b.cny <= (this.cfg.search?.lowBalanceCny ?? LOW_BALANCE_DEFAULT)) {
                   this._balanceLow = true
-                  this.log.warn?.(`bridge：搜索余额偏低 ¥${b.cny}（阈值 ¥${this.cfg.search?.lowBalanceCny ?? 2}）`)
+                  this.log.warn?.(`bridge：搜索余额偏低 ¥${b.cny}（阈值 ¥${this.cfg.search?.lowBalanceCny ?? LOW_BALANCE_DEFAULT}）`)
                 }
               }
             } catch { /* 查不到就算了 */ }
@@ -9396,7 +9490,7 @@ export class QQBridge {
 
       const r = decideBeg({
         cny,
-        threshold: this.cfg.search?.lowBalanceCny ?? 3,
+        threshold: this.cfg.search?.lowBalanceCny ?? LOW_BALANCE_DEFAULT,
         state: this._begState,
         tracker,
         exclude: [this.selfId].filter(Boolean),
