@@ -93,6 +93,27 @@ export class LongTermMemory {
     let incoming = newSummary
     if (!incoming) return
     /*
+     * ★★ **覆盖前先留底**（2026-11-07 用户：「私生活和群分开」「都做」）。
+     *
+     * 现场：昨晚 00:12–00:45 聊了 900 多条（含私密内容），当天摘要跑了 5 次；
+     * 今早一次摘要就把【事】整段换成"断电重开、中午吃过饭"——昨晚那段只剩一句旁证。
+     *
+     * 所以：① 旧的【事】在覆盖前压成一条长期档案（只增不减、带可见性）；
+     *       ② 旧摘要整段进 history（最多 5 版），注入仍只用最新那版。
+     */
+    try {
+      const oldTopics = parseTopics(this.summary)
+      if (oldTopics && oldTopics.length >= 8) {
+        const scope = String(this.scope ?? '').startsWith('group:') ? 'group' : 'private'
+        addFacts([{ text: oldTopics.slice(0, 300), scope }])
+      }
+    } catch { /* 留底失败不影响摘要 */ }
+    try {
+      if (this.summary && this.summary.trim()) {
+        this.history = [this.summary, ...(this.history ?? [])].slice(0, 5)
+      }
+    } catch { /* ignore */ }
+    /*
      * ★ 先把【记】段收进长期档案（2026-11-06）。
      *   摘要是覆盖式的，这里的东西**只增不减**；同时把这一段从摘要里剥掉，
      *   免得它被下一次重写冲掉、也不占摘要预算。
@@ -559,6 +580,7 @@ export class LongTermStore {
       const j = JSON.parse(fs.readFileSync(this.file, 'utf8'))
       for (const [scope, v] of Object.entries(j.sessions ?? {})) {
         const m = new LongTermMemory(scope, this.limits)
+        if (Array.isArray(v.history)) m.history = v.history.slice(0, 5)
         m.summary = String(v.summary ?? '')
         m.summarizedCount = Number(v.summarizedCount ?? 0)
         /**
@@ -591,6 +613,8 @@ export class LongTermStore {
         if (!m.summary) continue
         sessions[scope] = {
           summary: m.summary,
+          /* ★ 最近几版摘要（2026-11-07）：覆盖前留底，翻旧账还能翻到 */
+          history: Array.isArray(m.history) ? m.history.slice(0, 5) : [],
           summarizedTotal: m.summarizedTotal,
           summarizedCount: m.summarizedCount,
           updatedAt: m.updatedAt,
