@@ -5,6 +5,7 @@
  * 现在先让模型现编一句极短的话；模型失败/超时才回退固定池。
  */
 import assert from 'node:assert/strict'
+import fs from 'node:fs'
 import { QQBridge } from '../src/qq/bridge.js'
 
 const p = QQBridge.prototype
@@ -45,6 +46,32 @@ await ok('没有 gateway → null', async () => {
 })
 await ok('空文本 → null', async () => {
   assert.equal(await p._pokeLine.call(mk([{ type: 'text-delta', text: '   ' }])), null)
+})
+
+console.log('\n=== 3. 被戳 = 问一句，不是报状态（2026-11-07 用户口径）===')
+await ok('★ 单独一个「？」能原样发出去', async () => {
+  const t = await p._pokeLine.call(mk([{ type: 'text-delta', text: '？' }]))
+  assert.equal(t, '？')
+})
+await ok('★ 它硬写括号动作 → 剥掉只留话', async () => {
+  const t = await p._pokeLine.call(mk([{ type: 'text-delta', text: '（抬头）干嘛' }]))
+  assert.equal(t, '干嘛')
+})
+await ok('★ 整条只有括号动作 → null（回退固定池）', async () => {
+  const t = await p._pokeLine.call(mk([{ type: 'text-delta', text: '（揉了揉眼睛）' }]))
+  assert.equal(t, null)
+})
+await ok('★ 提示词要明说「不许描述自己在做什么」', () => {
+  const SRC = fs.readFileSync(new URL('../src/qq/bridge.js', import.meta.url), 'utf8')
+  assert.match(SRC, /不许描述自己正在做什么/, '缺这条约束 —— 她就会说「困着呢」这种')
+  assert.match(SRC, /第一反应是\*\*问对方要干嘛\*\*/, '缺"问一句"的导向')
+})
+await ok('★ 固定池里要有「？」和「干嘛」', () => {
+  const SRC = fs.readFileSync(new URL('../src/qq/bridge.js', import.meta.url), 'utf8')
+  const i = SRC.indexOf(": ['？'")
+  assert.ok(i > 0, '找不到固定池')
+  const seg = SRC.slice(i, i + 120)
+  assert.ok(seg.includes('干嘛'), '固定池缺「干嘛」')
 })
 
 console.log(`\n通过 ${pass} / 失败 ${fail}`)

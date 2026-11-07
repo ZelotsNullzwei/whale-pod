@@ -3515,7 +3515,18 @@ export class QQBridge {
         provider,
         model: model || undefined,
         messages: [
-          { role: 'system', content: '你刚被人在 QQ 上戳了一下。只输出一句极短的中文回话（4~12 个字），口语、有点情绪或懒散；不要引号、不要解释、不要括号动作、不要 emoji。' },
+          {
+            role: 'system',
+            content: [
+              '你刚在 QQ 上被戳了一下。',
+              '⚠️ 真人的第一反应是**问对方要干嘛**，不是汇报自己在干什么。',
+              '只输出一句极短的中文，可以就是一个「？」。像这样：',
+              '？ / 干嘛 / 怎么了 / 有事？ / 嗯？ / 戳我干嘛',
+              '1~8 个字，口语。',
+              '❌ 不许描述自己正在做什么（在睡觉、困着呢、在吃饭、刷手机、发呆…都不行）。',
+              '❌ 不要括号动作、不要引号、不要解释、不要 emoji。',
+            ].join('\n'),
+          },
           { role: 'user', content: '他戳了你一下。' },
         ],
         maxTokens: 48,
@@ -3528,7 +3539,15 @@ export class QQBridge {
         else if (c?.type === 'error') throw new Error('llm error')
         else if (c?.type === 'finish' && c?.reason?.kind === 'error') throw new Error('llm error')
       }
-      const t = chunks.join('').trim().replace(/^["“”「」]+|["“”「」]+$/g, '').slice(0, 24)
+      const t = chunks.join('').trim()
+        .replace(/^["“”「」]+|["“”「」]+$/g, '')
+        /*
+         * 提示词里已经禁了括号动作，但它偶尔还写（「（抬头）干嘛」）——
+         * 兜底剥掉，免得把动作描述发出去。剥完为空就让调用方回退固定池。
+         */
+        .replace(/[（(][^（）()]{0,24}[）)]/g, '')
+        .trim()
+        .slice(0, 24)
       return t || null
     } catch { return null }
   }
@@ -3640,7 +3659,12 @@ export class QQBridge {
     if (useText) {
       const lines2 = Array.isArray(cfg.lines) && cfg.lines.length
         ? cfg.lines
-        : ['别戳了别戳了', '干嘛', '戳我干嘛', '在的在的', '哎哟', '有事说事']
+        /*
+         * 固定池也按「问一句」来（2026-11-07 用户：正常人被戳就是问「干嘛」
+         * 或者直接扣个「？」，不是描述自己在干嘛）。
+         * 原来的「在的在的」「哎哟」属于"报状态/感叹"，已换成问句。
+         */
+        : ['？', '干嘛', '怎么了', '有事？', '戳我干嘛', '嗯？']
       said = (await this._pokeLine()) ?? lines2[Math.floor(Math.random() * lines2.length)]
       try {
         if (groupId) await this.onebot.sendGroup(groupId, said)
@@ -3656,7 +3680,13 @@ export class QQBridge {
       }
     }
 
-    this.log.info?.(`bridge：被 ${fromId} 戳了 → 已戳回${said ? ' 并说「' + said + '」' : ''}`)
+    /*
+     * 日志要如实说这一轮干了什么 —— 现在「说话」和「戳回去」是二选一，
+     * 原来不管走哪条都打「已戳回」，看日志会以为它两个都做了。
+     */
+    this.log.info?.(
+      `bridge：被 ${fromId} 戳了 → ${said ? `说了「${said}」` : (ok ? '戳回去了' : '戳回去失败')}`,
+    )
     this._recordPoke(groupId, fromId, said, ok ? 'poke-back' : 'poke-failed')
   }
 
