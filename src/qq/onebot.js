@@ -1619,7 +1619,23 @@ export function normalizeEvent(ev) {
      * 「[合并转发]」四个字，等于什么都没收到。
      */
     forwards: parsed.forwards ?? [],
-    at: Number(ev.time ? ev.time * 1000 : Date.now()),
+    /*
+     * ★★ **`at` 用本地接收时刻，不再用 QQ 服务器时间**（2026-11-07）。
+     *
+     * 现场（群 704291282，30 条里 6 处乱序）：
+     * ```
+     * 12:36:50.000  他 [表情包]      ← ev.time（QQ 服务器，秒级，比本地慢 1~3 秒）
+     * 12:36:51.409  我「图呢？没收到」 ← Date.now()（本地毫秒）
+     * ```
+     * 两套时钟混在一个数组里排序，必然翻车；而且服务器时间被截断到整秒，
+     * 同一秒内的先后完全丢失。
+     *
+     * 我们关心的是「在对话里谁先说」——那是**接收顺序**，本地时钟就够了。
+     * 服务器时间保留成 `serverAt`，需要展示原始发送时间的地方还能用。
+     */
+    at: Date.now(),
+    /** 协议端给的原始发送时间（毫秒）；拿不到就是 null */
+    serverAt: Number(ev.time ? ev.time * 1000 : 0) || null,
     isAtMe: parsed.isAtMe,
     raw: ev,
   }

@@ -2445,6 +2445,21 @@ export class QQBridge {
         at: Date.now(),
       }
       /*
+       * ★★ **这个会话正在生成回复时，主动发言让路**（2026-11-07 实测）。
+       *
+       * 现场：
+       * ```
+       * 12:37:03  proactive 主动发言「哦，这张啊…图里这意思我懂了」
+       * 12:37:04  正常回复「图我这边还是没出来，你重发一张试试」
+       * ```
+       * 两条生成同时跑、互不知道对方，用户看到同一秒两条互相打脸。
+       * 主动发言本来就是"锦上添花"，正常回复优先。
+       */
+      if (this._queueBusy(msg.scope)) {
+        this.log.info?.('proactive：这个会话正在生成回复，主动发言让路')
+        return
+      }
+      /*
        * ⚠️ `_generate` 返回 `{ text, cover }`，不是字符串。
        *    早先直接 `String(text)` 会把整个对象转成 "[object Object]"
        *    发出去 —— 实测就是这样翻的车。
@@ -5424,6 +5439,17 @@ export class QQBridge {
               return (tail || String(msg.text ?? '')).slice(0, 300)
             } catch { return String(msg.text ?? '') }
           })()
+          /*
+           * ★ V3 第三层绑定：**私聊 close 人格 → CLOSE 风格**（2026-11-07 用户：「close绑定私聊人格」）。
+           *   只影响摄影风格（服装氛围/表情/光线），不碰拍摄触发与人物数据。
+           *   群 / 非 close 私聊 → daily（默认值同义）。
+           */
+          const photoMode = (() => {
+            try {
+              const role = this.persona?.pickActive?.(String(msg.scope ?? '')) ?? ''
+              return String(role) === 'close' ? 'close' : 'daily'
+            } catch { return 'daily' }
+          })()
           const shot = planShot({
             scene: String(hit?.[1] ?? '').trim(),
             slot: currentSlot().id,
@@ -5433,6 +5459,7 @@ export class QQBridge {
             mood: (() => { try { return String(this.dayPlan?.today?.()?.mood ?? '') } catch { return '' } })(),
             request: drawRequest,
             scope: msg.scope ?? '',
+            mode: photoMode,
             sceneOnly: Boolean(hitScene),
             /*
              * ★ 面板的「生图风格」也要算数（2026-11-06 用户：「这个按键没生效」）。
@@ -6301,6 +6328,7 @@ export class QQBridge {
               hair: (() => { try { return String(this.dayPlan?.today?.()?.hair ?? '') } catch { return '' } })(),
               request: (() => { try { return String(msg.text ?? '') } catch { return '' } })(),
               scope: msg.scope ?? '',
+              mode: photoMode,
               sceneOnly: Boolean(mark.sceneOnly),
               anime: Boolean(mark.anime) || String(this.cfg?.actions?.drawStyle ?? '') === 'anime',
               imageCfg: (this.cfg?.image ?? {}),
@@ -7365,9 +7393,36 @@ export class QQBridge {
     const baseAt = Number(msg?.at ?? Date.now())
     const timer = setTimeout(() => {
       this._deadAirTimers?.delete(scope)
+      /*
+       * ★★ **这个会话正在生成时，别来抢**（2026-11-07 实测）。
+       *
+       * 现场（群 704291282）：
+       * ```
+       * 12:36:56  她「…你刚发的那张我没看着」
+       * 12:37:03  proactive 主动发言「哦，这张啊…图里这意思我懂了」
+       * 12:37:04  正常回复「图我这边还是没出来，你重发一张试试」
+       * ```
+       * 两条生成各说各话、互相不知道对方 —— 用户看到同一秒两条打脸。
+       *
+       * `_queueBusy` 有现成的入队/生成计数（`_markBusy`/`_unmarkBusy`），
+       * 这里直接问"有没有人在跑"就够了。
+       */
+      if (this._queueBusy(scope)) {
+        this.log.info?.('bridge/deadair：这个会话正在生成，跳过补话')
+        return
+      }
       // 这期间有人说话了 → 场子没冷，不用她补
       const lastMsg = (mem?.recent?.(1) ?? [])[0]
       if (lastMsg && Number(lastMsg.at ?? 0) > baseAt) return
+      /*
+       * ★ 她已经对这条（或更晚的）说过话了 → 不用再补。
+       *   原来只比 at，可她的回复可能**先于** baseAt 的 at 入列（时钟不同源），
+       *   于是"已经回过"被当成"没人接"，又补一句 —— 表现为同一件事说两遍。
+       */
+      if ((mem?.recent?.(6) ?? []).some((m) => m?.isMe && Number(m.at ?? 0) >= baseAt)) {
+        this.log.info?.('bridge/deadair：这条已经回过了，跳过补话')
+        return
+      }
       this._deadAirLastAt.set(scope, Date.now())
       void this._deadAirSpeak({ msg, mem, scene, self })
     }, c.delayMs)
@@ -9122,6 +9177,41 @@ export class QQBridge {
             + '别猜画面、别问“这是什么图”、也别说“看不清”。'
             + '要么直接问正事，要么用一句话自然带过。）',
         })
+      }
+    }
+
+    /*
+     * ★★ **别把"我没收到图"这句话顺着说下去**（2026-11-07 实测）。
+     *
+     * 现场：
+     * ```
+     * 12:36:51  我「图呢？没收到啊，再发一遍」      ← 当轮确实没有图，守卫教的
+     * 12:36:52  对方又发了个表情包，已附图 1 张      ← 这一轮**有图**
+     * 12:36:56  我「…你刚发的那张我没看着」        ← 却继续说"没看着"
+     * 12:37:04  我「图我这边还是没出来」            ← 继续重复
+     * ```
+     * 图明明到了，她还按上一轮的结论说话 —— 这是**自我强化**：
+     * 她自己上一句"没收到"进了历史，模型的下一句就顺着它编。
+     *
+     * 只要**这一轮真的有图**（imageCache 非空），而她最近两句说过
+     * "没收到/没看着/没出来"这类话，就补一句事实把她拉回来。
+     */
+    if (imageCache.size > 0) {
+      const recentMine = history.slice(-6).filter((m) => m?.isMe)
+      const saidMissing = recentMine.some((m) =>
+        /(没收到|没看到|没看着|没出来|看不见|看不清|重发一张|再发一遍)/.test(String(m?.text ?? '')))
+      if (saidMissing) {
+        const tail = messages[messages.length - 1]
+        if (Array.isArray(tail?.content)) {
+          tail.content.push({
+            type: 'text',
+            text: '（⚠️ 事实纠正：你上一轮说"没收到图"，但**这一轮图已经到了**'
+              + '（就在下面/上面这条消息里，你能看到内容）。'
+              + '**别再重复"没收到/没看着/图没出来"** —— 那是在说反话。'
+              + '直接按你真正看到的内容回应；真看不清就说看不清哪里。）',
+          })
+          this.log.warn?.('bridge：上一轮说"没收到图"，但这一轮有图 → 已纠正，防止她顺着说')
+        }
       }
     }
 
