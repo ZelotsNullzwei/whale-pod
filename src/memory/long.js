@@ -62,7 +62,13 @@ export class LongTermMemory {
     if (!this.summary) return ''
     const text = clipForPrompt(this.summary, this.limits.inject)
     if (!text) return ''
-    return `【关于这个会话你已经知道的】\n${text}`
+    const base = `【关于这个会话你已经知道的】\n${text}`
+    /*
+     * ★ 梗表是「词典」不是「素材」（2026-11-07 实测）：
+     *   群里那套【梗】被当成话题来源 —— 她反复提「青蛙」，群友直接说
+     *   「别老是看那青蛙了行吗」「你一直提青蛙」。梗看懂就行，不该主动当谈资。
+     */
+    return base + '\n⚠️ 上面【梗】只是帮你听懂这些词，**不是聊天素材**：除非对方刚说到，否则不要主动提。'
   }
 
   /**
