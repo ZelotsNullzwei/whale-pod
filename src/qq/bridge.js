@@ -4490,7 +4490,13 @@ export class QQBridge {
         return
       }
 
-      if (this._shouldLookAtImage(msg, mem)) {
+      /*
+       * ★ **文本里已经明确要图 → 别被"看图"抢走**（2026-11-07）。
+       *   现场：他「看看胸 拍张看看 [表情包]」→ 带了个表情包，先命中 _shouldLookAtImage
+       *   （纯图 → 交给生成层看图），部位/要图逻辑根本没轮到 → 她只撩了一句。
+       */
+      const wantsPicText = classifyDrawIntent(msg.text ?? '').wantsPic
+      if (!wantsPicText && this._shouldLookAtImage(msg, mem)) {
         /*
          * ⚠️ 字段名必须是 `provider` / `reason` —— 这是 `decision.explain()`
          *    读的（见 decision/index.js）。写成 source/why 的话日志里
@@ -5049,6 +5055,17 @@ export class QQBridge {
         const askedAt = this._drawAsk.get(askKey) ?? 0
         const askedFresh = askedAt > 0 && Date.now() - askedAt < 10 * 60_000
         /*
+         * ★ 她刚**撩过/问过部位**（_bodyPartAsk 记着）→ 他这一句只要提到部位就算确认。
+         *   现场：她「行，就这一块」，他回「就胸一块儿」→ 原来判「他没说要拍」，还改成问句。
+         *   原因：部位正则要求"看"字，确认句里没有。
+         */
+        const bodyPartFresh = (() => {
+          try {
+            const rec = this._bodyPartAsk?.get(String(msg.scope ?? ''))
+            return Boolean(rec && rec.n > 0 && Date.now() - rec.at < 10 * 60_000)
+          } catch { return false }
+        })()
+        /*
          * ★★ **意图判断走短语表，不走单字正则**（2026-11-06 规格第 1 条）。
          *
          * 原来 wantsPic 里有单字「看」「图」「脸」，saidNo 里有「算了」：
@@ -5128,6 +5145,9 @@ export class QQBridge {
           msg.__askInstead = false
         } else if (wantsPic) {
           allowDraw = true
+        } else if (bodyPartFresh && detectBodyPart(String(msg.text ?? ''))) {
+          allowDraw = true
+          this.log.info?.('bridge：她刚撩过部位的事，这句提到部位 → 算确认，可以画')
         } else if (askedFresh) {
           /* 她问过、他答了（答什么都算）→ 放行，并清掉状态 */
           allowDraw = true
@@ -6228,6 +6248,16 @@ export class QQBridge {
       }
       // ★ 节奏控制：生成已经花了多少，就只补剩下的（见 `_waitForPace`）
       await this._waitForPace(tStart, d)
+      /*
+       * ★ **图发出了、正文不能是空的**（2026-11-07 用户：「图片逻辑是不是有问题」）。
+       *   现场：`[我] private 「」` —— 一张图、一个字都没有。
+       *   ⚠️ 兜底句**不许**拿今日计划来拼：上次那样出成「（刚在六点四十蒸了碗鸡蛋羹）」。
+       */
+      if (coverForSend && !String(text ?? '').trim()) {
+        const caps = ['喏。', '给。', '拿去。', '看吧。']
+        text = caps[Math.floor(this._rand() * caps.length)]
+        this.log.info?.(`bridge：图有了但正文是空的 → 兜一句「${text}」`)
+      }
       const sentIds = await this._send(msg, text, coverForSend)
       /*
        * ★ 主图**真的发出去了**吗（2026-11-06）。

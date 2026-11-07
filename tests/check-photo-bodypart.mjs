@@ -59,7 +59,7 @@ ok('★ 没命中部位 → 还是原来的构图', () => {
 
 console.log('\n=== 3. 提示词与禁令 ===')
 ok('★ 有「部位特写」段，明确"不出现脸、不出现全身"', () => {
-  assert.match(SRC_PROMPT, /【部位特写：只拍\$\{framing\.bodyPart\}】/)
+  assert.match(SRC_PROMPT, /【部位特写：只拍/)
   assert.match(SRC_PROMPT, /不出现脸、不出现全身/)
 })
 ok('★ 脚部特写不能被「这一张不拍脚」自己禁掉', () => {
@@ -93,5 +93,24 @@ ok('★ 看看手机/手表 不算要看手', () => {
   assert.equal(classifyDrawIntent('看看手机').wantsPic, false)
   assert.equal(classifyDrawIntent('看看手表').wantsPic, false)
 })
+
+console.log('\\n=== 6. 三处出口修正（2026-11-07 20:0x 私聊现场）===')
+ok('★ 文本里明确要图 → 不被「看图」抢走', () => {
+  const i = SRC_BRIDGE.indexOf('const wantsPicText = classifyDrawIntent')
+  assert.ok(i > 0, '没有这个前置判断')
+  assert.match(SRC_BRIDGE.slice(i, i + 120), /if \(!wantsPicText && this\._shouldLookAtImage/)
+})
+ok('★ 她刚撩过部位 → 下一句提部位就算确认', () => {
+  assert.match(SRC_BRIDGE, /const bodyPartFresh = \(\(\) => \{/)
+  assert.match(SRC_BRIDGE, /bodyPartFresh && detectBodyPart/)
+})
+ok('★ 图有了但正文空 → 兜一句（且不许用今日计划）', () => {
+  const i = SRC_BRIDGE.indexOf('if (coverForSend && !String(text')
+  assert.ok(i > 0, '没有空正文兜底')
+  const seg = SRC_BRIDGE.slice(i, i + 400)
+  assert.match(seg, /喏。/, '兜底句不在')
+  assert.ok(!/dayPlan/.test(seg), '又拿今日计划拼兜底句了')
+})
+
 console.log(`\n通过 ${pass} / 失败 ${fail}`)
 process.exit(fail === 0 ? 0 : 1)

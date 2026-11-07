@@ -133,7 +133,7 @@ export function detectBodyPart(req) {
     ['腿', /(大腿|小腿|膝盖|腿根|双腿|看看腿|看腿|腿部|光腿)/],
     ['腰', /(腰线|细腰|腰身|看看腰)/],
     ['锁骨', /(锁骨|肩颈)/],
-    ['胸部', /(看看胸|看胸|胸(部|口|前)|事业线|罩杯)/],
+    ['胸部', /(看看胸|看胸|胸(部|口|前)|事业线|罩杯|[a-dA-D]s*杯|胸型)/],
   ]
   for (const [part, re] of RULES) if (re.test(s)) return part
   return null
