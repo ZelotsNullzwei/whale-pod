@@ -5219,12 +5219,12 @@ export class QQBridge {
              * 这样既不会两句来回，也不会脱离"她此刻的生活"。
              */
             const slotNow = (() => { try { return currentSlot().id } catch { return 'day' } })()
-            const planAct = (() => {
-              try {
-                const v = this.dayPlan?.today?.()?.[slotNow]
-                return v ? String(v).replace(/\s+/g, ' ').slice(0, 14) : ''
-              } catch { return '' }
-            })()
+            /*
+             * ⚠️ 这里**不读今日计划**：垫场句只负责"等一下"。
+             *    （原来读出来拼进句尾，线上出成「…（刚在六点四十蒸了碗鸡蛋羹，热了一）」，
+             *     用户：「发的话里面有一句热鸡蛋羹」。）
+             *    今日计划只进**画面描述**，不进嘴上的话。
+             */
             const FILLER_BY_SLOT = {
               morning: [
                 '刚爬起来，头发还是一团乱，等等。',
@@ -5269,15 +5269,21 @@ export class QQBridge {
               : [...slotPool, ...FILLER_GENERIC]
             const filler = pool[Math.floor(Math.random() * pool.length)]
             /*
-             * 再按今日计划补一句在哪/在干嘛 —— 只在整句较短时拼，
-             * 免得变成「谁说拍照要先报日程」那种念日记感。
+             * ⚠️⚠️ **不要往垫场句里拼今日计划**（2026-11-07 我自己踩的坑）。
+             *
+             * 我原来写成 `${filler}（刚在${planAct}）`，想让句子更贴生活，
+             * 实际线上出的是：
+             *   「灯刚开，等我站到亮的地方。（刚在六点四十蒸了碗鸡蛋羹，热了一）」
+             * —— 拍照前先报伙食，而且 14 字截断成了"热了一"，半句话。
+             * 用户直接指出来：「发的话里面有一句热鸡蛋羹」。
+             *
+             * 结论：**垫场就一句"等一下"**，别夹带日程。
+             * 今日计划该出现在**画面描述**里（下面 slotText 那段就是干这个的），
+             * 不该出现在嘴上的垫场句里。
              */
-            const fillerLine = (planAct && filler.length <= 14)
-              ? `${filler}（刚在${planAct}）`
-              : filler
-            await this._send(msg, fillerLine)
+            await this._send(msg, filler)
             this._fillerAt.set(fillerKey, Date.now())
-            this.log.info?.(`bridge：画图垫场「${fillerLine}」`)
+            this.log.info?.(`bridge：画图垫场「${filler}」`)
           } catch (e) {
             if (e?.skip) this.log.info?.('bridge：跳过垫场（这个会话刚垫过）')
             else this.log.warn?.(`bridge：画图垫场失败（不影响画图）— ${String(e?.message ?? e).slice(0, 60)}`)

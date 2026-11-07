@@ -44,8 +44,10 @@ ok('★ 按当前时段优先挑（七成），而不是纯 random', () => {
   const seg = SRC.slice(i, i + 400)
   assert.match(seg, /Math\.random\(\) < 0\.7/, '没有"七成走当前时段"的策略')
 })
-ok('★ 拼今日计划那一段（有就带上）', () => {
-  assert.match(SRC, /刚在\$\{planAct\}/, '没有拼今日计划')
+ok('★ 垫场句**不许**拼今日计划（2026-11-07 线上出过「刚在六点四十蒸了碗鸡蛋羹」）', () => {
+  assert.ok(!/刚在${planAct}/.test(SRC), '又拼了今日计划')
+  assert.ok(!SRC.includes('this._send(msg, fillerLine)'), '垫场句还在拼 planAct')
+  assert.ok(SRC.includes('this._send(msg, filler)'), '垫场句没发出去')
 })
 
 console.log('\n=== 2. 只有文字能触发生图 ===')
@@ -61,7 +63,7 @@ ok('★ 带文字的不命中（照常画）', () => {
   }
 })
 ok('★ 源码锁：闸在 saidNo 之前，跳过原因写清楚', () => {
-  const i = SRC.indexOf('const triggerOnlyMedia =')
+  const i = SRC.indexOf('if (triggerOnlyMedia)')
   const j = SRC.indexOf('} else if (saidNo) {')
   assert.ok(i > 0, '没有纯媒体闸')
   assert.ok(i < j, '纯媒体闸排在 saidNo 之后')
