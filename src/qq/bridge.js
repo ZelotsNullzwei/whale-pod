@@ -11269,6 +11269,39 @@ export class QQBridge {
       }
       const scope = String(msg.scope ?? '')
       if (!scope) return
+      /*
+       * ★★ **闸 5：话题已经翻篇 / 她已经就这条说过了 → 不补**（2026-11-07）。
+       *
+       * 现场：
+       * ```
+       * 12:40:32  他发了 B 站链接
+       * 12:40:38  她「看了，雪地里那个大镰刀转起来挺唬人…」   ← 已经说了
+       * 12:40:46  他「能一直平推？」
+       * 12:40:50  她「看着像能的，一直转不带停…」             ← 又说一遍
+       * 12:40:57  后台听完补一句「标题自己都写了并非学会，你说呢」 ← 第三遍，且插错话题
+       * ```
+       * 原来只有「≤5 分钟」「同一条视频只补一次」两道闸 —— 而 24 秒当然 <5 分钟，
+       * 于是话题早翻篇了它还硬补，同一件事被说三遍。
+       *
+       * 所以补两句判据：
+       *   ① 发布链接之后**她自己已经说过 ≥2 轮** → 该说的都说完了，别再补；
+       *   ② 期间别人说的话**跟视频无关** → 场子已经在聊别的了，别插回去。
+       */
+      const sinceLink = (mem?.recent?.(12) ?? [])
+        .filter((m) => Number(m?.at ?? 0) > Number(job.at ?? 0))
+      const mineAfter = sinceLink.filter((m) => m?.isMe)
+      if (mineAfter.length >= 2) {
+        this.log.info?.(
+          `B站：${job.bvid} 听完了，但她已经就这条说过 ${mineAfter.length} 轮 → 不补（别车轱辘话）`,
+        )
+        return
+      }
+      const VIDEO_RE = /(视频|片子|看看|看了|平推|连招|转|剑|刀|标题|封面|BV|b23|B站|b站|链接|投稿)/i
+      const theirsAfter = sinceLink.filter((m) => !m?.isMe)
+      if (theirsAfter.length > 0 && !theirsAfter.some((m) => VIDEO_RE.test(String(m?.text ?? '')))) {
+        this.log.info?.(`B站：${job.bvid} 听完了，但话题已经翻篇（后来聊的是别的）→ 不补`)
+        return
+      }
       this._videoFollowed.set(job.bvid, Date.now())
       if (this._videoFollowed.size > 100) {
         this._videoFollowed.delete(this._videoFollowed.keys().next().value)
