@@ -66,13 +66,22 @@ ok('★ 脚部特写不能被「这一张不拍脚」自己禁掉', () => {
   assert.match(SRC_PROMPT, /framing\.bodyPart !== '脚'/)
 })
 
-console.log('\n=== 4. 群里不拍（边界）===')
-ok('★ bridge 里有"群里不拍部位特写"的闸', () => {
+console.log('\n=== 4. 群里：先撩几轮再给（用户：「群聊可以，但得先拉扯或者挑逗」「甚至可以多几次」）===')
+ok('★ bridge 里有「先拉扯」的计数闸', () => {
   const i = SRC_BRIDGE.indexOf("detectBodyPart(String(hit[1] ?? ''))")
   assert.ok(i > 0, '没有群里那道闸')
-  assert.match(SRC_BRIDGE.slice(i, i + 400), /群里不拍部位特写/)
+  const seg = SRC_BRIDGE.slice(i, i + 900)
+  assert.match(seg, /bodyPartTeaseTimes/, '没有可配的「撩几次」')
+  assert.match(seg, /只拉扯，不画/, '没有对应的日志')
 })
-
+ok('★ 默认撩 2 次（第 3 次才给）', () => {
+  const i = SRC_BRIDGE.indexOf('const teaseTimes = Number(')
+  assert.ok(i > 0, '找不到 teaseTimes')
+  assert.match(SRC_BRIDGE.slice(i, i + 90), /\?\? 2/, '默认值不是 2')
+})
+ok('★ 只拉扯那一轮有兜底句（别变成空消息）', () => {
+  assert.match(SRC_BRIDGE, /msg\.__teaseOnly && !text\.trim\(\)/)
+})
 
 console.log('\n=== 5. 这些说法要算「要图」，否则根本走不到画图 ===')
 ok('★ 看看脚/手/腿/小肚子/锁骨/胸 → wantsPic', () => {

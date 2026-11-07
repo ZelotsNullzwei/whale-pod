@@ -5074,22 +5074,53 @@ export class QQBridge {
          */
         const triggerOnlyMedia = /^\s*(?:\[表情包(?::[^\]\[]*)?\]|\[表情\]|\[图片\])\s*$/
           .test(String(msg.text ?? '').trim())
+        /*
+         * ★★ **群里要部位特写：先拉扯几轮，之后才给**（2026-11-07 用户：
+         *    「群聊可以，但是得先拉扯一下或者挑逗」→「甚至可以多几次」）。
+         *
+         * 不是"群里一律不拍"，也不是"第二次就给"，而是**前几次都只撩不拍**：
+         *   · 同一会话 10 分钟内，前 `bodyPartTeaseTimes` 次（默认 **2**）只拉扯/挑逗
+         *   · 撩过那几次之后，他再要 → 才真的画，然后计数清零
+         *   · 超过 10 分钟没下文 → 重新算
+         *
+         * 可配 `qq.actions.bodyPartTeaseTimes`（0 = 不撩，直接给）。
+         * ⚠️ 状态按**会话**存，不跨群。私聊不走这段（私聊直接给）。
+         */
+        const groupBodyPart = String(msg.kind ?? '') === 'group'
+          ? detectBodyPart(String(hit[1] ?? ''))
+          : null
+        let bodyPartTease = false
+        if (groupBodyPart) {
+          const teaseTimes = Number(this.cfg.actions?.bodyPartTeaseTimes ?? 2)
+          if (teaseTimes > 0) {
+            const bpKey = String(msg.scope ?? '')
+            if (!this._bodyPartAsk) this._bodyPartAsk = new Map()
+            const now = Date.now()
+            const rec = this._bodyPartAsk.get(bpKey) ?? { n: 0, at: 0 }
+            const fresh = rec.at > 0 && now - rec.at < 10 * 60_000
+            const n = fresh ? rec.n : 0
+            if (n < teaseTimes) {
+              bodyPartTease = true
+              this._bodyPartAsk.set(bpKey, { n: n + 1, at: now })
+              this.log.info?.(
+                `bridge：群里要「${groupBodyPart}」—— 第 ${n + 1}/${teaseTimes} 次只拉扯，不画`,
+              )
+            } else {
+              this._bodyPartAsk.delete(bpKey)
+              this.log.info?.(`bridge：群里要「${groupBodyPart}」—— 撩够了，这次给`)
+            }
+          }
+        }
         if (triggerOnlyMedia) {
           this.log.info?.('bridge：画图跳过 —— 这一轮只有图片/表情，不触发生图（只有说话能触发）')
           drawAllowed = false
           drawSkipReason = '纯图片/表情不触发生图'
           msg.__askInstead = false
-        } else if (String(msg.kind ?? '') === 'group' && detectBodyPart(String(hit[1] ?? ''))) {
-          /*
-           * ★ **群里不拍部位特写**（2026-11-07 定的边界）。
-           *
-           * 用户问「看看脚 / 手 / 腿 / 小肚子 / 胸」这类能不能生 ——
-           * 私聊可以，**群里不行**：一群人在看着，这种图不该发到群里。
-           * 这里直接不画，让她用文字接（她也可以说「这张不发群里」）。
-           */
-          this.log.info?.('bridge：画图跳过 —— 群里不拍部位特写（只有私聊给）')
+        } else if (bodyPartTease) {
           drawAllowed = false
-          drawSkipReason = '群里不拍部位特写'
+          drawSkipReason = `群里先拉扯（${groupBodyPart}，下次才给）`
+          msg.__teaseOnly = true
+          msg.__askInstead = false
         } else if (saidNo) {
           // 明确拒绝 → 不画，并且退出"等确认"状态
           this._drawAsk.delete(askKey)
@@ -5583,6 +5614,15 @@ export class QQBridge {
      * 这时必须给一句真的话，否则这条回复会变成"什么都没发"。
      * 用户口径「询问就已经是变量控制了」—— 问清楚，变量就定了。
      */
+    /*
+     * ★ 群里要部位特写的第一轮：**只用文字拉扯/挑逗**（2026-11-07）。
+     *   她应该自己说点什么；万一模型一个字没给，兜一句，别让这条变成空消息。
+     */
+    if (msg.__teaseOnly && !text.trim()) {
+      text = '想得美，先说清楚想干嘛'
+      this.log.info?.('bridge：群里要部位特写的第一轮 → 兜一句拉扯')
+    }
+
     if (msg.__askInstead) {
       if (!text.trim()) {
         text = '拍什么？全身还是半身、只拍脸？对镜自拍还是前置？'
