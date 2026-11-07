@@ -6788,9 +6788,15 @@ export class QQBridge {
   async _backfillHistory(count = 12) {
     if (this.cfg.reply?.backfillOnOpen === false) return
     try {
-      const scopes = (this.memory?.scopes?.() ?? []).slice(0, 6)
+      /* ★ 短期可能因为过期而空掉，长期摘要还在 → 两边并起来（2026-11-07） */
+      const scopes = Array.from(new Set([
+        ...(this.memory?.scopes?.() ?? []),
+        ...(this.longMemory?.scopes?.() ?? []),
+      ])).slice(0, 8)
       /* ★ 断电/关机过 → 多补一些（默认只补 12 条，一晚上根本不够） */
-      const countUse = this._offlineGap ? Math.max(count, 50) : count
+      /* ★ 按真实时间取（2026-11-07 用户）：离线时以"上次存活时间"为界，最多 100 条 */
+      const sinceMs = Number(this._offlineGap?.at ?? 0)
+      const countUse = sinceMs ? Math.max(count, 100) : count
       const touched = []
       let added = 0
       /** 补历史时已经识过图的条数（上限 3，别拖慢启动） */
@@ -6810,6 +6816,8 @@ export class QQBridge {
           for (const m of list) {
             const mid = String(m.message_id ?? m.real_id ?? '')
             if (!mid || known.has(mid)) continue
+            /* ★ 早于“上次存活时间”的是旧消息，跳过（按真实时间） */
+            if (sinceMs && Number(m.ts ?? m.time ?? 0) > 0 && Number(m.ts ?? m.time ?? 0) * 1000 < sinceMs) continue
             if (!touched.includes(sc)) touched.push(sc)
             /*
              * ⚠️ **图也要补**（2026-11-05）：原来只补文本，断连窗口里发的图
@@ -6951,6 +6959,9 @@ export class QQBridge {
         } catch { /* 单个会话失败不影响其它 */ }
       }
       if (added) this.log.info?.(`bridge：重连补历史 ${added} 条（只进记忆，不回复）`)
+      if (sinceMs && added >= countUse * scopes.length * 0.9) {
+        this.log.warn?.('bridge：补历史可能没补全（拉满了都没到达离线起点），需要按时间翻页')
+      }
 
       /*
        * ★★ **开机后主动接一句**（2026-11-07 用户：「每次开机后能读到关机的消息」）。
