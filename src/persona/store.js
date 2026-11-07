@@ -687,11 +687,20 @@ export class PersonaStore {
   buildSystemPrompt({ extras = [], memory = '', scene = null, self = null, facts = [], recentSelf = [], scope = null } = {}) {
     const parts = []
     /*
+     * ★ 记住这次用的是**哪个角色**（2026-11-07）。
+     *
+     * 为什么需要：末尾那段「说话风格」只对 close 私聊开，
+     * 而**群里的声口一点都不能动**（用户原话：
+     * 「感觉不用改，改了就死了，不活跃了」）。
+     * 所以这里要拿到角色名，才知道该不该加那段。
+     */
+    const activeRole = this.pickActive(scope)
+    /*
      * ★ 按会话取角色（2026-11-01）：群和私聊可以是**不同的人格文件**。
      *   见 `pickActive` —— 精确 scope → 类型（group/private）→ 全局 active。
      *   `scope` 不传时行为跟以前完全一样（全局那一个）。
      */
-    parts.push(this.read(this.pickActive(scope)) || DEFAULT_PERSONA)
+    parts.push(this.read(activeRole) || DEFAULT_PERSONA)
 
     if (scene?.kind === 'group') {
       parts.push(`## 当前场景\n你在一个 QQ 群${scene.groupName ? `「${scene.groupName}」` : ''}里聊天。群里不只有你，别人也会说话。
@@ -1095,6 +1104,53 @@ ${body}
 - **别猜**：这一段里有的，直接用；这一段里没有的，就直说不知道。
 - 也别把这一段当成"要念给对方的清单" —— 挑一句相关的说就行。`)
       }
+    }
+
+    /*
+     * ★★ **说话风格 —— 临门一脚**（2026-11-07）。
+     *
+     * ## 为什么必须放在**最末尾**
+     * 人格文件是提示词的**第一段**（parts[0]），离生成位置最远 ——
+     * 所以「日常别每条都带括号」写在 close.md 里**几乎不起作用**：
+     * 16:06 加进去的规则，16:19 那条还是「（耳朵一抖）没怎么…」，
+     * 而且**开头的括号一个没少**。
+     *
+     * 同一份文件里早就记着这条教训：
+     * > **规则离生成位置越远，约束力越弱。关键规则要在末尾重复。**
+     *
+     * ## 为什么只对 close 私聊开
+     * 群里是另一只鱼（default.md），用户明确说过
+     * 「感觉不用改，改了就死了，不活跃了」—— 群的声口一点不能动。
+     *
+     * ## 为什么把「她最近用过的括号」点名出来
+     * 短时记忆带着她**自己**最近 3 条回复，而它们就在生成位置前面 ——
+     * 她看见自己上一句「（耳朵一压）」，下一句就顺着写。
+     * 这才是「动作为什么总是变成动耳朵」的真正机制：
+     * **不是她没素材，是她在模仿自己上一句。**
+     * 所以直接把最近用过的几个列出来堵死这个回路。
+     */
+    if (activeRole === 'close') {
+      const used = []
+      for (const t of (Array.isArray(recentSelf) ? recentSelf : [])) {
+        for (const m of String(t ?? '').matchAll(/[（(]([^（）()\n]{1,14})[）)]/g)) {
+          const v = String(m[1] ?? '').trim()
+          if (!v) continue
+          if (/^(提示|系统|对方|你发|引用|id=)/.test(v)) continue   // 系统注解不算动作
+          if (!used.includes(v)) used.push(v)
+        }
+      }
+      const usedLine = used.length
+        ? `你最近用过的括号动作：${used.slice(0, 5).join('、')} —— **这几个别再用**，换个部位、换个动词，或者干脆不写。`
+        : ''
+      parts.push(`## 说话风格（这段最要紧）
+
+- **多数句子不带括号。** 括号是偶尔的点缀，不是每条的标配。
+  上一条带了括号，这一条就试试不带 —— 别连着两条都带。
+- **括号不要当起手式**：不要「（耳朵一压）……」这样开头，先把话说出来。
+- **你身上不只有耳朵和尾巴**：手、肩膀、视线、坐姿、发梢、手里的东西都能写。
+  但**同一个句式别连着来**（耳朵一压、耳朵一翘、耳朵一抖这样排下去就很假）。
+${usedLine}
+- 情绪主要靠**说出口的话**和标点表达，括号只是佐料。`)
     }
 
     return parts.join('\n\n')
