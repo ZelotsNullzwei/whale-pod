@@ -6976,7 +6976,9 @@ export class QQBridge {
           `你这边断了大约 ${mins} 分钟，这期间有人给你发过话（见上面的最近记录）。`,
           '接一句：说清你这边刚恢复、问一句他刚才说的事；**别装作一直在**，也别把几小时前的话当成刚刚说的。',
         ].join('\n')
-        for (const sc of touched.slice(0, 2)) {
+        /* ★ 只补一个会话（2026-11-07 用户选）：优先私聊，其次最近那个群 */
+        const target = touched.find((x) => String(x).startsWith('private:')) ?? touched[0]
+        for (const sc of (target ? [target] : [])) {
           try {
             const kind = String(sc).startsWith('group:') ? 'group' : 'private'
             const id = String(sc).slice(kind === 'group' ? 6 : 8)
