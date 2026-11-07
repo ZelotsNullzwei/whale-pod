@@ -15,6 +15,14 @@ REM  ("dir /b /s" with a wildcard in a directory component finds
 REM  nothing -- use "for /d" to walk the runtimes.)
 REM
 REM  ASCII-only: cmd reads .bat with the ANSI codepage (GBK here).
+REM
+REM  ⚠️ This launcher shows a CONSOLE WINDOW titled "whale-pod"
+REM     (`start /min` only minimizes it -- it is still on the desktop).
+REM     2026-11-07 the user noticed it and asked why the node window was
+REM     back. For day-to-day / silent restarts use run-hidden.vbs instead:
+REM         wscript //nologo run-hidden.vbs
+REM     It runs the same bundled node with window style 0 (hidden).
+REM     Keep this .bat for when you actually WANT to watch the log.
 REM ============================================================
 setlocal EnableExtensions
 set "NO_PROXY=127.0.0.1,localhost"
