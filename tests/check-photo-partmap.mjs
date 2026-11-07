@@ -34,10 +34,9 @@ ok('★ 每个部位都有中性说法，且不含原始词', () => {
     for (const bad of RAW_PART_WORDS) assert.ok(!v.includes(bad), `${k} 的说法里还有「${bad}」`)
   }
 })
-ok('★ 胸部 → 领口/肩/上衣（不是身体部位）', () => {
+ok('★ 认不出的部位（含已停用的胸部）给中性词，不回吐原始 ID', () => {
   const v = upstreamPartName('胸部')
-  assert.match(v, /领口/)
-  assert.match(v, /上衣/)
+  assert.equal(v, '局部细节')
   assert.ok(!v.includes('胸'))
 })
 ok('★ 认不出的部位退化成中性词，不回吐原始 ID', () => {
@@ -46,20 +45,18 @@ ok('★ 认不出的部位退化成中性词，不回吐原始 ID', () => {
 })
 
 console.log('\n=== 2. 提示词里不再出现原始部位词 ===')
-ok('★ 「看看胸」的提示词不含「胸口/胸部」', () => {
-  const { p } = promptFor('看看胸')
-  assert.ok(!p.includes('胸口'), '还有「胸口」')
-  assert.ok(!p.includes('胸部'), '还有「胸部」')
-  assert.match(p, /领口、肩部及上衣穿搭细节/, '中性说法没进去')
-})
-ok('★ 内部 ID 不变（裁切表/缓存仍按「胸部」走）', () => {
+ok('★ 「看看胸」现在退回普通自拍（不再做部位特写）', () => {
   const { framing } = promptFor('看看胸')
-  assert.equal(framing.bodyPart, '胸部')
+  assert.ok(!framing.bodyPart, '不该再识别成部位')
+})
+ok('★ 腿还是按「腿」走（内部 ID 不变）', () => {
+  const { framing } = promptFor('看看腿')
+  assert.equal(framing.bodyPart, '腿')
 })
 ok('★ 腿/脚/锁骨 也走了中性说法', () => {
   assert.match(promptFor('看看腿').p, /腿部穿搭细节/)
   assert.match(promptFor('看看脚').p, /鞋袜穿搭细节/)
-  assert.match(promptFor('看看锁骨').p, /领口与肩部细节/)
+  assert.match(promptFor('看看腰').p, /腰腹与服装搭配/)
 })
 
 console.log('\n=== 3. 400 诊断（不再一律归因于某个词）===')

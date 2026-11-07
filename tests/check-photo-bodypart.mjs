@@ -30,11 +30,11 @@ function ok(name, fn) {
 console.log('=== 1. 认部位 ===')
 ok('★ 脚 / 手 / 腿 / 小肚子 / 锁骨 / 胸 都认得出', () => {
   assert.equal(detectBodyPart('看看脚'), '脚')
-  assert.equal(detectBodyPart('让我看看手'), '手')
+  assert.equal(detectBodyPart('让我看看手'), null, '手已不再支持')
   assert.equal(detectBodyPart('看看腿'), '腿')
   assert.equal(detectBodyPart('看看小肚子'), '小腹')
-  assert.equal(detectBodyPart('看看锁骨'), '锁骨')
-  assert.equal(detectBodyPart('看看胸'), '胸部')
+  assert.equal(detectBodyPart('看看锁骨'), null, '锁骨已不再支持')
+  assert.equal(detectBodyPart('看看胸'), null, '胸部已不再支持')
 })
 ok('★ 普通拍图请求不误判', () => {
   for (const t of ['拍一张自拍', '看看你', '全身照', '']) assert.equal(detectBodyPart(t), null, t)
@@ -150,14 +150,14 @@ ok('★ framingInfo 要把 bodyPart 带出来（否则裁切永远不触发）',
 
 
 console.log('\\n=== 8. 部位参考图（参考图就是构图基准，2026-11-07 实测）===')
-ok('★ 七个部位都有裁切区间（手也进来了，但只在拿到脸位置时）', () => {
-  for (const p of ['腿', '脚', '手', '腰', '小腹', '锁骨', '胸部']) assert.ok(partBandOf(p), p)
-  assert.equal(partBandOf('手')[0] >= 0.4, true, '手的起点也要压在下巴线以下')
-  assert.equal(selfSafeBandOf('手'), null, '手不能进无脸也安全表')
-})
-ok('★ 靠上的部位（锁骨/胸部）起点必须低于下巴线', () => {
-  assert.ok(partBandOf('锁骨')[0] >= 0.4, '锁骨起点太低会裁到脸')
-  assert.ok(partBandOf('胸部')[0] >= 0.4, '胸部起点太低会裁到脸')
+ok('★ 只保留准确的四个部位（腿/脚/腰/小腹）', () => {
+  for (const p of ['腿', '脚', '腰', '小腹']) {
+    assert.ok(partBandOf(p), `${p} 应该有区间`)
+    assert.ok(selfSafeBandOf(p), `${p} 应该有无脸也有安全的保守区间`)
+  }
+  for (const p of ['手', '锁骨', '胸部']) {
+    assert.equal(partBandOf(p), null, `${p} 不该再走部位特写`)
+  }
 })
 ok('★ bridge：部位特写换参考图 + 失败时做诊断性重试（不再归因单个词）', () => {
   const b = fs.readFileSync(new URL('../src/qq/bridge.js', import.meta.url), 'utf8')
@@ -184,7 +184,7 @@ ok('★ 检测不到脸 → 腿/脚/腰/小腹 走保守区间；锁骨/胸部 �
     assert.ok(r, `${p} 应有保守区间`)
     assert.deepEqual(r.band, selfSafeBandOf(p))
   }
-  for (const p of ['锁骨', '胸部']) assert.equal(resolveBand(p, noFace), null, `${p} 必须停止`)
+  for (const p of ['锁骨', '胸部', '手']) assert.equal(resolveBand(p, noFace), null, `${p} 已不支持`)
 })
 ok('★ 低置信度/越界坐标 视为没检测到', () => {
   assert.deepEqual(resolveBand('腿', { face_found: true, face_bottom_y: 0.3, confidence: 0.2 }).band, selfSafeBandOf('腿'))
