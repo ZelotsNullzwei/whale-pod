@@ -5768,9 +5768,39 @@ export class QQBridge {
                       let buf2 = Buffer.from(await resp2.arrayBuffer())
                       if (buf2.length > 1024 && buf2.length < 8 * 1024 * 1024) {
                         buf2 = await cropBottom(buf2, Number(imgCfg.cropBottom ?? 0.1), this.log)
-                        finalBuf = buf2
-                        file = `base64://${buf2.toString('base64')}`
-                        this.log.info?.('bridge：重拍完成，用新的这张')
+                        /*
+                         * ★ **重拍完再审一次**（2026-11-07 加）。
+                         *
+                         * 原来重拍后不审，直接就用 —— 实测手部特写重拍后仍是**六根手指**，
+                         * 结果照样发出去（用户看到的就是"怪手"）。
+                         * 现在：重拍这张也不合格 → **部位特写就不发图**（这一轮只用文字接），
+                         * 其他类型仍照旧发（宁可有点瑕疵，也别什么都不发）。
+                         */
+                        let useThis = true
+                        if (this.cfg.actions?.imageReview !== false) {
+                          try {
+                            const small2 = await shrinkForReview(buf2, 640, this.log)
+                            const rv2 = await reviewImage({
+                              buf: small2,
+                              gateway: gw,
+                              key: this.cfg.gateway?.key ?? null,
+                              log: this.log,
+                            })
+                            if (!rv2.ok) {
+                              const isPart = Boolean(shot.framingInfo?.bodyPart)
+                              this.log.warn?.(`bridge：重拍那张也不合格（${rv2.why || '多手/脸崩'}）${isPart ? ' → 部位特写不发这张' : ' → 仍照发'}`)
+                              if (isPart) useThis = false
+                            }
+                          } catch { /* 复审失败就照发 */ }
+                        }
+                        if (useThis) {
+                          finalBuf = buf2
+                          file = `base64://${buf2.toString('base64')}`
+                          this.log.info?.('bridge：重拍完成，用新的这张')
+                        } else {
+                          finalBuf = null
+                          file = null
+                        }
                       }
                     }
                   }

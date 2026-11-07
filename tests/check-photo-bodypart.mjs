@@ -142,9 +142,10 @@ ok('★ framingInfo 要把 bodyPart 带出来（否则裁切永远不触发）',
 
 
 console.log('\\n=== 8. 部位参考图（参考图就是构图基准，2026-11-07 实测）===')
-ok('★ 腿/脚/腰/小腹/锁骨/胸部 都有裁切区间，手没有', () => {
-  for (const p of ['腿', '脚', '腰', '小腹', '锁骨', '胸部']) assert.ok(partBandOf(p), p)
-  assert.equal(partBandOf('手'), null, '手不该有区间（位置不固定，会裁到脸）')
+ok('★ 七个部位都有裁切区间（手也进来了，但只在拿到脸位置时）', () => {
+  for (const p of ['腿', '脚', '手', '腰', '小腹', '锁骨', '胸部']) assert.ok(partBandOf(p), p)
+  assert.equal(partBandOf('手')[0] >= 0.4, true, '手的起点也要压在下巴线以下')
+  assert.equal(selfSafeBandOf('手'), null, '手不能进无脸也安全表')
 })
 ok('★ 靠上的部位（锁骨/胸部）起点必须低于下巴线', () => {
   assert.ok(partBandOf('锁骨')[0] >= 0.4, '锁骨起点太低会裁到脸')
