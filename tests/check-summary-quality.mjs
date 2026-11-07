@@ -200,5 +200,36 @@ await ok('★ 【事实】里也不许从创作者视角记她自己', () => {
   assert.match(seg, /定妆照/)
 })
 
+// 【事】段：注意不能直接用 indexOf('【我】') —— 提示词开头那句
+// 「一共六部分（【人】【事实】【事】【我】【梗】【记】）」里也有「【我】」，
+// 会切出一个只有「【事】」三个字的空段。必须找**行首**的那两个标题。
+const topicSeg = () => {
+  const i = SUMMARY_PROMPT.indexOf('\n【事】\n')
+  const j = SUMMARY_PROMPT.indexOf('\n【我】\n', i + 1)
+  assert.ok(i > 0 && j > i, `切不出【事】段（i=${i}, j=${j}）`)
+  return SUMMARY_PROMPT.slice(i, j)
+}
+
+await ok('★ 【事】不许写当天的流水账/物流细节（2026-11-07 用户：又在提小事）', () => {
+  const seg = topicSeg()
+  assert.match(seg, /当天的流水账、物流状态、点单细节/, '缺这条禁令')
+  assert.match(seg, /点的那单饭显示成功/, '缺用户实际踩到的坏例子')
+  assert.match(seg, /一个都不许写/)
+})
+
+await ok('★ 【事】要给「三问」闸门，而且只留两类', () => {
+  const seg = topicSeg()
+  assert.match(seg, /三问/, '缺三问闸门')
+  assert.match(seg, /约好但还没到的事/, '缺"该记什么"')
+  assert.match(seg, /还欠着/, '缺"欠着的事"')
+  assert.match(seg, /最多 2 句/, '缺长度上限')
+})
+
+await ok('★ 【事】里的关系变化只写长期的，当场情绪不进【事】', () => {
+  const seg = topicSeg()
+  assert.match(seg, /只写长期变化/)
+  assert.match(seg, /当场情绪属于「我」那一段/)
+})
+
 console.log(`\n通过 ${pass} / 失败 ${fail}`)
 process.exit(fail > 0 ? 1 : 0)
