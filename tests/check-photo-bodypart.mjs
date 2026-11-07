@@ -15,7 +15,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import { detectBodyPart, composeFraming } from '../src/photo/photo-composer.js'
 import { classifyDrawIntent } from '../src/qq/bridge.js'
-import { partBandOf, buildPartRef } from '../src/photo/partRef.js'
+import { partBandOf, buildPartRef, resolveBand, selfSafeBandOf, PART_REF_ALGO_VERSION, FACE_SAFETY_MARGIN } from '../src/photo/partRef.js'
 
 const SRC_PROMPT = fs.readFileSync(new URL('../src/photo/photo-prompt.js', import.meta.url), 'utf8')
 const SRC_BRIDGE = fs.readFileSync(new URL('../src/qq/bridge.js', import.meta.url), 'utf8')
@@ -155,6 +155,44 @@ ok('★ bridge：部位特写换参考图 + 胸部被拒降级重试', () => {
   assert.match(b, /buildPartRef\x28/, '没接部位参考图')
   assert.match(b, /bodyPart === '胸部'/, '没有胸部降级')
   assert.match(b, /领口和肩/, '降级措辞不在')
+})
+
+
+console.log('\\n=== 9. C 方案：脸下边界决定裁切起点（2026-11-07）===')
+ok('★ 有脸位置 → 起点 = max(默认, 脸底 + 安全边距)', () => {
+  const r = resolveBand('腿', { face_found: true, face_bottom_y: 0.45, confidence: 0.9 })
+  assert.ok(r, " 应该能裁")
+  assert.equal(r.band[0], Number((0.45 + FACE_SAFETY_MARGIN).toFixed(5)))
+})
+ok('★ 脸已经占住这个部位 → 直接不出参考图（不许把脸裁进去）', () => {
+  const r = resolveBand('锁骨', { face_found: true, face_bottom_y: 0.49, confidence: 0.9 })
+  assert.equal(r, null, "锁骨被脸占住时必须停止")
+})
+ok('★ 检测不到脸 → 腿/脚/腰/小腹 走保守区间；锁骨/胸部 停止', () => {
+  const noFace = { face_found: false, face_bottom_y: null, confidence: 0 }
+  for (const p of ['腿', '脚', '腰', '小腹']) {
+    const r = resolveBand(p, noFace)
+    assert.ok(r, `${p} 应有保守区间`)
+    assert.deepEqual(r.band, selfSafeBandOf(p))
+  }
+  for (const p of ['锁骨', '胸部']) assert.equal(resolveBand(p, noFace), null, `${p} 必须停止`)
+})
+ok('★ 低置信度/越界坐标 视为没检测到', () => {
+  assert.deepEqual(resolveBand('腿', { face_found: true, face_bottom_y: 0.3, confidence: 0.2 }).band, selfSafeBandOf('腿'))
+  assert.deepEqual(resolveBand('腿', { face_found: true, face_bottom_y: 1.4, confidence: 0.9 }).band, selfSafeBandOf('腿'))
+})
+ok('★ 缓存键含：部位 + 源图哈希 + 区间 + 算法版本', () => {
+  const b = fs.readFileSync(new URL('../src/photo/partRef.js', import.meta.url), 'utf8')
+  assert.match(b, /hashOfFile\x28src\x29/)
+  assert.match(b, /PART_REF_ALGO_VERSION/)
+  assert.ok(PART_REF_ALGO_VERSION >= 2)
+})
+ok('★ 视觉模型只输出三个字段（不参与部位分类）', () => {
+  const f = fs.readFileSync(new URL('../src/photo/faceBand.js', import.meta.url), 'utf8')
+  assert.match(f, /face_found/)
+  assert.match(f, /face_bottom_y/)
+  assert.match(f, /confidence/)
+  assert.ok(!f.includes("from './photo-composer"), '脸检测不该依赖部位分类模块')
 })
 
 console.log(`\n通过 ${pass} / 失败 ${fail}`)

@@ -48,6 +48,7 @@ import { generateImage, cropBottom, cropRegion, eraseCornerWatermark } from './m
 import { planShot, describeShot } from '../photo/index.js'
 import { figurePoseForDay, detectBodyPart } from '../photo/photo-composer.js'
 import { buildPartRef } from '../photo/partRef.js'
+import { detectFaceBottom } from '../photo/faceBand.js'
 import { dayKey } from '../memory/dayPlan.js'
 import { outingOutfitForDay, signatureOutfitForDay, wardrobeBrief, resolveOutfitText } from '../memory/wardrobe.js'
 // 今天临时换上的那套（2026-11-06）：当天有效，晚上/第二天自动让位
@@ -5535,10 +5536,31 @@ export class QQBridge {
           try {
             const bp = shot.framingInfo?.bodyPart
             if (bp) {
-              const pr = await buildPartRef({ part: bp, home: this.cfg?.home || this._home || '', imageCfg: imgCfg, log: this.log })
-              if (pr) {
-                useRefPath = pr
-                this.log.info?.(['部位特写', bp, '→ 换用局部参考图（构图跟着参考图走）'].join(''))
+              /*
+               * ★ C 方案（2026-11-07 定案）：**程序裁切 + 视觉模型只给脸的下边界**。
+               *   部位分类仍是正则（detectBodyPart），视觉模型不参与。
+               *   它只吐 face_found / face_bottom_y / confidence 三个字段，
+               *   buildPartRef 用 face_bottom_y 抬升裁切起点；
+               *   拿不到就回退"无脸安全区间"，再不行就不做参考图。
+               */
+              const gw = `http://127.0.0.1:${this.cfg.gateway?.port ?? 18899}/v1`
+              const pr = await buildPartRef({
+                part: bp,
+                home: this.cfg?.home || this._home || '',
+                imageCfg: imgCfg,
+                log: this.log,
+                detectFace: (file) => detectFaceBottom({
+                  buf: fs.readFileSync(file),
+                  gateway: gw,
+                  key: this.cfg.gateway?.key ?? null,
+                  log: this.log,
+                }),
+              })
+              if (pr?.file) {
+                useRefPath = pr.file
+                this.log.info?.(`bridge：部位特写「${bp}」→ 局部参考图（${pr.reason}）`)
+              } else {
+                this.log.info?.(`bridge：部位特写「${bp}」没换参考图 —— ${pr?.reason ?? '未知'}`)
               }
             }
           } catch { /* 换参考图失败就沿用原来的 */ }
