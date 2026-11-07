@@ -43,11 +43,22 @@ const priv = mk().buildSystemPrompt({ scope: 'private:2129024700', recentSelf })
 ok('★ 含「说话风格」段', () => {
   assert.ok(priv.includes('说话风格'), '没有这段')
 })
-ok('★ 它在**最后**（紧贴生成位置）', () => {
+ok('★ 它在末尾区域（越靠后约束力越强）', () => {
   const i = priv.indexOf('## 说话风格')
-  const j = priv.lastIndexOf('## ')
   assert.ok(i > priv.length * 0.8, `位置太靠前（${i}/${priv.length}）—— 越靠后约束力越强`)
-  assert.equal(j, i, `这段不是最后一个 ## 标题（最后一个在 ${j}）`)
+  /*
+   * ⚠️ 2026-11-07：它的后面又加了一段**全局**的「开口前过一遍」
+   * （两个说话毛病，对所有角色生效）。所以"必须是最后一个标题"这条
+   * 已经不再成立 —— 这里改成守"它仍在末尾 20%，且排在输出要求之后"。
+   */
+  const out = priv.indexOf('## 输出要求')
+  assert.ok(i > out, '「说话风格」必须排在输出要求之后')
+})
+ok('★ 全局纠错段（开口前过一遍）在最后', () => {
+  const k = priv.lastIndexOf('## ')
+  const tail = priv.slice(k)
+  assert.match(tail, /开口前过一遍/, `最后一个标题不是纠错段：${tail.slice(0, 40)}`)
+  assert.match(tail, /别空转/, '缺"别空转"')
 })
 ok('★ 点名她最近用过的括号动作', () => {
   assert.match(priv, /耳朵一压/)

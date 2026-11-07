@@ -114,5 +114,35 @@ await ok('★ 催促提示词要明禁「干嘛」和 [SILENT]', () => {
   assert.ok(seg.includes('[SILENT]'), '缺"不要 [SILENT]"的约束')
 })
 
+console.log('\n=== 5. 别人互相戳要进上下文（2026-11-07「爆点米」事件）===')
+/*
+ * 现场：17:48 番茄「看了给你充token」，18:33 他**戳了风宝一下**再说「爆点米」
+ * （= 催风宝也出钱）。她只看到孤零零的「爆点米」，理解成米饭，
+ * 回「本鲸哪来的米，米都进本鲸肚子里了」。
+ *
+ * 根因：戳一戳是 notice，不进消息流；而 _onNotice 原来只处理"戳我"的，
+ * 别人之间的戳被整条 return 掉。
+ */
+const mkName = (list) => ({ memory: { get: () => ({ recent: () => list }) } })
+await ok('★ _nameFromMemory 能从会话记忆里认出昵称', () => {
+  const b = mkName([
+    { sender: '1001', senderName: '番茄' },
+    { sender: '1002', senderName: '风宝' },
+  ])
+  assert.equal(p._nameFromMemory.call(b, 'group:1', '1002'), '风宝')
+})
+await ok('★ 认不出来的返回空串（调用方退回用号码）', () => {
+  const b = mkName([{ sender: '1001', senderName: '番茄' }])
+  assert.equal(p._nameFromMemory.call(b, 'group:1', '9999'), '')
+})
+await ok('★ 源码锁：别人互相戳要在 return 之前记一条', () => {
+  const SRC = fs.readFileSync(new URL('../src/qq/bridge.js', import.meta.url), 'utf8')
+  const iSelf = SRC.indexOf("if (!this.selfId || targetId !== String(this.selfId))")
+  assert.ok(iSelf > 0, '找不到「只理戳我」那条判断')
+  const seg = SRC.slice(iSelf, iSelf + 900)
+  assert.match(seg, /戳了 \$\{to\} 一下/, '没有把「谁戳了谁」写成注记')
+  assert.match(seg, /已记进群上下文/, '没有对应日志')
+})
+
 console.log(`\n通过 ${pass} / 失败 ${fail}`)
 process.exit(fail === 0 ? 0 : 1)

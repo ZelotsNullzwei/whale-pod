@@ -3598,6 +3598,27 @@ export class QQBridge {
   }
 
   /**
+   * 从会话记忆里找一个 QQ 号的昵称（找不到就返回空串）。
+   *
+   * 用途：补「谁戳了谁」这种系统注记时，光有数字她认不出是谁。
+   * ⚠️ 不走 people 档案 —— 那个只记"认识的人"，路过发言的人常常没有档案。
+   *
+   * @param {string} scope `group:123`
+   * @param {string} id    QQ 号
+   * @returns {string}
+   */
+  _nameFromMemory(scope, id) {
+    try {
+      const list = this.memory?.get?.(scope)?.recent?.(80) ?? []
+      for (let i = list.length - 1; i >= 0; i--) {
+        const m = list[i]
+        if (m && String(m.sender) === String(id) && m.senderName) return String(m.senderName)
+      }
+    } catch { /* 拿不到就用号码 */ }
+    return ''
+  }
+
+  /**
    * 某人撤回了一条消息 —— 把它从**记忆**和**待处理的合并窗口**里清掉。
    *
    * ## 用户口径（2026-11-07）
@@ -3727,8 +3748,38 @@ export class QQBridge {
     const fromId = String(ev.user_id ?? ev.sender_id ?? '')
     const groupId = ev.group_id != null ? String(ev.group_id) : null
 
-    // 只理"戳我"的；别人互相戳不关我事
-    if (!this.selfId || targetId !== String(this.selfId)) return
+    /*
+     * ★★ **别人互相戳也要记一笔**（2026-11-07 用户：
+     *    「上文继我充token后，戳一戳互动找风宝也爆点米」）。
+     *
+     * 现场：17:48 番茄说「看了给你充token」，18:33 他**戳了风宝一下**
+     * 又发「爆点米」（= 催风宝也出钱）。她只看到「爆点米」这一条孤立的，
+     * 于是字面理解成米饭：「本鲸哪来的米，米都进本鲸肚子里了」。
+     *
+     * 根因：**戳一戳是 notice，不进消息流**，而这里原来只处理"戳我"的，
+     * 别人之间的戳被整条丢掉 —— 那个"催"的动作她根本没看见。
+     *
+     * 现在往群记忆里补一条轻量注记（「（番茄 戳了 风宝 一下）」），
+     * 只进上下文、不触发回复。
+     */
+    if (!this.selfId || targetId !== String(this.selfId)) {
+      if (groupId && fromId && targetId && fromId !== String(this.selfId)) {
+        try {
+          const scope = `group:${groupId}`
+          const from = this._nameFromMemory(scope, fromId) || fromId
+          const to = this._nameFromMemory(scope, targetId) || targetId
+          this.memory?.get?.(scope)?.push?.({
+            sender: fromId,
+            senderName: from,
+            text: `（${from} 戳了 ${to} 一下）`,
+            at: Date.now(),
+            isMe: false,
+          })
+          this.log.info?.(`bridge：${from} 戳了 ${to} 一下 → 已记进群上下文`)
+        } catch { /* 记不上不影响别的 */ }
+      }
+      return
+    }
     // 不戳自己（有些客户端会回环）
     if (fromId === String(this.selfId)) return
 
