@@ -3421,31 +3421,36 @@ export class QQBridge {
       return
     }
 
-    // 延迟一下再戳回去，避免"秒回"的机械感
+    /*
+     * ★ **要么说话，要么只戳回去**（2026-11-07 用户：「一半一半吧，要么说话，要么戳回去」）。
+     *
+     * 原来：先 100% 戳回去，再按 textChance 追加一句 —— 那是"戳 + 可能说话"。
+     * 现在二选一：说话就不戳，戳就不说话；模型出不了话就用固定池兜底（仍然是说话）。
+     */
     const delay = 400 + Math.random() * 1200
     await sleep(delay)
 
+    const textChance = typeof cfg.textChance === 'number' ? cfg.textChance : 0.5
+    const useText = cfg.text !== false && Math.random() < textChance
     let ok = false
-    try {
-      ok = await this.pokeBack(groupId, fromId)
-    } catch (e) {
-      this.log.warn?.(`bridge：戳回去失败 — ${String(e?.message ?? e)}`)
-    }
-
-    // 有时再加一句话（默认 25%），纯戳回去更像是"懒得打字"
-    const textChance = typeof cfg.textChance === 'number' ? cfg.textChance : 0.25
     let said = null
-    if (cfg.text !== false && Math.random() < textChance) {
-      const lines = Array.isArray(cfg.lines) && cfg.lines.length
+
+    if (useText) {
+      const lines2 = Array.isArray(cfg.lines) && cfg.lines.length
         ? cfg.lines
         : ['别戳了别戳了', '干嘛', '戳我干嘛', '在的在的', '哎哟', '有事说事']
-      /* ★ 先让模型现编一句；失败/超时才用固定池（2026-11-07） */
-      said = (await this._pokeLine()) ?? lines[Math.floor(Math.random() * lines.length)]
+      said = (await this._pokeLine()) ?? lines2[Math.floor(Math.random() * lines2.length)]
       try {
         if (groupId) await this.onebot.sendGroup(groupId, said)
         else await this.onebot.sendPrivate(fromId, said)
       } catch (e) {
         this.log.warn?.(`bridge：戳一戳回话失败 — ${String(e?.message ?? e)}`)
+      }
+    } else {
+      try {
+        ok = await this.pokeBack(groupId, fromId)
+      } catch (e) {
+        this.log.warn?.(`bridge：戳回去失败 — ${String(e?.message ?? e)}`)
       }
     }
 
