@@ -5060,7 +5060,26 @@ export class QQBridge {
         const { saidNo, wantsPic } = classifyDrawIntent(msg.text ?? '')
 
         let allowDraw = false
-        if (saidNo) {
+        /*
+         * ★★ **只有「文字」能触发生图**（2026-11-07 用户：
+         *    「自拍那一点只有说话能触发，图片和表情都不行」）。
+         *
+         * 现场：他先要「下半张脸笑、上半张脸不笑」→ 她画了一张；
+         * 紧接着他发了个**表情包**（意思是"就要这个表情"），
+         * 表情包走了看图路径，模型看完又写了个 `[画图:]` → **又画一张**，
+         * 于是连着两张、而且两张的正文都是空的。
+         *
+         * 现在：这一轮如果**只有图片/表情包**（没有文字），一律不画。
+         * 想看/想拍都得用文字说 —— 这样同一条需求不会被"补个表情"再触发一次。
+         */
+        const triggerOnlyMedia = /^\s*(?:\[表情包(?::[^\]\[]*)?\]|\[表情\]|\[图片\])\s*$/
+          .test(String(msg.text ?? '').trim())
+        if (triggerOnlyMedia) {
+          this.log.info?.('bridge：画图跳过 —— 这一轮只有图片/表情，不触发生图（只有说话能触发）')
+          drawAllowed = false
+          drawSkipReason = '纯图片/表情不触发生图'
+          msg.__askInstead = false
+        } else if (saidNo) {
           // 明确拒绝 → 不画，并且退出"等确认"状态
           this._drawAsk.delete(askKey)
           this.log.info?.('bridge：画图跳过 —— 他说了不用/不看')
@@ -5144,22 +5163,79 @@ export class QQBridge {
             if (fillerGapMs > 0 && Date.now() - lastFiller < fillerGapMs) {
               throw Object.assign(new Error('__skip__'), { skip: true })
             }
-            const FILLERS = [
+            /*
+             * ★★ **垫场句扩池 + 按「今天这个时段在干嘛」挑**（2026-11-07）。
+             *
+             * 用户：「发自拍会触发一句拖时间的话，好像只有两句，不是现编的，
+             *        像是在参考」—— 实测最近 12 次只出现 5 种句子，
+             * 因为原来就是一个写死的 6 句数组纯 random。
+             *
+             * 现在两步：
+             *   ① 池子扩到 20+ 句，并按**时段**分组（早上/白天/傍晚/夜里各几句，
+             *      句子带那个时段的画面感）；挑的时候优先挑当前时段那组；
+             *   ② 再拼一小段**今日计划里这一档在做什么**（有就带上）。
+             * 这样既不会两句来回，也不会脱离"她此刻的生活"。
+             */
+            const slotNow = (() => { try { return currentSlot().id } catch { return 'day' } })()
+            const planAct = (() => {
+              try {
+                const v = this.dayPlan?.today?.()?.[slotNow]
+                return v ? String(v).replace(/\s+/g, ' ').slice(0, 14) : ''
+              } catch { return '' }
+            })()
+            const FILLER_BY_SLOT = {
+              morning: [
+                '刚爬起来，头发还是一团乱，等等。',
+                '让我先把脸洗了，马上。',
+                '早上的光最好，等我找个角度。',
+                '还没梳头呢，你急什么。',
+              ],
+              afternoon: [
+                '别催，正找角度呢。',
+                '等我调下光。',
+                '这张我得拍好看点，稍等。',
+                '咔嚓一声的事，等会儿。',
+                '屋里有点暗，我把灯打开。',
+              ],
+              evening: [
+                '灯刚开，等我站到亮的地方。',
+                '暖黄灯下拍最好看，稍等。',
+                '等我理一下头发，晚上有点乱。',
+                '这就来，先让我把手机举稳。',
+              ],
+              night: [
+                '都这时候了，拍出来肯定糊……等我凑近点。',
+                '灯关了大半，我开一盏小的。',
+                '困归困，说拍就拍，等我。',
+                '半夜拍照，你可别嫌丑。',
+              ],
+            }
+            const FILLER_GENERIC = [
               '等着，本鱼这就拍一张。',
-              '别催，正找角度呢。',
               '行，这就来一张，你先坐会儿。',
-              '咔嚓一声的事，等会儿。',
+              '等我一下，马上就好。',
+              '别急，正在挑一张像样的。',
               /*
                * ⚠️ 不要写「刚才那张不行」「重来一张」—— 第一张图还没有「刚才那张」
                *   （2026-11-06 用户：「私聊发图还是有点乱」）。
                */
-              '这张我得拍好看点，稍等。',
-              '等我调下光。',
             ]
-            const filler = FILLERS[Math.floor(Math.random() * FILLERS.length)]
-            await this._send(msg, filler)
+            const slotPool = FILLER_BY_SLOT[slotNow] ?? []
+            // 七成从当前时段那组挑，三成从通用池挑（别太规整）
+            const pool = (slotPool.length && Math.random() < 0.7)
+              ? slotPool
+              : [...slotPool, ...FILLER_GENERIC]
+            const filler = pool[Math.floor(Math.random() * pool.length)]
+            /*
+             * 再按今日计划补一句在哪/在干嘛 —— 只在整句较短时拼，
+             * 免得变成「谁说拍照要先报日程」那种念日记感。
+             */
+            const fillerLine = (planAct && filler.length <= 14)
+              ? `${filler}（刚在${planAct}）`
+              : filler
+            await this._send(msg, fillerLine)
             this._fillerAt.set(fillerKey, Date.now())
-            this.log.info?.(`bridge：画图垫场「${filler}」`)
+            this.log.info?.(`bridge：画图垫场「${fillerLine}」`)
           } catch (e) {
             if (e?.skip) this.log.info?.('bridge：跳过垫场（这个会话刚垫过）')
             else this.log.warn?.(`bridge：画图垫场失败（不影响画图）— ${String(e?.message ?? e).slice(0, 60)}`)
