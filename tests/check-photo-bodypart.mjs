@@ -59,8 +59,9 @@ ok('★ 没命中部位 → 还是原来的构图', () => {
 
 console.log('\n=== 3. 提示词与禁令 ===')
 ok('★ 有「部位特写」段，明确"不出现脸、不出现全身"', () => {
-  assert.match(SRC_PROMPT, /【部位特写：只拍/)
-  assert.match(SRC_PROMPT, /不出现脸、不出现全身/)
+  assert.match(SRC_PROMPT, /【局部构图：这一张只拍/)
+  assert.ok(SRC_PROMPT.includes('**画面里只有**'), '缺正向清单')
+  assert.match(SRC_PROMPT, /这一张全部不适用/)
 })
 ok('★ 脚部特写不能被「这一张不拍脚」自己禁掉', () => {
   assert.match(SRC_PROMPT, /framing\.bodyPart !== '脚'/)
@@ -110,6 +111,32 @@ ok('★ 图有了但正文空 → 兜一句（且不许用今日计划）', () =
   const seg = SRC_BRIDGE.slice(i, i + 400)
   assert.match(seg, /喏。/, '兜底句不在')
   assert.ok(!/dayPlan/.test(seg), '又拿今日计划拼兜底句了')
+})
+
+
+console.log('\\n=== 7. 部位特写靠裁切，不靠提示词（2026-11-07 实测结论）===')
+ok('★ mcpImage 有 cropRegion（结果确定，不跟模型较劲）', () => {
+  const b = fs.readFileSync(new URL('../src/qq/mcpImage.js', import.meta.url), 'utf8')
+  assert.match(b, /export async function cropRegion/)
+  assert.match(b, /b - t >= 0\.15/, '要挡住非法区间，别裁成一条线')
+})
+ok('★ bridge 生成后按部位裁（腿/脚/小腹/腰/锁骨/胸部/肩颈）', () => {
+  const b = fs.readFileSync(new URL('../src/qq/bridge.js', import.meta.url), 'utf8')
+  assert.match(b, /const bpCrop = \(\(\) => \{/)
+  for (const k of ['腿', '脚', '小腹', '腰', '锁骨', '胸部', '肩颈']) {
+    assert.ok(b.includes(`${k}: [`), `裁切表里缺「${k}」`)
+  }
+  assert.match(b, /cropRegion\(buf, bpCrop\[0\], bpCrop\[1\]/, '没真正调用裁切')
+})
+ok('★ 手不裁（位置不定，裁了容易切半只手）', () => {
+  const b = fs.readFileSync(new URL('../src/qq/bridge.js', import.meta.url), 'utf8')
+  const i = b.indexOf('const TABLE = {')
+  const seg = b.slice(i, b.indexOf('}', i))
+  assert.ok(!seg.includes('手: ['), '手部不该进裁切表')
+})
+ok('★ framingInfo 要把 bodyPart 带出来（否则裁切永远不触发）', () => {
+  const f = fs.readFileSync(new URL('../src/photo/index.js', import.meta.url), 'utf8')
+  assert.match(f, /framingInfo: framing/)
 })
 
 console.log(`\n通过 ${pass} / 失败 ${fail}`)

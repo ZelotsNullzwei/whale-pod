@@ -284,6 +284,63 @@ export async function eraseCornerWatermark(buf, log = {}) {
   }
 }
 
+/**
+ * **按纵向区间裁切**（top~bottom，0~1）。舞台：部位特写。
+ *
+ * ## 为什么需要
+ * 「看看腿 / 看看腰 / 看看脚」这类要求，提示词怎么写模型都会把**脸和整个人**画进来
+ * （实测：正向清单、作废声明、去掉参考图，三种都试过，脸都在）。
+ * 与其继续和模型较劲，不如**生成完直接裁** —— 这是确定性的。
+ *
+ * ⚠️ 裁失败就原样返回（和 cropBottom 同一条纪律：不许因为裁图把图弄丢）。
+ *
+ * @param {Buffer} buf
+ * @param {number} top    上边界 0~1
+ * @param {number} bottom 下边界 0~1（必须 > top，且区间 >= 0.15）
+ * @param {object} [log]
+ * @returns {Promise<Buffer>}
+ */
+export async function cropRegion(buf, top, bottom, log = {}) {
+  if (!Buffer.isBuffer(buf) || buf.length < 1024) return buf
+  const t = Number(top)
+  const b = Number(bottom)
+  if (!(t >= 0 && b <= 1 && b - t >= 0.15)) return buf
+  const candidates = [
+    process.env.WHALEPOD_PYTHON,
+    path.join(os.homedir(), '.dsh', 'dsh-runtimes', 'dsh-next-primary-runtime', 'dependencies', 'python', 'python.exe'),
+    'python',
+  ].filter(Boolean)
+  const stamp = `${process.pid}-${Date.now()}-r`
+  const tmpIn = path.join(os.tmpdir(), `wp-crop-${stamp}.img`)
+  const tmpOut = path.join(os.tmpdir(), `wp-crop-${stamp}-out.jpg`)
+  const script = [
+    'import sys',
+    'from PIL import Image',
+    'im = Image.open(sys.argv[1]).convert("RGB")',
+    'w, h = im.size',
+    't = max(0, int(h * float(sys.argv[3])))',
+    'b = min(h, int(h * float(sys.argv[4])))',
+    'im.crop((0, t, w, max(t + 1, b))).save(sys.argv[2], quality=92)',
+  ].join(String.fromCharCode(10))
+  try {
+    fs.writeFileSync(tmpIn, buf)
+    for (const py of candidates) {
+      try {
+        execFileSync(py, ['-c', script, tmpIn, tmpOut, String(t), String(b)], { timeout: 25000, stdio: 'ignore', windowsHide: true })
+        const out = fs.readFileSync(tmpOut)
+        if (out.length > 2048) {
+          log.info?.(`mcp-image：部位裁切 ${Math.round(t * 100)}%~${Math.round(b * 100)}%，${Math.round(out.length / 1024)}KB`)
+          return out
+        }
+      } catch { /* 换下一个解释器 */ }
+    }
+    log.warn?.('mcp-image：没有可用的 python+Pillow，部位裁切跳过（图原样发）')
+    return buf
+  } finally {
+    try { fs.unlinkSync(tmpIn) } catch { /* 无所谓 */ }
+    try { fs.unlinkSync(tmpOut) } catch { /* 无所谓 */ }
+  }
+}
 export async function cropBottom(buf, ratio = 0.1, log = {}) {
   if (!Buffer.isBuffer(buf) || buf.length < 1024) return buf
   if (!(ratio > 0 && ratio < 0.4)) return buf

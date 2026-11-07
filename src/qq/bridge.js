@@ -43,7 +43,7 @@ import { applyQuestionOverride } from './questionGate.js'
 import { shouldAnswerSticker } from './stickerGate.js'
 import { StickerTagStore, stickerKey, splitTags } from './sticker-tags.js'
 import { extractQQMarkers, runQQMarkers, buildEmojiHint } from './qqActions.js'
-import { generateImage, cropBottom, eraseCornerWatermark } from './mcpImage.js'
+import { generateImage, cropBottom, cropRegion, eraseCornerWatermark } from './mcpImage.js'
 /* 摄影决策链（v2.0）：规划 → 校验 → 构图 → 提示词，见 src/photo/ */
 import { planShot, describeShot } from '../photo/index.js'
 import { figurePoseForDay, detectBodyPart } from '../photo/photo-composer.js'
@@ -5596,6 +5596,33 @@ export class QQBridge {
                  * 生成时故意用 9:16（比最终要的高），裁掉底部 10% 后仍是竖屏。
                  * 裁图失败就原样发 —— 绝不能因为裁图把整条图丢了（见 cropBottom）。
                  */
+                /*
+                 * ★★ **部位特写：生成完按部位裁**（2026-11-07 实测结论）。
+                 *
+                 * 「看看腿 / 看看腰 / 看看脚」这类要求，提示词怎么写模型都会把脸和整个人画进来：
+                 *   · 写「不出现脸」→ 脸还在（否定式对模型很弱）
+                 *   · 改成正向清单 + 本张作废脸相关规则 → 脸还在
+                 *   · 去掉参考图 → 脸还在，而且人物不像了
+                 * 所以改成**生成后确定性裁切**：和模型的构图偏好较劲不如直接切。
+                 * 区间按坐姿俯拍的常见构图定，手部位置不定所以不裁。
+                 */
+                const bpCrop = (() => {
+                  const part = shot.framingInfo?.bodyPart
+                  if (!part) return null
+                  const TABLE = {
+                    腿: [0.42, 1.0],
+                    脚: [0.62, 1.0],
+                    小腹: [0.35, 0.78],
+                    腰: [0.30, 0.72],
+                    锁骨: [0.14, 0.52],
+                    胸部: [0.16, 0.58],
+                    肩颈: [0.06, 0.46],
+                  }
+                  return TABLE[part] ?? null
+                })()
+                if (bpCrop && buf.length > 1024) {
+                  buf = await cropRegion(buf, bpCrop[0], bpCrop[1], this.log)
+                }
                 if (buf.length > 1024 && buf.length < 8 * 1024 * 1024) {
                   /*
                    * **全身照：只裁 6% + 擦角落**（2026-11-05 实测最稳的组合）。
@@ -11282,6 +11309,39 @@ export class QQBridge {
       }
       const scope = String(msg.scope ?? '')
       if (!scope) return
+      /*
+       * ★★ **闸 5：话题已经翻篇 / 她已经就这条说过了 → 不补**（2026-11-07）。
+       *
+       * 现场：
+       * ```
+       * 12:40:32  他发了 B 站链接
+       * 12:40:38  她「看了，雪地里那个大镰刀转起来挺唬人…」   ← 已经说了
+       * 12:40:46  他「能一直平推？」
+       * 12:40:50  她「看着像能的，一直转不带停…」             ← 又说一遍
+       * 12:40:57  后台听完补一句「标题自己都写了并非学会，你说呢」 ← 第三遍，且插错话题
+       * ```
+       * 原来只有「≤5 分钟」「同一条视频只补一次」两道闸 —— 而 24 秒当然 <5 分钟，
+       * 于是话题早翻篇了它还硬补，同一件事被说三遍。
+       *
+       * 所以补两句判据：
+       *   ① 发布链接之后**她自己已经说过 ≥2 轮** → 该说的都说完了，别再补；
+       *   ② 期间别人说的话**跟视频无关** → 场子已经在聊别的了，别插回去。
+       */
+      const sinceLink = (mem?.recent?.(12) ?? [])
+        .filter((m) => Number(m?.at ?? 0) > Number(job.at ?? 0))
+      const mineAfter = sinceLink.filter((m) => m?.isMe)
+      if (mineAfter.length >= 2) {
+        this.log.info?.(
+          `B站：${job.bvid} 听完了，但她已经就这条说过 ${mineAfter.length} 轮 → 不补（别车轱辘话）`,
+        )
+        return
+      }
+      const VIDEO_RE = /(视频|片子|看看|看了|平推|连招|转|剑|刀|标题|封面|BV|b23|B站|b站|链接|投稿)/i
+      const theirsAfter = sinceLink.filter((m) => !m?.isMe)
+      if (theirsAfter.length > 0 && !theirsAfter.some((m) => VIDEO_RE.test(String(m?.text ?? '')))) {
+        this.log.info?.(`B站：${job.bvid} 听完了，但话题已经翻篇（后来聊的是别的）→ 不补`)
+        return
+      }
       this._videoFollowed.set(job.bvid, Date.now())
       if (this._videoFollowed.size > 100) {
         this._videoFollowed.delete(this._videoFollowed.keys().next().value)
