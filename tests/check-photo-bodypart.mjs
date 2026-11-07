@@ -121,13 +121,21 @@ ok('★ mcpImage 有 cropRegion（结果确定，不跟模型较劲）', () => {
   assert.match(b, /export async function cropRegion/)
   assert.match(b, /b - t >= 0\.15/, '要挡住非法区间，别裁成一条线')
 })
-ok('★ bridge 生成后按部位裁（腿/脚/小腹/腰/锁骨/胸部/肩颈）', () => {
+ok('★ bridge 生成后只裁「离脸远」的部位（腿/脚/小腹/腰）', () => {
   const b = fs.readFileSync(new URL('../src/qq/bridge.js', import.meta.url), 'utf8')
   assert.match(b, /const bpCrop = \(\(\) => \{/)
-  for (const k of ['腿', '脚', '小腹', '腰', '锁骨', '胸部', '肩颈']) {
+  for (const k of ['腿', '脚', '小腹', '腰']) {
     assert.ok(b.includes(`${k}: [`), `裁切表里缺「${k}」`)
   }
   assert.match(b, /cropRegion\(buf, bpCrop\[0\], bpCrop\[1\]/, '没真正调用裁切')
+})
+ok('★ 锁骨/胸部/肩颈**不进**事后裁切表（否则整脸图会被切成半张脸）', () => {
+  const b = fs.readFileSync(new URL('../src/qq/bridge.js', import.meta.url), 'utf8')
+  const i = b.indexOf('const TABLE = {')
+  const seg = b.slice(i, b.indexOf('}', i))
+  for (const k of ['锁骨', '胸部', '肩颈']) {
+    assert.ok(!seg.includes(`${k}: [`), `${k} 不该进裁切表`)
+  }
 })
 ok('★ 手不裁（位置不定，裁了容易切半只手）', () => {
   const b = fs.readFileSync(new URL('../src/qq/bridge.js', import.meta.url), 'utf8')
