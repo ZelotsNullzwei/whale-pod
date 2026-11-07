@@ -3296,6 +3296,41 @@ export class QQBridge {
     }
   }
 
+  /**
+   * 被戳时那句回话（2026-11-07 用户：「被戳也只用两固定回复」）。
+   *
+   * 原来从一个 6 句固定池随机 —— 戳多了就那两句来回。
+   * 现在先让模型现编一句极短的话，失败/超时才回退固定池。
+   */
+  async _pokeLine() {
+    try {
+      const llm = this.gateway
+      if (!llm?.stream) return null
+      const model = String(this.cfg?.model ?? '').trim()
+      const provider = model.includes('/') ? model.slice(0, model.indexOf('/')) : undefined
+      const chunks = []
+      const stream = llm.stream({
+        provider,
+        model: model || undefined,
+        messages: [
+          { role: 'system', content: '你刚被人在 QQ 上戳了一下。只输出一句极短的中文回话（4~12 个字），口语、有点情绪或懒散；不要引号、不要解释、不要括号动作、不要 emoji。' },
+          { role: 'user', content: '他戳了你一下。' },
+        ],
+        maxTokens: 48,
+        temperature: 0.9,
+        signal: AbortSignal.timeout(6000),
+      })
+      for await (const c of stream) {
+        if (c?.type === 'text-delta' && c.text) chunks.push(c.text)
+        else if (c?.type === 'text' && c.text) chunks.push(c.text)
+        else if (c?.type === 'error') throw new Error('llm error')
+        else if (c?.type === 'finish' && c?.reason?.kind === 'error') throw new Error('llm error')
+      }
+      const t = chunks.join('').trim().replace(/^["“”「」]+|["“”「」]+$/g, '').slice(0, 24)
+      return t || null
+    } catch { return null }
+  }
+
   async _onNotice(ev) {
     // 先把收到的**所有**通知记一条 —— 排查"为什么戳一戳没反应"时，
     // 第一件要知道的事就是"协议端到底有没有把通知推过来"。
@@ -3404,7 +3439,8 @@ export class QQBridge {
       const lines = Array.isArray(cfg.lines) && cfg.lines.length
         ? cfg.lines
         : ['别戳了别戳了', '干嘛', '戳我干嘛', '在的在的', '哎哟', '有事说事']
-      said = lines[Math.floor(Math.random() * lines.length)]
+      /* ★ 先让模型现编一句；失败/超时才用固定池（2026-11-07） */
+      said = (await this._pokeLine()) ?? lines[Math.floor(Math.random() * lines.length)]
       try {
         if (groupId) await this.onebot.sendGroup(groupId, said)
         else await this.onebot.sendPrivate(fromId, said)
