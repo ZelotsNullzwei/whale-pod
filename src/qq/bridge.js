@@ -5769,14 +5769,16 @@ export class QQBridge {
                       if (buf2.length > 1024 && buf2.length < 8 * 1024 * 1024) {
                         buf2 = await cropBottom(buf2, Number(imgCfg.cropBottom ?? 0.1), this.log)
                         /*
-                         * ★ **重拍完再审一次**（2026-11-07 加）。
+                         * ★ **重拍完再审一次，但只记录、不阻断**（2026-11-07 修正）。
                          *
-                         * 原来重拍后不审，直接就用 —— 实测手部特写重拍后仍是**六根手指**，
-                         * 结果照样发出去（用户看到的就是"怪手"）。
-                         * 现在：重拍这张也不合格 → **部位特写就不发图**（这一轮只用文字接），
-                         * 其他类型仍照旧发（宁可有点瑕疵，也别什么都不发）。
+                         * 我原来写成"部位特写不合格就不发"，实测立刻踩雷：
+                         * 一张**五根手指**的正常手被审核判成"六根手指" →
+                         * 好图被丢掉。这违背项目里写死的原则：
+                         *   「审核失败放行 —— 宁可发一张可能有瑕疵的图，
+                         *     也不能因为审核挂了什么都不发」（见 imageReview.js）。
+                         * 所以这里只把第二张的审核结果记进日志，供以后判断误判率，
+                         * **不改变发送行为**。
                          */
-                        let useThis = true
                         if (this.cfg.actions?.imageReview !== false) {
                           try {
                             const small2 = await shrinkForReview(buf2, 640, this.log)
@@ -5787,20 +5789,13 @@ export class QQBridge {
                               log: this.log,
                             })
                             if (!rv2.ok) {
-                              const isPart = Boolean(shot.framingInfo?.bodyPart)
-                              this.log.warn?.(`bridge：重拍那张也不合格（${rv2.why || '多手/脸崩'}）${isPart ? ' → 部位特写不发这张' : ' → 仍照发'}`)
-                              if (isPart) useThis = false
+                              this.log.warn?.(`bridge：重拍那张仍被审核挑刺（${rv2.why || '多手/脸崩'}）→ 按"审核失败放行"照发`)
                             }
-                          } catch { /* 复审失败就照发 */ }
+                          } catch { /* 复审失败无所谓 */ }
                         }
-                        if (useThis) {
-                          finalBuf = buf2
-                          file = `base64://${buf2.toString('base64')}`
-                          this.log.info?.('bridge：重拍完成，用新的这张')
-                        } else {
-                          finalBuf = null
-                          file = null
-                        }
+                        finalBuf = buf2
+                        file = `base64://${buf2.toString('base64')}`
+                        this.log.info?.('bridge：重拍完成，用新的这张')
                       }
                     }
                   }
