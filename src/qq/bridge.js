@@ -1436,6 +1436,55 @@ export class QQBridge {
    * 定时摘要：安静时段也把新消息归档（2026-11-06 用户：「按照时间来呢」）。
    * 每 60 秒看一眼，到点且有新消息才摘，没新消息不花钱。
    */
+  /**
+   * 心跳文件（2026-11-07）：记录「最后一次活着」的时间。
+   * 启动时读它 → 算出关机/断网多久 → 让"她知道自己不在过"。
+   */
+  _aliveFile() {
+    const home = this.cfg?.home || this._home || ''
+    return home ? path.join(home, 'alive.json') : ''
+  }
+
+  _touchAlive() {
+    const file = this._aliveFile()
+    if (!file) return
+    const now = Date.now()
+    if (this._aliveWroteAt && now - this._aliveWroteAt < 60_000) return
+    this._aliveWroteAt = now
+    try { fs.writeFileSync(file, JSON.stringify({ at: now }) + '\n') } catch { /* ignore */ }
+  }
+
+  /**
+   * 启动时算一次「我离线了多久」。
+   * 超过 10 分钟才当回事（几秒钟的重连不值得说）。
+   */
+  _loadOfflineGap() {
+    const file = this._aliveFile()
+    if (!file) return
+    try {
+      const j = JSON.parse(fs.readFileSync(file, 'utf8'))
+      const at = Number(j?.at ?? 0)
+      const gap = Date.now() - at
+      if (at > 0 && gap >= 10 * 60_000) {
+        this._offlineGap = { at, gap }
+        const mins = Math.round(gap / 60_000)
+        this.log.info?.(`bridge：我离线了约 ${mins} 分钟（上次存活 ${new Date(at).toLocaleString('zh-CN')}）`)
+      }
+    } catch { /* 没有/读坏了就当第一次运行 */ }
+  }
+
+  /**
+   * 给提示词用：让"她"知道自己刚不在线。
+   * ⚠️ 只说事实（我离线了多久、期间他可能说过话），不替她编理由。
+   */
+  _offlineHint() {
+    const g = this._offlineGap
+    if (!g) return ''
+    if (this._bootAt && Date.now() - this._bootAt > 2 * 3600_000) return ''
+    const mins = Math.round(g.gap / 60_000)
+    const human = mins >= 60 ? `${Math.round(mins / 60)} 小时` : `${mins} 分钟`
+    return `## 你刚才不在线\n你在 ${new Date(g.at).toLocaleString('zh-CN')} 之后断的（关机/断电/断网），到现在大约 ${human}。\n   · 这段时间里别人发的话，可能已经在「最近记录」里补回来了 —— **先看那条再回**；\n   · 别提「我一直都在」，也别把几小时前的话当成刚刚说的；\n   · 如果对方问你为什么不在，就照实说自己这边断了，别编。`
+  }
   _summaryClock() {
     try {
       /*
@@ -1467,6 +1516,8 @@ export class QQBridge {
 
   startProactive(opts = {}) {
     if (this._proactive) return this._proactive
+    this._bootAt = this._bootAt || Date.now()
+    try { this._loadOfflineGap() } catch { }
     if (!this._summaryTimer) {
       this._summaryTimer = setInterval(() => this._summaryClock(), 60_000)
       this._summaryTimer.unref?.()
@@ -3559,6 +3610,8 @@ export class QQBridge {
      * 把延迟的差别淹没了 —— 用户反馈「随机时间感觉没生效」。
      */
     const tStart = Date.now()
+    /* 心跳：让"我关了多久"在下次启动时算得出来（2026-11-07） */
+    try { this._touchAlive() } catch { /* 心跳失败不影响回复 */ }
     /*
      * ★★ `[发群]` 的**人工确认**（2026-11-06 用户：「每次要群发叫她询问我」）。
      *
@@ -7926,6 +7979,8 @@ export class QQBridge {
          *   这里把对面会话的**长期摘要**挂进来，人格仍按会话各用各的。
          */
         this._crossLongDigest(msg.scope),
+        /* ★ 我离线过多久（2026-11-07） */
+        this._offlineHint(),
         /*
          * ★ 长期档案（2026-11-06）：只增不减，摘要重写也不会丢。
          *   可见性按会话过滤：群只看 group+shared，私聊看全部。
