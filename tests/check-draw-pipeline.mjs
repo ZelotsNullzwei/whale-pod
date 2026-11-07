@@ -14,7 +14,7 @@
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import {
-  QQBridge, classifyDrawIntent, pickPrivateCover, buildOutgoingSegments,
+  QQBridge, classifyDrawIntent, isDrawQuestion, pickPrivateCover, buildOutgoingSegments,
   PIC_REQUEST_PHRASES, PIC_REFUSE_PHRASES,
 } from '../src/qq/bridge.js'
 
@@ -205,5 +205,23 @@ await ok('图进群后私聊不重复带同一张', () => {
 })
 
 console.log(`\n${'='.repeat(48)}`)
+/* ── 2026-11-07：她自己问「拍什么/怎么拍」也要记成已询问 ───────── */
+await ok('★ isDrawQuestion 认得出她在问取景', () => {
+  assert.equal(isDrawQuestion('行啊，全身还是半身？对镜自拍也行，前置拍也行，你挑一下我就拍。'), true)
+  assert.equal(isDrawQuestion('拍什么啊，全身还是就露个脸？'), true)
+})
+await ok('★ isDrawQuestion 不误伤普通句', () => {
+  assert.equal(isDrawQuestion('（把头发往后拢了一下，走到镜子前）行，那就本鱼自己定'), false)
+  assert.equal(isDrawQuestion('随你喽'), false)
+  assert.equal(isDrawQuestion('今天不想动'), false)
+})
+await ok('★ 「怎么拍就怎么拍」算要图（之前漏收，害她答完又被拦一次）', () => {
+  assert.equal(classifyDrawIntent('你想怎么拍就怎么拍').wantsPic, true)
+})
+await ok('★ 源码锁：她问的时候也要 set(_drawAsk)，不能只在闸门里记', () => {
+  assert.ok(/if \(!drewAny && isDrawQuestion\(text\)\)/.test(SRC), '缺少「她自己问 → 记已询问」的分支')
+  assert.ok(SRC.includes('她在问「拍什么/怎么拍」→ 记成已询问'), '缺少对应日志')
+})
+
 console.log(`通过 ${pass} / 失败 ${fail}`)
 process.exit(fail === 0 ? 0 : 1)

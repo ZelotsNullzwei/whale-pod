@@ -5230,6 +5230,29 @@ export class QQBridge {
       this.log.info?.('bridge：改问"拍什么、怎么拍"（没画）')
     }
 
+    /*
+     * ★ **她自己开口问「拍什么/怎么拍」也算「已询问」**（2026-11-07 修）。
+     *
+     * 现场：
+     *   17:48:21 她「行啊，全身还是半身？…你挑一下我就拍。」
+     *   17:48:39 他「你想怎么拍就怎么拍」
+     *   17:48:42 「画图跳过 —— 他没说要拍（先问"拍什么、怎么拍"）」← 又去问了一遍
+     *
+     * 根因：`_drawAsk` 只在**闸门拦下时**才记（见上面 `&& !allowDraw` 那条分支），
+     * 而模型自己开口问的时候（不带 `[画图:]`）闸门根本没进过 → 状态永远 idle
+     * → "她问过、他答了"（askedFresh）这条路几乎永远走不到。
+     *
+     * 现在：只要她这一条在问拍什么/怎么拍，就记成"已询问"。
+     * 他下一句答什么都算答（用户口径：询问就是变量控制）。
+     */
+    try {
+      if (!drewAny && isDrawQuestion(text)) {
+        if (!this._drawAsk) this._drawAsk = new Map()
+        this._drawAsk.set(String(msg.scope ?? ''), Date.now())
+        this.log.info?.('bridge：她在问「拍什么/怎么拍」→ 记成已询问（他下一句答了就能拍）')
+      }
+    } catch { /* 记不上不影响发消息 */ }
+
     let findImage = null
     if (this.cfg.reply?.findImage !== false) {
       const marks = extractFindImageMarkers(text)
@@ -11304,6 +11327,8 @@ export const PIC_REQUEST_PHRASES = [
   '群里发', '发到群', '群发一张',
   // 催（必须配着拍/图才算，避免「快点」误伤）
   '怎么还不拍', '还没拍', '不拍吗',
+  // ★ 「怎么拍就怎么拍」= 按你定的拍（2026-11-07 实测：她答完之后闸门又拦了一次）
+  '怎么拍就怎么拍', '怎么拍都行', '随便拍',
 ]
 
 /**
@@ -11347,4 +11372,44 @@ export function classifyDrawIntent(text) {
   const wantsPic = PIC_REQUEST_PHRASES.some((p) => s.includes(p)) || lookHit
   const refused = PIC_REFUSE_PHRASES.some((p) => s.includes(p))
   return { wantsPic, saidNo: refused && !wantsPic }
+}
+
+/**
+ * ★ **她这句话是不是在问「拍什么 / 怎么拍」**（2026-11-07 修）。
+ *
+ * ## 现场
+ * ```
+ * 17:48:13 他「发张照片看看」
+ * 17:48:21 她「行啊，全身还是半身？对镜自拍也行，前置拍也行，你挑一下我就拍。」
+ * 17:48:39 他「你想怎么拍就怎么拍」      ← 按她定的拍
+ * 17:48:42 「bridge：画图跳过 —— 他没说要拍（先问"拍什么、怎么拍"）」← 又去问了一遍
+ * ```
+ *
+ * ## 根因
+ * `_drawAsk`（"我已经问过了"的状态）**只在闸门拦下时**才记：
+ * ```
+ * if (... && !allowDraw && !drewRecently) { ...; this._drawAsk.set(askKey, now) }
+ * ```
+ * 而模型自己开口问的时候**不带 `[画图:]`** → 整个闸门根本没进过 → 状态永远是
+ * idle → askedFresh 永远 false → 他明明答了「怎么拍就怎么拍」，还是被拦。
+ *
+ * ## 判据
+ * 她那句话同时满足：① 在说拍/照片 ② 在问取景或拍法
+ * （「全身还是半身」「拍什么」「怎么拍」「对镜还是前置」…）
+ * 或者 ②' 带问号的拍-related 问句。
+ *
+ * ⚠️ 故意宽一点、只用来**记状态**：记错一次的代价是她下次多问一句，
+ *    比"问了也不认、反复问同一句"轻得多。
+ *
+ * @param {string} text 她这一条回复的正文
+ * @returns {boolean}
+ */
+export function isDrawQuestion(text) {
+  const t = String(text ?? '')
+  if (!t.trim()) return false
+  if (!/(拍|照片|自拍)/.test(t)) return false
+  // ① 直接问取景/拍法
+  if (/(拍什么|怎么拍|拍哪儿?|什么姿势|全身还是|半身还是|对镜还是|前置还是|露脸还是)/.test(t)) return true
+  // ② 带问号、且说的是"拍"
+  return /[？?]/.test(t) && /拍/.test(t)
 }
