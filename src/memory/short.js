@@ -140,9 +140,29 @@ export class ConversationMemory {
     this.totalPushed = 0
   }
 
-  /** 追加一条消息。 */
+  /** 按时间插入一条消息（不是无脑追加）。 */
   push(msg) {
     const m = makeMessage(msg)
+    /*
+     * ★★ **按 `at` 插入到正确位置，不再无脑 append**（2026-11-07）。
+     *
+     * ## 原来的 append 为什么错
+     * `push` 发生在**发送成功之后**，而生成一条回复要 5~8 秒。
+     * 这段时间里新消息已经 push 进数组了，于是她的回复**后入列但时间更早**：
+     * ```
+     * 数组: [..., 我(12:08:28), 他(12:08:14)]   ← 时间倒挂
+     * ```
+     * `buildChatMessages` 按**数组顺序**渲染 → 模型看到「我先说、他后说」
+     * → 答上一条、重复回答、说自己"没收到图"。
+     *
+     * ## 以前为什么不敢排序
+     * 旧注释写「数组顺序=处理顺序=对话顺序，按 at 排序会打乱」——
+     * 那个前提在 `at` 混用两套时钟（QQ 服务器秒级 + 本地毫秒）时不成立。
+     * 现在 `at` 统一成本地接收时刻（见 onebot.js），排 `at` 就是排真实顺序。
+     *
+     * ⚠️ 计数逻辑（myLastAt / consecutiveTurns / pendingSinceMyLast）仍按
+     *    **调用顺序**更新 —— 那是"谁刚说过话"的语义，与插入位置无关。
+     */
     this.messages.push(m)
     this.totalPushed++
     if (m.isMe) {
@@ -356,6 +376,18 @@ export class MemoryStore {
           if (maxAge > 0 && at > 0 && now - at > maxAge) continue
           m.messages.push(makeMessage(raw))
         }
+        /*
+         * ★★ **载入后按 at 稳定排序一次**（2026-11-07）。
+         *
+         * 作用有两个：
+         *   ① 修**历史脏数据** —— 旧版本无脑 append，磁盘里已经存着
+         *      「12:08 → 11:05」这种倒挂（实测 30 条里 6 处）；
+         *   ② 让运行期和磁盘上的顺序一致（push 已改成按 at 插入）。
+         *
+         * ⚠️ 用**稳定排序**（in-place，相等时保留原相对顺序）：
+         *    同一毫秒的两条不能因为排序而互换 —— 那是她和别人各说一句。
+         */
+        m.messages.sort((a, b) => Number(a.at ?? 0) - Number(b.at ?? 0))
         m.totalPushed = Number(v.totalPushed ?? m.messages.length)
         m.myLastAt = Number(v.myLastAt ?? 0)
         /*
