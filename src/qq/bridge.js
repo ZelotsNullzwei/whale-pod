@@ -3597,6 +3597,55 @@ export class QQBridge {
     } catch { return null }
   }
 
+  /**
+   * 某人撤回了一条消息 —— 把它从**记忆**和**待处理的合并窗口**里清掉。
+   *
+   * ## 用户口径（2026-11-07）
+   *
+   * 「还有一点，他会看见已撤回的消息」
+   *
+   * 原理：消息是**先到、后被撤回**的 —— 到的时候已经进了短期记忆，
+   * 甚至可能已经排进"合并窗口"等着一起处理。撤回事件一来，
+   * 如果不主动清，她照样看得见那句话，还会对着它回。
+   *
+   * @param {string} scope      `group:123` / `private:456`
+   * @param {string} messageId  QQ 的 message_id
+   * @returns {{mem:boolean, pending:number}} 删掉了几处
+   */
+  _dropRecalled(scope, messageId) {
+    const out = { mem: false, pending: 0 }
+    const mid = String(messageId ?? '')
+    if (!scope || !mid) return out
+
+    // ① 短期记忆
+    try {
+      out.mem = this.memory?.get?.(scope)?.removeById?.(mid) === true
+    } catch { /* 删不掉不影响别的 */ }
+
+    // ② 还没处理的合并窗口（他发完立刻撤回，最常见的就是这种）
+    try {
+      for (const [key, buf] of [...(this._pending ?? [])]) {
+        if (!buf || String(buf.scope) !== String(scope)) continue
+        const before = buf.msgs.length
+        buf.msgs = buf.msgs.filter((m) => String(m?.messageId ?? m?.id ?? '') !== mid)
+        const removed = before - buf.msgs.length
+        if (removed <= 0) continue
+        out.pending += removed
+        // 全撤光了 → 这一轮本来也没什么可处理的，直接取消定时器
+        if (buf.msgs.length === 0) {
+          try {
+            const t = this._pendingTimers?.get?.(key)
+            if (t) clearTimeout(t)
+            this._pendingTimers?.delete?.(key)
+          } catch { /* ignore */ }
+          this._pending.delete(key)
+        }
+      }
+    } catch { /* ignore */ }
+
+    return out
+  }
+
   async _onNotice(ev) {
     // 先把收到的**所有**通知记一条 —— 排查"为什么戳一戳没反应"时，
     // 第一件要知道的事就是"协议端到底有没有把通知推过来"。
@@ -3647,6 +3696,30 @@ export class QQBridge {
     //    正是这条日志要解决的"只能靠猜"。已补回，并有源码锁守着顺序。
     this.log.info?.(`bridge：收到通知 ${nt}${st ? '/' + st : ''}` +
       `（群 ${ev?.group_id ?? '-'}，操作者 ${ev?.user_id ?? '-'}，目标 ${ev?.target_id ?? '-'}）`)
+
+    /*
+     * ★ **撤回的消息不能让她看见**（2026-11-07 用户）。
+     *
+     * OneBot 11 的两个撤回通知：
+     *   · `group_recall`  { group_id, user_id, operator_id, message_id }
+     *   · `friend_recall` { user_id, message_id }
+     * 消息先到、后被撤回，所以到的时候已经在记忆里了 —— 这里主动清掉，
+     * 顺手把还没处理的合并窗口里那条也去掉（他发完立刻撤回最常见）。
+     */
+    if (nt === 'group_recall' || nt === 'friend_recall') {
+      const gid = ev?.group_id != null ? String(ev.group_id) : ''
+      const scope = nt === 'group_recall'
+        ? (gid ? `group:${gid}` : '')
+        : `private:${String(ev?.user_id ?? '')}`
+      const mid = String(ev?.message_id ?? '')
+      const r = this._dropRecalled(scope, mid)
+      this.log.info?.(
+        `bridge：收到撤回（${scope || '?'}，id=${mid || '?'}）`
+        + `→ ${r.mem ? '已从记忆删除' : '记忆里没有'}`
+        + (r.pending > 0 ? `，待处理里去掉 ${r.pending} 条` : ''),
+      )
+      return
+    }
 
     if (nt !== 'notify' || st !== 'poke') return
 
@@ -9234,15 +9307,28 @@ export class QQBridge {
         return false
       }
       const pool = cands.slice(0, 3)
+      /*
+       * ★ **前三名轮着 @，不随机**（2026-11-07 用户：
+       *   「讨钱3次按照好感度前三依次吧，老是@同一个人会觉得烦」）。
+       *
+       * 一天 3 次：第 1 次 @ 好感最高的、第 2 次 @ 第二、第 3 次 @ 第三；
+       * 跨天 begCount 归零，第二天又从第一名开始。
+       * 候选不足 3 个就取模轮转（两个人也能换着来）。
+       *
+       * 做法：只给 `decideBeg` 一个候选人 —— 它在前 N 名里随机挑，
+       * 而 N=1 时"随机"就只能挑这一个人，于是变成确定的第一名。
+       */
+      let todayIdx = 0
+      try { todayIdx = Math.max(0, Number(this._begState?.snapshot?.().count ?? 0)) } catch { todayIdx = 0 }
+      const pick = pool[todayIdx % pool.length]
       this.log.info?.(
         'bridge：讨钱候选（按好感度）' +
-        pool.map((c) => `${c.name}(${c.id}) 好感${c.affinity}`).join('、'),
+        pool.map((c) => `${c.name}(${c.id}) 好感${c.affinity}`).join('、') +
+        `；今天第 ${todayIdx + 1} 次 → @${pick.name}`,
       )
       const tracker = {
-        top: ({ limit = 3, exclude = [] } = {}) =>
-          pool
-            .filter((c) => !exclude.map(String).includes(String(c.id)))
-            .slice(0, limit),
+        top: ({ exclude = [] } = {}) =>
+          (exclude.map(String).includes(String(pick.id)) ? [] : [pick]),
       }
 
       const r = decideBeg({
@@ -9285,6 +9371,25 @@ export class QQBridge {
         `bridge：余额 ¥${cny} 偏低 → 已 @${r.target.name}(${r.target.id}) 讨钱，` +
         `好感 ${r.target.affinity ?? '?'}，今日第 ${this._begState.snapshot().count}/${this._begState.maxPerDay} 次，话术「${r.line.id}」`,
       )
+      /*
+       * ★ 讨钱发出去之后要**写进她自己的记忆**（2026-11-07 用户：
+       *   「而且貌似不知道自己去讨钱了」）。
+       *
+       * 讨钱是直接调 `onebot.sendGroup`，不走正常回复那条路 ——
+       * 那条路（`_send` / `_handle`）会把"我说的话"push 进记忆，这条不会。
+       * 于是他对她说「你刚才讨什么钱」时她一脸茫然，甚至可能再讨一次
+       * （她根本不记得自己说过）。
+       */
+      try {
+        this.memory?.get?.(`group:${msg.groupId}`)?.push?.({
+          id: res?.message_id ?? res?.messageId,
+          sender: String(this.selfId ?? '0'),
+          senderName: this.selfName,
+          text: `@${r.target.name} ${r.text}`,
+          at: Date.now(),
+          isMe: true,
+        })
+      } catch { /* 记不上不影响讨钱本身 */ }
       /*
        * 兜底初始化：消息**已经发出去了**，别因为一个计数器没初始化
        * 就走到下面的 catch 里、把这次成功报成失败（2026-11-07 实测：

@@ -178,6 +178,30 @@ export class ConversationMemory {
     }
   }
 
+  /**
+   * 删掉某一条（QQ 撤回用，2026-11-07）。
+   *
+   * ## 为什么需要
+   * 用户：「他会看见已撤回的消息」。
+   * 消息是先到、后被撤回的 —— 到的时候已经 `push` 进窗口了，
+   * 于是"撤回"对她等于没发生：她照样能看见那句话，还会接着回。
+   *
+   * `totalPushed` **不跟着减**：它是"累计进来过多少条"的单调计数器，
+   * 给摘要用的（见上面 `totalPushed` 的说明）。减了会让摘要次数错乱。
+   *
+   * @param {string} id 消息 id（QQ 的 `message_id`）
+   * @returns {boolean} 是否真的删掉了一条
+   */
+  removeById(id) {
+    const key = String(id ?? '')
+    if (!key) return false
+    const i = this.messages.findIndex((m) => String(m?.id ?? '') === key)
+    if (i < 0) return false
+    this.messages.splice(i, 1)
+    this.onChange?.()
+    return true
+  }
+
   /** 裁剪到上限。 */
   _trim() {
     const now = Date.now()
