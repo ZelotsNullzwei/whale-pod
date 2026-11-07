@@ -50,7 +50,7 @@ import { figurePoseForDay, detectBodyPart } from '../photo/photo-composer.js'
 import { buildPartRef } from '../photo/partRef.js'
 import { detectFaceBottom } from '../photo/faceBand.js'
 import { dayKey } from '../memory/dayPlan.js'
-import { outingOutfitForDay, signatureOutfitForDay, wardrobeBrief, resolveOutfitText } from '../memory/wardrobe.js'
+import { outingOutfitForDay, signatureOutfitForDay, sleepwearForDay, wardrobeBrief, resolveOutfitText } from '../memory/wardrobe.js'
 // 今天临时换上的那套（2026-11-06）：当天有效，晚上/第二天自动让位
 import { wearingFor, setWearing } from '../memory/wearing.js'
 import { hasBiliLink, resolveBvid, fetchVideoInfo, fetchTopComments, fetchDanmaku, fetchAudioCandidates, downloadAudio, formatVideoContext } from './bilibili.js'
@@ -5402,6 +5402,20 @@ export class QQBridge {
             } catch { return false }
           })()
           const outfitText = (() => {
+            /*
+             * ★★ **CLOSE 私聊：衣服从"睡衣池"取**（2026-11-07 用户：「看不出来，close版本和日常版没区别」）。
+             *
+             * 原因：两版原来都穿当天日程那一件（宽松白T），CLOSE 只是提示词里多了三行 ——
+             * 出图当然一模一样。要"看得出来"，得换**衣服**，不是换形容词。
+             * 现在 close 用 SLEEPWEAR 池里的睡裙/吊带（按天轮换，一天固定一套）。
+             */
+            try {
+              const role = this.persona?.pickActive?.(String(msg.scope ?? '')) ?? ''
+              if (String(role) === 'close') {
+                const sw = String(sleepwearForDay(dayKey()) ?? '')
+                if (sw) return sw
+              }
+            } catch { /* 拿不到就用日程那件 */ }
             try {
               const today = this.dayPlan?.today?.()
               const h = new Date().getHours()
