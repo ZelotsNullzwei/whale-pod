@@ -1485,6 +1485,23 @@ export class QQBridge {
     const human = mins >= 60 ? `${Math.round(mins / 60)} 小时` : `${mins} 分钟`
     return `## 你刚才不在线\n你在 ${new Date(g.at).toLocaleString('zh-CN')} 之后断的（关机/断电/断网），到现在大约 ${human}。\n   · 这段时间里别人发的话，可能已经在「最近记录」里补回来了 —— **先看那条再回**；\n   · 别提「我一直都在」，也别把几小时前的话当成刚刚说的；\n   · 如果对方问你为什么不在，就照实说自己这边断了，别编。`
   }
+  /**
+   * 这句话是不是「收尾」（2026-11-07 用户：出现结束性的话就归档）。
+   *
+   * 只在**短句**里认：长句里出现「睡了」多半是「你要睡了吗」这种追问，
+   * 不该拿来当结束信号。
+   */
+  _isFarewell(text) {
+    const t = String(text ?? '').trim().replace(/[。！!~～\s]+$/g, '')
+    if (!t || t.length > 14) return false
+    /* 追问句不算收尾："你要睡了吗" / "准备睡了？" */
+    if (/[?？]$/.test(t) || /(吗|么)$/.test(t)) return false
+    if (/你/.test(t) && !/晚安|拜拜|再见/.test(t)) return false
+    /* 只是在聊这个词、或者"走了两步"这种，不算收尾 */
+    if (/(这个词|这句话|这个梗)/.test(t)) return false
+    if (/走了(一|两|几|好)?步/.test(t)) return false
+    return /(晚安|睡了|睡啦|睡咯|去睡了|先这样|先这么着|拜拜|再见|不聊了|不说了|先撤|去忙了|去忙吧|早点休息|下次聊|回头聊|挂了啊|我走了|下线了)/.test(t)
+  }
   _summaryClock() {
     try {
       /*
@@ -3610,6 +3627,23 @@ export class QQBridge {
      * 把延迟的差别淹没了 —— 用户反馈「随机时间感觉没生效」。
      */
     const tStart = Date.now()
+    /*
+     * ★ 出现结束性的话 → 这一轮聊完就归档（2026-11-07 用户）。
+     *   等 8 秒：让她的回复也进短期记忆，再一起摘进长期档案。
+     */
+    if (this._isFarewell(msg.text)) {
+      const _sc = String(msg.scope ?? '')
+      setTimeout(() => {
+        try {
+          const _mem = this.memory?.get?.(_sc)
+          if (_mem) {
+            this.log.info?.('bridge：他说了收尾的话 → 提前归档')
+            this._maybeSummarize(_sc, _mem, '', { force: true })
+          }
+        } catch { /* 归档失败不影响回复 */ }
+      }, 8000)
+    }
+
     /* 心跳：让"我关了多久"在下次启动时算得出来（2026-11-07） */
     try { this._touchAlive() } catch { /* 心跳失败不影响回复 */ }
     /*
