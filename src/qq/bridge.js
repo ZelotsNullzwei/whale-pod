@@ -1502,6 +1502,40 @@ export class QQBridge {
     if (/走了(一|两|几|好)?步/.test(t)) return false
     return /(晚安|睡了|睡啦|睡咯|去睡了|先这样|先这么着|拜拜|再见|不聊了|不说了|先撤|去忙了|去忙吧|早点休息|下次聊|回头聊|挂了啊|我走了|下线了)/.test(t)
   }
+  /**
+   * 订阅的吧**此刻在聊什么**（2026-11-07 用户：「内容她知道吗」——原来只有几个词，
+   * 而且只在主动发言时给）。
+   *
+   * 现在：关键词 + 每吧最多 2 条标题，进普通对话的提示词；
+   * 但**只在沾边时用**，不许报菜名（否则又变成"复读梗表"那种毛病）。
+   */
+  _forumDigest() {
+    try {
+      const names = this.cfg?.proactive?.tiebaForums ?? []
+      if (!names.length) return ''
+      const topics = this.hotTopics?.forumTopics?.(names, { limit: 3 }) ?? []
+      const items = this.hotTopics?.forumItems?.(names, 2) ?? []
+      if (!topics.length && !items.length) return ''
+      const byForum = new Map()
+      for (const it of items) {
+        const k = String(it.from ?? '').replace(/^贴吧·/, '')
+        if (!k) continue
+        if (!byForum.has(k)) byForum.set(k, [])
+        const title = String(it.title ?? '').replace(/\s+/g, ' ').slice(0, 40)
+        if (title) byForum.get(k).push(title)
+      }
+      const lines = []
+      for (const t of topics.slice(0, 4)) {
+        const key = `${t.forum}吧`
+        const titles = byForum.get(key) ?? []
+        lines.push(`· ${key}：${t.keywords.join(' / ')}${titles.length ? ` ｜ 例子：${titles.join('；')}` : ''}`)
+      }
+      if (!lines.length) return ''
+      return '## 你订阅的吧刚在聊什么（12 小时内）\n'
+        + lines.join('\n')
+        + '\n⚠️ 只在你刚好聊到这个游戏/这件事时用一句；**不要报菜名、不要主动念吧名和标题**。'
+    } catch { return '' }
+  }
   _summaryClock() {
     try {
       /*
@@ -8061,6 +8095,8 @@ export class QQBridge {
         this._crossLongDigest(msg.scope),
         /* ★ 我离线过多久（2026-11-07） */
         this._offlineHint(),
+        /* ★ 订阅的吧在聊什么（2026-11-07） */
+        this._forumDigest(),
         /*
          * ★ 长期档案（2026-11-06）：只增不减，摘要重写也不会丢。
          *   可见性按会话过滤：群只看 group+shared，私聊看全部。
