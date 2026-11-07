@@ -30,10 +30,10 @@ function ok(name, fn) {
 console.log('=== 1. 认部位 ===')
 ok('★ 脚 / 手 / 腿 / 小肚子 / 锁骨 / 胸 都认得出', () => {
   assert.equal(detectBodyPart('看看脚'), '脚')
-  assert.equal(detectBodyPart('让我看看手'), null, '手已不再支持')
+  assert.equal(detectBodyPart('让我看看手'), '手', '手回来了（只拍一只手）')
   assert.equal(detectBodyPart('看看腿'), '腿')
   assert.equal(detectBodyPart('看看小肚子'), '小腹')
-  assert.equal(detectBodyPart('看看锁骨'), null, '锁骨已不再支持')
+  assert.equal(detectBodyPart('看看锁骨'), null, '锁骨不在部位表里')
   assert.equal(detectBodyPart('看看胸'), null, '胸部已不再支持')
 })
 ok('★ 普通拍图请求不误判', () => {
@@ -150,12 +150,11 @@ ok('★ framingInfo 要把 bodyPart 带出来（否则裁切永远不触发）',
 
 
 console.log('\\n=== 8. 部位参考图（参考图就是构图基准，2026-11-07 实测）===')
-ok('★ 只保留准确的四个部位（腿/脚/腰/小腹）', () => {
-  for (const p of ['腿', '脚', '腰', '小腹']) {
+ok('★ 部位清单：腿/脚/腰/小腹/手 + 背/肩（仅对镜）', () => {
+  for (const p of ['腿', '脚', '腰', '小腹', '手', '背', '肩']) {
     assert.ok(partBandOf(p), `${p} 应该有区间`)
-    assert.ok(selfSafeBandOf(p), `${p} 应该有无脸也有安全的保守区间`)
   }
-  for (const p of ['手', '锁骨', '胸部']) {
+  for (const p of ['锁骨', '胸部']) {
     assert.equal(partBandOf(p), null, `${p} 不该再走部位特写`)
   }
 })
@@ -179,12 +178,12 @@ ok('★ 脸已经占住这个部位 → 直接不出参考图（不许把脸裁�
 })
 ok('★ 检测不到脸 → 腿/脚/腰/小腹 走保守区间；锁骨/胸部 停止', () => {
   const noFace = { face_found: false, face_bottom_y: null, confidence: 0 }
-  for (const p of ['腿', '脚', '腰', '小腹']) {
+  for (const p of ['腿', '脚', '腰', '小腹', '手', '背', '肩']) {
     const r = resolveBand(p, noFace)
     assert.ok(r, `${p} 应有保守区间`)
     assert.deepEqual(r.band, selfSafeBandOf(p))
   }
-  for (const p of ['锁骨', '胸部', '手']) assert.equal(resolveBand(p, noFace), null, `${p} 已不支持`)
+  for (const p of ['锁骨', '胸部']) assert.equal(resolveBand(p, noFace), null, `${p} 已不支持`)
 })
 ok('★ 低置信度/越界坐标 视为没检测到', () => {
   assert.deepEqual(resolveBand('腿', { face_found: true, face_bottom_y: 0.3, confidence: 0.2 }).band, selfSafeBandOf('腿'))

@@ -123,25 +123,36 @@ function wantsFigure(req) {
  * @param {string} req 她写的画图描述 + 他的原话
  * @returns {string|null} '脚' / '手' / … ；没点名就 null
  */
-export function detectBodyPart(req) {
+/**
+ * @param {string} req 她写的画图描述 + 他的原话
+ * @param {{mirror?:boolean}} [ctx] `mirror`：这一张是不是对镜拍
+ *   —— 背/肩**只有对镜才合理**（自己拍不到自己的背），非对镜时一律不认。
+ */
+export function detectBodyPart(req, ctx = {}) {
   const s = String(req ?? '')
   if (!s) return null
   const RULES = [
     /*
-     * ⚠️ **只保留"能准确出图"的部位**（2026-11-08 用户：「只留准确的」）。
-     *
-     * 保留标准：原生局部 + 事后裁切**双保险**，且实测稳定。
-     *   ✅ 腿 / 脚 / 腰 / 小腹 —— 有双保险
-     *   ❌ 手      —— 构图能成，但手指结构不稳定（会多指/翻手）
-     *   ❌ 锁骨/胸部 —— 离脸太近，事后裁切不能用，原生成功率只有 ~50%
-     * 这三类以后如果说了，就按普通自拍处理（不再假装能做到）。
+     * ⚠️ 部位特写的取舍（2026-11-08 用户最终口径）：
+     *   ✅ 腿 / 脚 / 腰 / 小腹 —— 原生局部 + 事后裁切双保险
+     *   ✅ 手 —— **只拍一只手**，姿势和手形用文字写死（不再靠姿势赌）
+     *   ✅ 背 / 肩 —— **只有对镜拍才合理**（见 detectBodyPart 的第二参数）
+     *   ❌ 胸 —— 用户：「胸直接不要吧」，彻底不做
      */
     ['脚', /(脚趾|脚背|脚踝|赤脚|光脚|双脚|看看脚|看脚|脚部|足部|脚上)/],
     ['小腹', /(小腹|小肚子|肚子|小肚|腰腹)/],
     ['腿', /(大腿|小腿|膝盖|腿根|双腿|看看腿|看腿|腿部|光腿)/],
     ['腰', /(腰线|细腰|腰身|看看腰)/],
+    ['手', /(手指|手心|手背|指甲|看看手|看手|手部|双手|细手|指尖)/],
+    ['背', /(后背|背部|看看背|看背|背对)/],
+    ['肩', /(肩膀|肩线|看看肩|看肩)/],
   ]
-  for (const [part, re] of RULES) if (re.test(s)) return part
+  for (const [part, re] of RULES) {
+    if (!re.test(s)) continue
+    // 背/肩只有对镜拍才成立（自己举手机拍不到自己的背）
+    if ((part === '背' || part === '肩') && !ctx.mirror) continue
+    return part
+  }
   return null
 }
 
@@ -156,7 +167,7 @@ export function composeFraming(plan, o = {}) {
    *
    *   ⚠️ 群里由调用方（bridge）先拦掉，这里不区分场合。
    */
-  const bodyPart = detectBodyPart(req + ' ' + String(plan?.subject ?? ''))
+  const bodyPart = detectBodyPart(req + ' ' + String(plan?.subject ?? ''), { mirror: plan?.mode === 'mirror_selfie' })
   if (bodyPart) {
     return {
       framing: '局部',
