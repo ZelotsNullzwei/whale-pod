@@ -67,9 +67,10 @@ ok('★ daily 出 DAILY 段，且说清三样（服装/表情/光线）', () => 
   const p = mk('拍一张自拍', 'daily')
   assert.match(p, /【风格模式：DAILY/)
   assert.match(p, /服装氛围：/)
-  assert.match(p, /表情：/)
+  assert.match(p, /表情（这一条最重要）/)
+  assert.match(p, /别把正脸无表情当默认/)
   assert.match(p, /光线：/)
-  assert.match(p, /不要把默认表情设成冷脸/)
+  assert.match(p, /别把正脸无表情当默认/)
 })
 ok('★ close 出 CLOSE 段，且写明不生成露骨内容', () => {
   const p = mk('拍一张自拍', 'close')
