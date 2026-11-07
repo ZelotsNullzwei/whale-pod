@@ -1586,6 +1586,26 @@ export class QQBridge {
     if (this._proactive) return this._proactive
     this._bootAt = this._bootAt || Date.now()
     try { this._loadOfflineGap() } catch { }
+    /*
+     * ★ 心跳改成**定时写**（2026-11-07 修）。
+     *
+     * 原来 `_touchAlive()` 只在收到消息时调用（见 _handle 里那句），
+     * 于是**没人说话的时候心跳就断了** ——
+     * 2026-11-07 16:10 重启时它报「我离线了约 11 分钟」，
+     * 可实际上 16:09 才重启、进程一直活着，
+     * 只是 15:59 之后没人找她说话，心跳文件停在 15:59 没动。
+     *
+     * 后果：每次「安静期后重启」都会假装自己断过线，
+     * 还白跑一次补历史 + 在提示词里塞「你刚才不在线」。
+     *
+     * 现在每 60 秒写一次（`_touchAlive` 内部还有 60 秒节流），
+     * 启动后立刻写一次 —— 心跳反映的是**进程存活**，不是有没有人说话。
+     */
+    try { this._touchAlive() } catch { }
+    if (!this._aliveTimer) {
+      this._aliveTimer = setInterval(() => { try { this._touchAlive() } catch { } }, 60_000)
+      this._aliveTimer.unref?.()
+    }
     if (!this._summaryTimer) {
       this._summaryTimer = setInterval(() => this._summaryClock(), 60_000)
       this._summaryTimer.unref?.()

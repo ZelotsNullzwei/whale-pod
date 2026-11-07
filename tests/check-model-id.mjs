@@ -35,6 +35,19 @@ ok('magpie ×4 → ×2', () => {
 })
 
 console.log('\n=== 2. 正确的值不能动 ===')
+ok('★ 症状 B：provider 夹在中间 → magpie/magpie/raccoon/x', () => {
+  assert.equal(
+    normalizeModelId('magpie/deepseek-official/magpie/raccoon/sn-sensenova-6-8-flash'),
+    'magpie/magpie/raccoon/sn-sensenova-6-8-flash',
+  )
+})
+ok('症状 B 多夹一层也收口', () => {
+  assert.equal(
+    normalizeModelId('magpie/magpie/deepseek-official/magpie/raccoon/x'),
+    'magpie/magpie/raccoon/x',
+  )
+})
+
 ok('两段前缀 → 原样', () => {
   assert.equal(normalizeModelId('magpie/magpie/auto/deepseek-v4.1-flash'), 'magpie/magpie/auto/deepseek-v4.1-flash')
 })

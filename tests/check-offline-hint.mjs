@@ -68,6 +68,22 @@ ok('★ 源码锁：开机补历史 + 主动补一句', () => {
   assert.ok(src.includes('_speakUp('), '走主动发言那条路')
 })
 
+console.log('\\n=== 3. 心跳必须是「进程活着」而不是「有人说话」（2026-11-07 修）===')
+ok('★ 启动就写心跳 + 有定时器', () => {
+  const d3 = fs.mkdtempSync(path.join(os.tmpdir(), 'wp-alive3-'))
+  const b = Object.assign(mk(d3), { cfg: { home: d3, memory: { long: {} } } })
+  p.startProactive.call(b, { home: d3, memoryOf: () => null })
+  try {
+    assert.ok(b._aliveTimer, '没有心跳定时器 —— 安静期心跳会断，重启就会假装自己离线过')
+    const j = JSON.parse(fs.readFileSync(path.join(d3, 'alive.json'), 'utf8'))
+    assert.ok(Number(j.at) > 0, '启动时没写心跳')
+  } finally {
+    try { b._aliveTimer?.clearInterval?.() } catch { /* ignore */ }
+    try { b._summaryTimer?.clearInterval?.() } catch { /* ignore */ }
+    fs.rmSync(d3, { recursive: true, force: true })
+  }
+})
+
 fs.rmSync(dir, { recursive: true, force: true })
 console.log(`\n通过 ${pass} / 失败 ${fail}`)
 process.exit(fail === 0 ? 0 : 1)
