@@ -1536,6 +1536,23 @@ export class QQBridge {
         + '\n⚠️ 只在你刚好聊到这个游戏/这件事时用一句；**不要报菜名、不要主动念吧名和标题**。'
     } catch { return '' }
   }
+  /**
+   * 刚拍过图的提示（2026-11-07 实测）。
+   *
+   * 现场：14:20:08 刚发完自拍，14:20:15 她又回「少来这套，拍什么拍。
+   * 要拍也得先说清楚，拍哪儿、怎么拍。」—— 像完全没拍过。
+   * 所以在提示词里明说：你刚拍过，别再问怎么拍。
+   */
+  _recentDrewHint(scope) {
+    try {
+      const at = this._lastDrewAt?.[String(scope ?? '')] ?? 0
+      if (!at) return ''
+      const mins = Math.round((Date.now() - at) / 60_000)
+      if (mins > 5) return ''
+      return `## 你刚给他拍过一张（${mins <= 0 ? '刚刚' : mins + ' 分钟前'}）\n别再问「拍什么/怎么拍」——已经拍过了。\n`
+        + '他要新的就直接拍；他只是发个表情，就照表情接，别提拍照的事。'
+    } catch { return '' }
+  }
   _summaryClock() {
     try {
       /*
@@ -4598,7 +4615,14 @@ export class QQBridge {
           this.log.info?.('bridge：她问过了、他答了 → 这次可以画')
         }
 
-        if (this.cfg.actions?.askBeforeDraw !== false && !allowDraw) {
+        /*
+         * ★ 刚发过图就别再问「拍什么、怎么拍」（2026-11-07 实测）：
+         *   14:20:08 发完自拍，14:20:15 又回「少来这套，拍什么拍…拍哪儿、怎么拍」——
+         *   像完全没拍过。5 分钟内不再问。
+         */
+        const lastDrewAt = this._lastDrewAt?.[askKey] ?? 0
+        const drewRecently = lastDrewAt > 0 && Date.now() - lastDrewAt < 5 * 60_000
+        if (this.cfg.actions?.askBeforeDraw !== false && !allowDraw && !drewRecently) {
           this.log.info?.('bridge：画图跳过 —— 他没说要拍（先问"拍什么、怎么拍"）')
           msg.__askInstead = true
           drawAllowed = false
@@ -4993,6 +5017,9 @@ export class QQBridge {
             }
             drawnImage = { url: file }
             drawGenerated = true
+            /* ★ 记下刚拍过（2026-11-07）：5 分钟内别再问"拍什么、怎么拍" */
+            this._lastDrewAt = this._lastDrewAt ?? {}
+            this._lastDrewAt[String(msg.scope ?? '')] = Date.now()
             drewAny = true   // 兼容旧名：真的画出来了
             this.log.info?.(`bridge：画好了（${Math.round(r.ms / 1000)}s）`)
           } else {
@@ -8138,6 +8165,8 @@ export class QQBridge {
         this._offlineHint(),
         /* ★ 订阅的吧在聊什么（2026-11-07） */
         this._forumDigest(),
+        /* ★ 刚拍过就别再问怎么拍（2026-11-07） */
+        this._recentDrewHint(msg.scope),
         /*
          * ★ 长期档案（2026-11-06）：只增不减，摘要重写也不会丢。
          *   可见性按会话过滤：群只看 group+shared，私聊看全部。
