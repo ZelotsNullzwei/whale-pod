@@ -61,6 +61,13 @@ ok('只断了几十秒 → 不提示', () => {
   assert.equal(p._offlineHint.call(b), '')
 })
 
+ok('★ 源码锁：开机补历史 + 主动补一句', () => {
+  const src = fs.readFileSync('D:/DSH WorkSpace/whale-pod/src/qq/bridge.js', 'utf8')
+  assert.ok(src.includes('countUse'), '离线时补历史要放大条数')
+  assert.ok(src.includes('开机补话'), '要主动补一句')
+  assert.ok(src.includes('_speakUp('), '走主动发言那条路')
+})
+
 fs.rmSync(dir, { recursive: true, force: true })
 console.log(`\n通过 ${pass} / 失败 ${fail}`)
 process.exit(fail === 0 ? 0 : 1)

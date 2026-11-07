@@ -6789,6 +6789,9 @@ export class QQBridge {
     if (this.cfg.reply?.backfillOnOpen === false) return
     try {
       const scopes = (this.memory?.scopes?.() ?? []).slice(0, 6)
+      /* ★ 断电/关机过 → 多补一些（默认只补 12 条，一晚上根本不够） */
+      const countUse = this._offlineGap ? Math.max(count, 50) : count
+      const touched = []
       let added = 0
       /** 补历史时已经识过图的条数（上限 3，别拖慢启动） */
       let describedCount = 0
@@ -6798,7 +6801,7 @@ export class QQBridge {
         if (!id || !this.onebot?.callHttp) continue
         try {
           const action = isGroup ? 'get_group_msg_history' : 'get_friend_msg_history'
-          const params = isGroup ? { group_id: Number(id), count } : { user_id: Number(id), count }
+          const params = isGroup ? { group_id: Number(id), count: countUse } : { user_id: Number(id), count: countUse }
           const res = await this.onebot.callHttp(action, params, 8000)
           const list = res?.data?.messages ?? res?.messages ?? []
           if (!Array.isArray(list) || !list.length) continue
@@ -6807,6 +6810,7 @@ export class QQBridge {
           for (const m of list) {
             const mid = String(m.message_id ?? m.real_id ?? '')
             if (!mid || known.has(mid)) continue
+            if (!touched.includes(sc)) touched.push(sc)
             /*
              * ⚠️ **图也要补**（2026-11-05）：原来只补文本，断连窗口里发的图
              *    就永远丢了 —— 之后她发说说想带图，`说说带图 0 张`。
@@ -6947,6 +6951,35 @@ export class QQBridge {
         } catch { /* 单个会话失败不影响其它 */ }
       }
       if (added) this.log.info?.(`bridge：重连补历史 ${added} 条（只进记忆，不回复）`)
+
+      /*
+       * ★★ **开机后主动接一句**（2026-11-07 用户：「每次开机后能读到关机的消息」）。
+       *   补历史只进记忆、不会自己说话 —— 那就等于他昨晚发的话她"看到了但没反应"。
+       *   这里挑最多 2 个有新消息的会话，用主动发言那条路补一句：
+       *   说清"我这边刚恢复"，别装作一直在。
+       */
+      if (this._offlineGap && touched.length) {
+        const mins = Math.round(this._offlineGap.gap / 60_000)
+        const hint = [
+          '## 你刚开机',
+          `你这边断了大约 ${mins} 分钟，这期间有人给你发过话（见上面的最近记录）。`,
+          '接一句：说清你这边刚恢复、问一句他刚才说的事；**别装作一直在**，也别把几小时前的话当成刚刚说的。',
+        ].join('\n')
+        for (const sc of touched.slice(0, 2)) {
+          try {
+            const kind = String(sc).startsWith('group:') ? 'group' : 'private'
+            const id = String(sc).slice(kind === 'group' ? 6 : 8)
+            await this._speakUp(
+              { scope: sc, kind, groupId: kind === 'group' ? id : null, userId: kind === 'private' ? id : null },
+              this.memory.get?.(sc) ?? null,
+              hint,
+            )
+            this.log.info?.(`bridge：开机补话 → ${sc}`)
+          } catch (e) {
+            this.log.warn?.(`bridge：开机补话失败 — ${String(e?.message ?? e).slice(0, 60)}`)
+          }
+        }
+      }
     } catch (e) {
       this.log.warn?.(`bridge：补历史失败 — ${String(e?.message ?? e).slice(0, 80)}`)
     }
