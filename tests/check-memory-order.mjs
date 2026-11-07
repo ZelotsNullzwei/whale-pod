@@ -19,14 +19,19 @@
  *
  * 修法：
  *   B  `at` 统一成本地接收时刻，服务器时间另存 `serverAt`
- *   C  `push` 按 `at` 插入到正确位置
+ *   A  渲染给模型的那份副本按 `at` 稳定排序（原数组不动）
  *   A' 载入磁盘数据时稳定排序一次（修历史脏数据）
+ *
+ * ⚠️ 试过"push 按 at 插入"，但运行期有逻辑默认**数组顺序 = 推送顺序**
+ *    （`_checkSuperseded` / `_coalesceInbound`），改了会让
+ *    `check-concurrency` 从 32/0 掉到 29/3（三条只回一条）。所以只排副本。
  */
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { ConversationMemory, MemoryStore, makeMessage } from '../src/memory/short.js'
+import { buildChatMessages } from '../src/qq/bridge.js'
 
 let pass = 0
 let fail = 0
@@ -41,46 +46,69 @@ function mkMem(over = {}) {
   return new ConversationMemory({ maxMessages: 200, maxChars: 100000, maxAgeMs: 0, ...over })
 }
 
-console.log('=== 1. push 按时间插入（C）===')
-ok('★ 迟到的回复插到正确位置，不是无脑追加', () => {
-  const mem = mkMem()
+console.log('=== 1. 渲染顺序按 at（A）===')
+/*
+ * ⚠️ 方案调整（2026-11-07）：
+ * 一开始我把 `push` 改成"按 at 插入"，结果 `check-concurrency` 从 32/0 掉到 29/3
+ * —— 运行期有逻辑（`_checkSuperseded` / `_coalesceInbound`）默认
+ * **数组顺序 = 推送顺序**，动了它就会漏回消息。
+ * 所以改成：**数组照旧 append，只在渲染给模型看的那份副本上排序**。
+ */
+ok('★ 数组里倒挂的，渲染输出必须按 at 有序', () => {
   const t0 = 1_800_000_000_000
-  mem.push({ text: '他先说的', at: t0, isMe: false, sender: 'u1' })
-  // 生成耗时 5 秒，期间又来了一条更新的消息
-  mem.push({ text: '他后说的', at: t0 + 5000, isMe: false, sender: 'u1' })
-  // 她的回复是针对第一条的，at 落在中间
-  mem.push({ text: '我的回复', at: t0 + 3000, isMe: true, sender: 'bot' })
-
-  assert.deepEqual(mem.messages.map((m) => m.text), ['他先说的', '我的回复', '他后说的'])
-  assert.ok(isSorted(ats(mem)), '数组必须按 at 有序')
+  const history = [
+    { id: '1', text: '他先说的', at: t0, isMe: false, sender: 'u1', senderName: '他' },
+    // 迟到的回复：推入时排在后面，但时间在中间
+    { id: '3', text: '我的回复', at: t0 + 3000, isMe: true, sender: 'bot', senderName: '她' },
+    { id: '2', text: '他后说的', at: t0 + 5000, isMe: false, sender: 'u1', senderName: '他' },
+  ]
+  const out = buildChatMessages({ system: 'S', history, imageCache: new Map() })
+  const texts = out.map((m) => (Array.isArray(m.content)
+    ? m.content.filter((c) => c.type === 'text').map((c) => c.text).join('')
+    : String(m.content ?? '')))
+  const order = texts.findIndex((x) => x.includes('他先说的'))
+  const mine = texts.findIndex((x) => x.includes('我的回复'))
+  const later = texts.findIndex((x) => x.includes('他后说的'))
+  assert.ok(order >= 0 && mine >= 0 && later >= 0, `三段都要在：${JSON.stringify(texts)}`)
+  assert.ok(order < mine && mine < later, `渲染顺序应当是 他先说 → 我 → 他后说，实际 ${JSON.stringify(texts)}`)
 })
 
-ok('★ 正常追加（at 递增）不受影响', () => {
-  const mem = mkMem()
+ok('★ 原数组不能被改动（渲染只排副本）', () => {
   const t0 = 1_800_000_000_000
-  for (let i = 0; i < 5; i++) mem.push({ text: `m${i}`, at: t0 + i * 1000, isMe: i % 2 === 0 })
-  assert.deepEqual(mem.messages.map((m) => m.text), ['m0', 'm1', 'm2', 'm3', 'm4'])
+  const history = [
+    { id: '1', text: 'A', at: t0 + 8000 },
+    { id: '2', text: 'B', at: t0 + 1000 },
+  ]
+  const before = history.map((m) => m.text)
+  buildChatMessages({ system: 'S', history, imageCache: new Map() })
+  assert.deepEqual(history.map((m) => m.text), before, '调用方数组必须原样不动')
 })
 
-ok('同一毫秒的多条保持原有相对顺序（不能被排序打乱）', () => {
-  const mem = mkMem()
+ok('同一毫秒的多条保持原有相对顺序（稳定排序）', () => {
   const t = 1_800_000_000_000
-  mem.push({ text: 'A', at: t, isMe: false })
-  mem.push({ text: 'B', at: t, isMe: true })
-  mem.push({ text: 'C', at: t, isMe: false })
-  assert.deepEqual(mem.messages.map((m) => m.text), ['A', 'B', 'C'])
+  const history = [
+    { id: '1', text: '甲', at: t, isMe: false, sender: 'a', senderName: 'A' },
+    { id: '2', text: '乙', at: t + 100, isMe: true, sender: 'bot', senderName: '她' },
+    { id: '3', text: '丙', at: t, isMe: false, sender: 'b', senderName: 'B' },
+  ]
+  const out = buildChatMessages({ system: 'S', history, imageCache: new Map() })
+  const texts = out.map((m) => (Array.isArray(m.content)
+    ? m.content.filter((c) => c.type === 'text').map((c) => c.text).join('')
+    : String(m.content ?? '')))
+  const a = texts.findIndex((x) => x.includes('甲'))
+  const c = texts.findIndex((x) => x.includes('丙'))
+  assert.ok(a < c, `同 at 的甲应排在丙前面（保持原序），实际 ${JSON.stringify(texts)}`)
 })
 
-ok('★ 计数逻辑仍按调用顺序（不能被插入位置影响）', () => {
+ok('★ 计数逻辑仍按调用顺序（push 保持 append）', () => {
   const mem = mkMem()
   const t0 = 1_800_000_000_000
   mem.push({ text: '他1', at: t0, isMe: false })
   assert.equal(mem.consecutiveTurns, 0, '别人说话不增加连说')
   mem.push({ text: '我1', at: t0 + 100, isMe: true })
   assert.equal(mem.consecutiveTurns, 1, '我说话 +1')
-  // 迟到的回复：位置插到前面，但 consecutiveTurns 照样 +1
   mem.push({ text: '我2', at: t0 + 50, isMe: true })
-  assert.equal(mem.consecutiveTurns, 2, '插入位置不影响计数')
+  assert.equal(mem.consecutiveTurns, 2, '计数与 at 无关')
   assert.equal(mem.messages.length, 3)
 })
 

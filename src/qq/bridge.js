@@ -259,6 +259,43 @@ export const IMG_REFER_NOTE = `## ⚠️ 这次附的图是**旧的**
  */
 export function buildChatMessages({ system, history = [], imageCache = new Map(), lastRoute = null, selfId = '', selfName = '' }) {
   /*
+   * ★★ **渲染前按 `at` 稳定排序**（2026-11-07）。
+   *
+   * ## 为什么
+   * 短期记忆是**按推送顺序**存的，而推送发生在"处理完成"之后：
+   * ```
+   * 12:36:50  他 [表情包]        ← 12:36:52 才处理完
+   * 12:36:51  我「图呢？没收到」  ← 12:36:51 就发完了，先入列
+   * ```
+   * 于是数组里 "我的回复" 排在 "他的表情包" 前面，模型看到的是
+   * 「我先说话、他后说话」—— 答上一条、重复回答、说自己"没收到图"。
+   * 实测群 704291282 的 30 条里有 6 处这种倒挂。
+   *
+   * ## 为什么在渲染这里排，不在 push 里排
+   * push 改成"按时间插入"会让运行期其他逻辑错乱
+   * （实测 `check-concurrency` 从 32/0 变成 29/3：三条消息只回一条）。
+   * 因为 `_checkSuperseded`、`_coalesceInbound` 这些地方默认
+   * **数组顺序 = 推送顺序**。所以这里只排**给模型看的那份副本**，
+   * 原数组一个字不动。
+   *
+   * ⚠️ 稳定排序：同一毫秒的多条保持原相对顺序（她和别人各说一句）。
+   * ⚠️ 只对 `at` 有意义的消息排；全是 0 的（历史脏数据）保持原序。
+   */
+  const ordered = (() => {
+    const idx = history.map((m, i) => ({ m, i, at: Number(m?.at ?? 0) }))
+    if (!idx.some((x) => x.at > 0)) return history
+    const bad = idx.some((x, k) => k > 0 && x.at > 0 && idx[k - 1].at > 0 && idx[k - 1].at > x.at)
+    if (!bad) return history            // 已经有序，连复制都省了
+    idx.sort((a, b) => {
+      const x = a.at || Number.MAX_SAFE_INTEGER
+      const y = b.at || Number.MAX_SAFE_INTEGER
+      return x - y || a.i - b.i          // 相等时按原下标，保证稳定
+    })
+    return idx.map((x) => x.m)
+  })()
+  history = ordered
+
+  /*
    * 把历史里出现的 `@<QQ号>` 换成昵称，并标出「这是你自己」。
    *
    * ## 为什么需要

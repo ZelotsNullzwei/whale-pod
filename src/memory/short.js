@@ -163,12 +163,7 @@ export class ConversationMemory {
      * ⚠️ 计数逻辑（myLastAt / consecutiveTurns / pendingSinceMyLast）仍按
      *    **调用顺序**更新 —— 那是"谁刚说过话"的语义，与插入位置无关。
      */
-    const ms = this.messages
-    const at = Number(m.at ?? 0)
-    let i = ms.length
-    while (i > 0 && Number(ms[i - 1].at ?? 0) > at) i--
-    if (i === ms.length) ms.push(m)
-    else ms.splice(i, 0, m)
+    this.messages.push(m)
     this.totalPushed++
     if (m.isMe) {
       this.myLastAt = m.at
