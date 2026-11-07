@@ -3749,39 +3749,42 @@ export class QQBridge {
     const groupId = ev.group_id != null ? String(ev.group_id) : null
 
     /*
-     * ★★ **别人互相戳也要记一笔**（2026-11-07 用户：
-     *    「上文继我充token后，戳一戳互动找风宝也爆点米」）。
+     * ★ **戳只记「跟她有关」的**（2026-11-07 用户：「和戳相关的只记和她相关的」）。
      *
-     * 现场：17:48 番茄说「看了给你充token」，18:33 他**戳了风宝一下**
-     * 又发「爆点米」（= 催风宝也出钱）。她只看到「爆点米」这一条孤立的，
-     * 于是字面理解成米饭：「本鲸哪来的米，米都进本鲸肚子里了」。
+     * 记两种，其余（A 戳 B，两边都不是她）**不记** —— 群里戳来戳去太吵，
+     * 全记会把上下文塞满没用的动作。
+     *   · 别人戳她 → 「（番茄 戳了你一下）」
+     *   · 她戳别人 → 「（你戳了 风宝 一下）」
      *
-     * 根因：**戳一戳是 notice，不进消息流**，而这里原来只处理"戳我"的，
-     * 别人之间的戳被整条丢掉 —— 那个"催"的动作她根本没看见。
-     *
-     * 现在往群记忆里补一条轻量注记（「（番茄 戳了 风宝 一下）」），
-     * 只进上下文、不触发回复。
+     * 为什么还要记：她回完「？」之后，上下文里只看得到自己那句，
+     * 看不出"刚被人戳了"；补上这一条，回看时因果才连得上。
      */
-    if (!this.selfId || targetId !== String(this.selfId)) {
-      if (groupId && fromId && targetId && fromId !== String(this.selfId)) {
-        try {
-          const scope = `group:${groupId}`
-          const from = this._nameFromMemory(scope, fromId) || fromId
-          const to = this._nameFromMemory(scope, targetId) || targetId
-          this.memory?.get?.(scope)?.push?.({
-            sender: fromId,
-            senderName: from,
-            text: `（${from} 戳了 ${to} 一下）`,
-            at: Date.now(),
-            isMe: false,
-          })
-          this.log.info?.(`bridge：${from} 戳了 ${to} 一下 → 已记进群上下文`)
-        } catch { /* 记不上不影响别的 */ }
-      }
+    const selfStr = String(this.selfId ?? '')
+    const scopeOfPoke = (uid) => (groupId ? `group:${groupId}` : `private:${uid}`)
+    const notePoke = (fromName, toName, fromUid) => {
+      try {
+        const scope = scopeOfPoke(fromUid)
+        this.memory?.get?.(scope)?.push?.({
+          sender: String(fromUid),
+          senderName: String(fromName),
+          text: `（${fromName} 戳了 ${toName} 一下）`,
+          at: Date.now(),
+          isMe: false,
+        })
+        this.log.info?.(`bridge：${fromName} 戳了 ${toName} 一下 → 已记进上下文`)
+      } catch { /* 记不上不影响别的 */ }
+    }
+    const nameOfPoke = (uid) => this._nameFromMemory(scopeOfPoke(uid), uid) || uid
+
+    // ① 她自己戳别人（回环/自戳不记）
+    if (selfStr && fromId === selfStr) {
+      if (targetId && targetId !== selfStr) notePoke('你', nameOfPoke(targetId), fromId)
       return
     }
-    // 不戳自己（有些客户端会回环）
-    if (fromId === String(this.selfId)) return
+    // ② A 戳 B —— 两边都不是她：不记
+    if (!selfStr || targetId !== selfStr) return
+    // ③ 别人戳她 → 记一条「（番茄 戳了你一下）」，然后照常回话
+    notePoke(nameOfPoke(fromId), this.selfName || '你', fromId)
 
     // 白名单：不在允许的群里就不理
     const fake = { scope: groupId ? `group:${groupId}` : `private:${fromId}`, kind: groupId ? 'group' : 'private', groupId, userId: fromId }
