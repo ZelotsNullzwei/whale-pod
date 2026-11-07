@@ -5409,13 +5409,7 @@ export class QQBridge {
              * 出图当然一模一样。要"看得出来"，得换**衣服**，不是换形容词。
              * 现在 close 用 SLEEPWEAR 池里的睡裙/吊带（按天轮换，一天固定一套）。
              */
-            try {
-              const role = this.persona?.pickActive?.(String(msg.scope ?? '')) ?? ''
-              if (String(role) === 'close') {
-                const sw = String(sleepwearForDay(dayKey()) ?? '')
-                if (sw) return sw
-              }
-            } catch { /* 拿不到就用日程那件 */ }
+            /* CLOSE 已停用（2026-11-07）：不再从睡衣池取衣服，一律按当天日程。 */
             try {
               const today = this.dayPlan?.today?.()
               const h = new Date().getHours()
@@ -5497,12 +5491,13 @@ export class QQBridge {
            *   只影响摄影风格（服装氛围/表情/光线），不碰拍摄触发与人物数据。
            *   群 / 非 close 私聊 → daily（默认值同义）。
            */
-          const photoMode = (() => {
-            try {
-              const role = this.persona?.pickActive?.(String(msg.scope ?? '')) ?? ''
-              return String(role) === 'close' ? 'close' : 'daily'
-            } catch { return 'daily' }
-          })()
+          /*
+           * ⚠️ **CLOSE 模式已停用（2026-11-07 用户：「只保留日常版吧」）**。
+           *   摄影一律走 DAILY：服装按当天日程，不再按 close 人格换睡衣/放事业线。
+           *   代码路径（photo-prompt 的 CLOSE 段、partPromptMap 等）都还在，
+           *   恢复只需把下面这行改回按 persona 判断。
+           */
+          const photoMode = 'daily'
           const shot = planShot({
             scene: String(hit?.[1] ?? '').trim(),
             slot: currentSlot().id,

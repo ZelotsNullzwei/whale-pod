@@ -103,24 +103,14 @@ ok('★ 第一层文件没被改（photo-planner / photo-modes 里没有 v3 痕�
 
 
 console.log('\\n=== 4. CLOSE 绑定私聊人格（2026-11-07）===')
-ok('★ bridge 按 persona.pickActive 决定 mode', () => {
+ok('★ CLOSE 模式已停用：摄影一律走 daily（2026-11-07 用户：「只保留日常版吧」）', () => {
   const b = fs.readFileSync(new URL('../src/qq/bridge.js', import.meta.url), 'utf8')
-  assert.match(b, /const photoMode = \(\(\) => \{/)
-  assert.match(b, /pickActive\?\.\(String\(msg\.scope/)
-  assert.match(b, /=== 'close' \? 'close' : 'daily'/)
+  assert.match(b, /const photoMode = 'daily'/, 'photoMode 应该是常量 daily')
+  assert.ok(!/pickActive\?\.\(String\(msg\.scope/.test(b), '不该再按人格决定模式')
 })
-ok('★ 主图和附加图两处 planShot 都传了 mode', () => {
+ok('★ 衣服回退到当天日程（不再从睡衣池取）', () => {
   const b = fs.readFileSync(new URL('../src/qq/bridge.js', import.meta.url), 'utf8')
-  const n = (b.match(/mode: photoMode,/g) ?? []).length
-  assert.ok(n >= 2, `只传了 ${n} 处`)
-})
-ok('★ 人格映射：close 私聊→close，群/普通私聊→daily', async () => {
-  const { PersonaStore } = await import('../src/persona/store.js')
-  const st = new PersonaStore({ home: 'C:/Users/Null_zwei/.dsh/whale-pod', active: 'default',
-    activeByScope: { group: 'default', private: 'default', 'private:2129024700': 'close' } })
-  assert.equal(st.pickActive('private:2129024700'), 'close')
-  assert.equal(st.pickActive('group:704291282'), 'default')
-  assert.equal(st.pickActive('private:999'), 'default')
+  assert.ok(!b.includes('sleepwearForDay(dayKey())'), '睡衣池逻辑应该已经移除')
 })
 
 console.log(`\n通过 ${pass} / 失败 ${fail}`)
