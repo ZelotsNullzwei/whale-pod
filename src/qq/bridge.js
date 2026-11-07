@@ -1482,30 +1482,81 @@ export class QQBridge {
   }
 
   /**
-   * 互动记录为空时的兜底：@「这个群里最后说话的人」。
+   * 讨钱的**候选人**（按好感度排序）。
    *
-   * 为什么需要：`_interactions` 是内存里的（重启清零），
-   * 而讨钱大多数时候发生在**刚重启不久**（余额偏低是持续状态）。
-   * 这时候用群记忆里最后一条他人消息的发送者，比「干脆不讨」合理得多
-   * —— 那个人确实刚在这个群里说过话。
+   * ## 用户口径（2026-11-07：「按照好感度呢」）
    *
-   * @param {string} scope 形如 `group:704291282`
-   * @returns {{id:string,name:string}|null}
+   * 原来只按「谁最近跟它说话最多」（InteractionTracker）。现在改成
+   * **好感度优先**，道理很直白：
+   *   · 找钱是为了活下去，当然找**最可能愿意给**的人；
+   *   · 而好感度就是「这个人在不在乎她」的现成指标；
+   *   · 顺手还避免了一件尴尬事 —— 讨钱讨到一个刚聊两句、好感 50 的路人。
+   *
+   * ## 候选池 = 两个来源的并集
+   *
+   *   ① 互动记录（`_interactions`，7 天窗口，谁跟她说话最多）
+   *   ② **这个群里说过话的人**（从会话记忆里现数）
+   *
+   * 为什么要 ②：互动记录是内存的，硬杀重启后是空的；
+   * 而余额偏低是持续状态，讨钱多半就发生在刚重启那会儿。
+   *
+   * ⚠️ 只从「这个群里说过话的人」里挑 —— 好感度是**全局**的，
+   *    光按好感度排可能会 @ 到一个根本不在这群里的人。
+   *
+   * @param {object} msg 触发会话（要 `scope`）
+   * @returns {Array<{id:string,name:string,lastAt:number,hits:number,affinity:number}>}
    */
-  _fallbackBegTarget(scope) {
+  _begCandidates(msg) {
+    const self = String(this.selfId ?? '')
+    const okId = (id) => /^\d{4,12}$/.test(id) && id !== self
+
+    /*
+     * ① **先定「谁在这个群里」** —— 这是唯一的成员来源。
+     *
+     * ⚠️ 为什么不直接用互动记录的人：好感度是**全局**的，
+     *    而 @ 只能在**本群**生效。@ 一个不在这群里的人，QQ 里
+     *    要么显示成一串号，要么干脆没有提醒 —— 比不讨还糟。
+     *    所以「在群里说过话」是硬门槛，互动记录只用来补「最近互动时间」。
+     */
+    /** @type {Map<string, {id:string,name:string,lastAt:number,hits:number}>} */
+    const group = new Map()
     try {
-      const mem = this.memory?.get?.(scope) ?? null
-      const list = mem?.recent?.(30) ?? []
-      for (let i = list.length - 1; i >= 0; i--) {
-        const m = list[i]
+      const list = this.memory?.get?.(msg?.scope)?.recent?.(40) ?? []
+      for (const m of list) {
         if (!m || m.isMe) continue
         const id = String(m.sender ?? '').trim()
-        if (!/^\d{4,12}$/.test(id)) continue      // 只认 QQ 号
-        if (id === String(this.selfId ?? '')) continue
-        return { id, name: String(m.senderName ?? id) }
+        if (!okId(id)) continue
+        const at = Number(m.at ?? 0)
+        const prev = group.get(id)
+        if (prev) {
+          if (!prev.name || prev.name === id) prev.name = String(m.senderName ?? prev.name)
+          prev.lastAt = Math.max(prev.lastAt, at)
+        } else {
+          group.set(id, { id, name: String(m.senderName ?? id), lastAt: at, hits: 1 })
+        }
       }
-    } catch { /* 拿不到就当没有 */ }
-    return null
+    } catch { /* 拿不到记忆 → 没有候选，宁可不讨 */ }
+    if (group.size === 0) return []
+
+    // ② 用互动记录补充「最近互动时间 / 互动次数」（不改成员资格）
+    try {
+      for (const t of (this._interactions?.top?.({ limit: 30 }) ?? [])) {
+        const id = String(t?.id ?? '').trim()
+        const c = group.get(id)
+        if (!c) continue
+        c.hits = Array.isArray(t?.counts) ? t.counts.length : c.hits
+        c.lastAt = Math.max(c.lastAt, Number(t?.lastAt ?? 0))
+        if (t?.name) c.name = String(t.name)
+      }
+    } catch { /* 互动记录拿不到就算了 */ }
+
+    // ③ 按好感度排（用户 2026-11-07：「按照好感度呢」）
+    const out = [...group.values()].map((c) => ({
+      ...c,
+      affinity: Number(this.people?.affinityOf?.(c.id) ?? 50),
+    }))
+    out.sort((a, b) => b.affinity - a.affinity || b.lastAt - a.lastAt)
+    return out
   }
 
   /**
@@ -9027,26 +9078,30 @@ export class QQBridge {
   async _maybeBeg(msg, cny) {
     try {
       /*
-       * ★ 互动记录为空时的兜底（2026-11-07）。
+       * ★ 选人：**按好感度**（2026-11-07 用户：「按照好感度呢」）。
        *
-       * `_interactions` 是内存里的，刚重启时是空的（落盘也常常是空的，
-       * 见 `_saveInteractions` 的说明）。而余额偏低是**持续状态**，
-       * 讨钱多半就发生在「刚重启」那段时间 —— 于是每次都卡在
-       * 「还没有人跟它说过话，不知道该找谁」。
+       * 候选池 = 互动记录 ∪ 这个群里说过话的人，按好感度从高到低。
+       * 只把前 3 个交给 `decideBeg` —— 它本来就在「前 3 名里随机挑一个」，
+       * 于是既挑到了最亲近的几个，又不会每次都逮着同一个人讨。
        *
-       * 兜底：用这个群里最后一条他人消息的发送者。
+       * 为什么要并上「群里说过话的人」：互动记录是内存的，
+       * 硬杀重启后是空的，而讨钱多半发生在刚重启那会儿。
        */
-      let tracker = this._interactions
-      let topLen = 0
-      try { topLen = (tracker?.top?.({ limit: 1 }) ?? []).length } catch { topLen = 0 }
-      if (topLen === 0) {
-        const fb = this._fallbackBegTarget(msg.scope)
-        if (fb) {
-          this.log.info?.(`bridge：互动记录为空 → 兜底 @ 群里最后说话的人 ${fb.name}(${fb.id})`)
-          tracker = {
-            top: ({ limit = 3, exclude = [] } = {}) => (exclude.map(String).includes(String(fb.id)) ? [] : [fb]),
-          }
-        }
+      const cands = this._begCandidates(msg)
+      if (cands.length === 0) {
+        this.log.info?.('bridge：不讨钱 —— 这个群里没有可以 @ 的人')
+        return false
+      }
+      const pool = cands.slice(0, 3)
+      this.log.info?.(
+        'bridge：讨钱候选（按好感度）' +
+        pool.map((c) => `${c.name}(${c.id}) 好感${c.affinity}`).join('、'),
+      )
+      const tracker = {
+        top: ({ limit = 3, exclude = [] } = {}) =>
+          pool
+            .filter((c) => !exclude.map(String).includes(String(c.id)))
+            .slice(0, limit),
       }
 
       const r = decideBeg({
@@ -9087,7 +9142,7 @@ export class QQBridge {
       this._begState.commit(r.line)
       this.log.warn?.(
         `bridge：余额 ¥${cny} 偏低 → 已 @${r.target.name}(${r.target.id}) 讨钱，` +
-        `今日第 ${this._begState.snapshot().count}/${this._begState.maxPerDay} 次，话术「${r.line.id}」`,
+        `好感 ${r.target.affinity ?? '?'}，今日第 ${this._begState.snapshot().count}/${this._begState.maxPerDay} 次，话术「${r.line.id}」`,
       )
       /*
        * 兜底初始化：消息**已经发出去了**，别因为一个计数器没初始化
