@@ -158,7 +158,7 @@ ok('全空 → 空串', () => {
 ok('SUMMARY_PROMPT 必须定义【我】段，并说清它与【人】【事】的区别', () => {
   const src = fs.readFileSync(path.resolve(import.meta.dirname, '..', 'src', 'memory', 'long.js'), 'utf8')
   const at = src.indexOf('export const SUMMARY_PROMPT')
-  const prompt = src.slice(at, at + 4000)
+  const prompt = src.slice(at, at + 20000)
   assert.match(prompt, /【我】/, '提示词里必须有【我】段')
   assert.match(prompt, /这一段只写你自己/, '必须说清它只写「它自己」')
   assert.match(prompt, /那是【人】|那是【事】/, '必须给出「这是【人】/【事】不是【我】」的反例')

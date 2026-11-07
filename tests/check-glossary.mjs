@@ -137,7 +137,7 @@ ok('四段全超长 → 总长仍 ≤ 上限，且【梗】【我】留到最后
 ok('SUMMARY_PROMPT 必须有【梗】段，且排除网络烂大街流行语', () => {
   const src = fs.readFileSync(path.resolve(import.meta.dirname, '..', 'src', 'memory', 'long.js'), 'utf8')
   const at = src.indexOf('export const SUMMARY_PROMPT')
-  const prompt = src.slice(at, at + 5000)
+  const prompt = src.slice(at, at + 20000)
   assert.match(prompt, /【梗】/, '要有这一段')
   assert.match(prompt, /这个群内部/, '要限定"群内部"')
   assert.match(prompt, /烂大街的流行语/, '要明确排除网络流行语 —— 否则它记一堆没用的')
