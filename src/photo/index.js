@@ -51,6 +51,7 @@ export function planShot(o = {}) {
   const {
     scene = '', slot = 'afternoon', outfit = '', hair = '', weather = '', mood = '',
     request = '', scope = '', sceneOnly = false, anime = false, imageCfg = {}, bodyOverride = '',
+    mode = 'daily',   // V3 第三层：daily(默认) | close —— 带默认值，旧调用行为不变
   } = o
 
   /* ① 该不该拍（没有值得分享的内容就不拍） */
@@ -153,6 +154,7 @@ export function planShot(o = {}) {
     continuity: note, hasRef: Boolean(refImage), anime, bodyOverride, sceneOnly,
     expression,
     canonRef: Boolean(canon),
+    mode,
     character: { faceRef: imageCfg.refImage, bodyRef: imageCfg.bodyRefImage },
   })
 
