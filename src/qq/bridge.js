@@ -6930,14 +6930,20 @@ ${drewNote}
          */
         try {
           const qItem = marks.items.find((x) => x.id === 'qzone')
-          const hasPub = Boolean(drawnImage) && msg.__drawnPublishable !== false
-          if (qItem && !hasPub) {
+          /*
+           * 说说一律摘下，走"先给他看再发"：runQQMarkers 永远看不到 qzone，
+           * 否则那条直发路会让确认闸形同虚设（2026-11-08 用户：「都修吧」）。
+           */
+          if (qItem) {
             marks.items = marks.items.filter((x) => x.id !== 'qzone')
             if (!this._pendingQzone) this._pendingQzone = new Map()
-            this._pendingQzone.set(String(msg.scope ?? ''), { scope: String(msg.scope ?? ''), content: String(qItem.arg ?? '') })
-            this.log.info?.('bridge：说说缺图 → 延后到回完消息再补图发')
-          }
-        } catch { /* 拦截失败就按老路走 */ }
+            this._pendingQzone.set(String(msg.scope ?? ''), {
+              scope: String(msg.scope ?? ''),
+              content: String(qItem.arg ?? ''),
+              imageUrl: String(drawnImage?.url ?? ''),
+            })
+            this.log.info?.('bridge：说说已摘下 → 等发图给他确认')
+          }} catch { /* 拦截失败就按老路走 */ }
         qqNotes = await runQQMarkers({
           items: marks.items,
           onebot: this.onebot,
@@ -11244,6 +11250,11 @@ ${drewNote}
   }
 
   async _send(msg, text, cover = null, target = null) {
+    /* 空内容不发：剥完标记后正文空、又没图时，别留一条空消息 */
+    if (!String(text ?? '').trim() && !cover) {
+      this.log?.warn?.('bridge：空内容 → 不发（__emptyGuard）')
+      return []
+    }
     const reply = this.cfg.reply ?? {}
     const maxChars = reply.maxChars ?? 500
     /** @type {string[]} */
