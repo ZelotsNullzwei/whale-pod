@@ -13193,6 +13193,13 @@ export function classifyDrawIntent(text) {
    * ⚠️ 「**重新来 / 再试一次 / 再来**」也算要图（2026-11-08 实测漏网）：
    *   他说的是「重新来呢」，我只写了「重新拍」→ 不命中 → 她又去问/干脆拒拍。
    */
+  /*
+   * ⚠️ **拒绝要先判**（2026-11-08 回归：「别拍了」被判成要拍）：
+   *   ASK_DONE 里有「拍了」，会把「别拍了」也算成要图，所以这里先拦。
+   */
+  const NO_DRAW = /(别拍|不要拍|不拍了|不想拍|不用拍)/
+  if (NO_DRAW.test(s)) return { wantsPic: false, saidNo: true }
+
   const ASK_DONE = /(快拍|拍(?:了|一张|张|吧|啊|过|一拍)|画(?:了|一张)|图(?:呢|没来|还没|没到|不到)|没图|没收到图|收到图|照片(?:呢|没来)|重新(?:拍|来)|再拍|再试|再来|还没来)/
   const wantsPic = PIC_REQUEST_PHRASES.some((p) => s.includes(p)) || lookHit || PART_LOOK.test(s) || ASK_DONE.test(s)
   const refused = PIC_REFUSE_PHRASES.some((p) => s.includes(p))
