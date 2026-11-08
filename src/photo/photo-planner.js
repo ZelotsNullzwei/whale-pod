@@ -421,7 +421,7 @@ export function planIntent({ scene = "", slot = "afternoon", sceneOnly = false }
       scene: { location: "current", background: [] },
       explicitRequirements: [],
       constraints: ["no_person"],
-      diagnostics: { matchedRules: ["sceneOnly"], conflicts: [], unresolved: [] },
+      diagnostics: { matchedRules: ["sceneOnly"], conflicts: [], unresolved: [], decisionTrace: [{ field: "camera", value: "scene_only", reason: "sceneOnly_flag" }] },
       confidence: null,
     }
   }
@@ -515,16 +515,55 @@ export function planIntent({ scene = "", slot = "afternoon", sceneOnly = false }
 
   /* ---------- 7. constraints ---------- */
   const constraints = []
-  if (camera.mode === "first_person") constraints.push("no_face", "no_phone")
-  if (camera.mode === "front_selfie" || camera.mode === "face_closeup") constraints.push("no_phone_in_frame")
-  if (camera.mode === "rear_object" || camera.mode === "scene_only") constraints.push("no_person")
-  if (camera.mode === "back_view") constraints.push("no_face")
+  const C = (type, source, scope) => ({ type, source, scope })
+  /*
+   * 三个限制**互不替代**（复核意见④）：
+   *   no_phone   = 手机不进入画面（不是不能用手机拍）
+   *   no_face    = 不展示脸（不等于不出现身体）
+   *   no_person  = 完全不出现人物（不等于不能出现手）
+   */
+  if (camera.mode === "first_person") {
+    constraints.push(C("no_face", "camera_mode", "frame"))
+    constraints.push(C("no_phone", "camera_mode", "frame"))
+  }
+  if (camera.mode === "front_selfie" || camera.mode === "face_closeup") {
+    constraints.push(C("no_phone", "camera_mode", "frame"))
+  }
+  if (camera.mode === "rear_object") {
+    constraints.push(C("no_person", "camera_mode", "scene"))
+  }
+  if (camera.mode === "scene_only") {
+    constraints.push(C("no_person", "camera_mode", "scene"))
+  }
+  if (camera.mode === "back_view") {
+    constraints.push(C("no_face", "camera_mode", "frame"))
+  }
 
   const purpose = inferPurpose(text, subject, camera.mode)
+
+  /* 决策痕迹（复核意见⑤）：为什么有这个机位 / 为什么没有 */
+  if (!diagnostics.decisionTrace) diagnostics.decisionTrace = []
+  diagnostics.decisionTrace.push({
+    field: "camera",
+    value: camera.mode,
+    reason: camera.mode ? camera.source : "no_explicit_camera_requirement",
+  })
+  diagnostics.decisionTrace.push({ field: "subject", value: subject, reason: subjectWhy })
   const intentSource = explicitRequirements.length ? "explicit" : (camera.source === "context" ? "context" : "inferred")
+
+  /*
+   * 次要主体（复核意见②）：主次关系必须保留，所以不做成 subject 数组。
+   *   坐在床边看漫画 → character + ["comic"]
+   *   双手捧碗       → object   + []（碗是主，手是画面元素）
+   */
+  const secondarySubjects = []
+  if (/(漫画|书)/.test(text) && subject === "character") secondarySubjects.push("comic")
+  if (/(碗|面)/.test(text) && subject === "object") secondarySubjects.push("bowl")
+  if (/(穿搭|这身|新衣服)/.test(text)) secondarySubjects.push("outfit")
 
   return {
     subject,
+    secondarySubjects,
     intent: { purpose, source: intentSource },
     activities,
     framing,
@@ -534,6 +573,8 @@ export function planIntent({ scene = "", slot = "afternoon", sceneOnly = false }
     explicitRequirements,
     constraints,
     diagnostics,
+    /* 原始文本：只给 camera-planner 细分几何用，不作为对外语义字段 */
+    _raw: text,
     /* 兼容旧测试/旧代码的只读别名（不再作为真源） */
     legacy: { activity: activities[0] ? activities[0].type : null, framingType: framing.type },
     confidence: null,
@@ -544,10 +585,24 @@ export function planIntent({ scene = "", slot = "afternoon", sceneOnly = false }
  * 投影：intent → 旧 mode id（过渡层）。
  * ⚠️ 会掩盖 rear_object/scene_only 的差异，所以调用方必须同时记录**投影前后**。
  */
-export function projectMode(intent, fallback = "front_selfie") {
-  const m = intent && intent.camera ? intent.camera.mode : null
-  if (!m) return fallback
-  if (m === "rear_object" || m === "scene_only") return "rear_selfie"
-  return m
+const LEGACY_MODE_MAP = {
+  face_closeup: "face_closeup",
+  front_selfie: "front_selfie",
+  mirror_selfie: "mirror_selfie",
+  video_call: "video_call",
+  first_person: "first_person",
+  back_view: "back_view",
+}
+
+/**
+ * 投影：新 intent → 旧 mode id。
+ * ⚠️ **未确定机位 ≠ 前置自拍**（复核意见①）：
+ *    camera=null / 未知模式 / 映射不到 → 一律返回 null，绝不兜底成 front_selfie。
+ */
+export function projectMode(intent) {
+  const mode = intent && intent.camera ? intent.camera.mode : null
+  if (!mode) return null
+  if (mode === "rear_object" || mode === "scene_only") return "rear_selfie"
+  return LEGACY_MODE_MAP[mode] ?? null
 }
 

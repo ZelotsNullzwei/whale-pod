@@ -131,10 +131,11 @@ ok('explicitRequirements 是结构化对象（带 source/spans）', () => {
   assert.ok(Array.isArray(r.spans) && r.spans[0].text)
 })
 ok('constraints 按模式生成', () => {
-  assert.ok(I('第一人称，手里端着杯子').constraints.includes('no_face'))
-  assert.ok(I('第一人称，手里端着杯子').constraints.includes('no_phone'))
-  assert.ok(I('前置自拍').constraints.includes('no_phone_in_frame'))
-  assert.ok(I('拍给你看这个').constraints.includes('no_person'))
+  const has = (arr, t) => arr.some((c) => typeof c === 'object' && c.type === t)
+  assert.ok(has(I('第一人称，手里端着杯子').constraints, 'no_face'))
+  assert.ok(has(I('第一人称，手里端着杯子').constraints, 'no_phone'))
+  assert.ok(has(I('前置自拍').constraints, 'no_phone'))
+  assert.ok(has(I('拍给你看这个').constraints, 'no_person'))
 })
 ok('confidence 已移除，改为 diagnostics', () => {
   const i = I('第一人称，手里端着杯子')
@@ -145,10 +146,11 @@ ok('confidence 已移除，改为 diagnostics', () => {
 })
 
 console.log('\n=== F. projectMode 过渡层 ===')
-ok('rear_object/scene_only → 旧 rear_selfie；null → 显式 fallback', () => {
+ok('rear_object/scene_only → 旧 rear_selfie；null → null（不再兜底 selfie）', () => {
   assert.equal(projectMode({ camera: { mode: 'rear_object' } }), 'rear_selfie')
   assert.equal(projectMode({ camera: { mode: 'scene_only' } }), 'rear_selfie')
-  assert.equal(projectMode({ camera: { mode: null } }, 'X'), 'X')
+  assert.equal(projectMode({ camera: { mode: null } }), null)
+  assert.equal(projectMode({ camera: { mode: 'weird' } }), null)
 })
 
 console.log('\npass ' + pass + ' / fail ' + fail)
