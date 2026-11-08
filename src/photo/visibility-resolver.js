@@ -1,0 +1,98 @@
+/**
+ * visibility-resolver · V3.0 可见性唯一出口（评审第 1~3 条）
+ *
+ * 问题：
+ *   1. camera.visibility 与 pose.visibility 各说一套，没有统一出口。
+ *   2. 「手需要几只手」与「画面看得见几只」容易混（后置拍物不该出现持机手）。
+ *   3. 镜拍语义交叉：camera 认为镜中能看到持机手，pose 的人像模式把手清空。
+ *
+ * 本模块只做**合并与裁决**，不新增任何摄影规则：
+ *   camera  = 机位允许看到什么（上限）
+ *   pose    = 这个动作实际产生什么（内容）
+ *   结果    = 两者的交集，并把冲突写进 conflicts
+ */
+
+export function resolveVisibility({ intent = {}, camera = {}, framing = {}, pose = {} } = {}) {
+  const conflicts = []
+  const unresolved = []
+
+  const camVis = camera.visibility || {}
+  const poseVis = pose.visibility || {}
+  const mode = camera.mode ?? null
+  const band = framing.band ?? null
+
+  /* ① 机位未定 → 全部未定，不猜 */
+  if (!mode) {
+    return {
+      face: null,
+      hands: [],
+      arms: [],
+      phone: null,
+      bodyParts: [],
+      unresolved: ['camera_undetermined'],
+      conflicts: [],
+      source: 'unresolved',
+    }
+  }
+
+  /* ② 脸：只由机位决定（姿势不改变看不看得见脸） */
+  const face = camVis.face ?? null
+
+  /* ③ 手机：只有镜拍会在画面里出现（前摄=镜头本身，后摄=不拍手机） */
+  const phone = mode === 'mirror_selfie' ? true : false
+
+  /* ④ 手：以"机位允许"为上限，"动作实际需要"为内容，取交集 */
+  const camHands = Array.isArray(camVis.hands) ? camVis.hands : []
+  const poseHands = Array.isArray(poseVis.visibleHands) ? poseVis.visibleHands : []
+
+  let hands = []
+  if (mode === 'mirror_selfie') {
+    /* 镜拍：镜中必然看到举机那只手；动作手若也可见则并入（去重） */
+    const set = new Set(['camera_hand'])
+    for (const h of poseHands) if (h !== 'camera_hand') set.add(h)
+    hands = [...set].slice(0, 2)
+    if (poseHands.length === 0) {
+      /* pose 把人像模式的手清了 → 与 camera 的"镜中可见持机手"冲突，按 camera 为准 */
+      conflicts.push({ field: 'hands', camera: camHands, pose: poseHands, resolvedBy: 'camera_mirror_rule' })
+    }
+  } else if (mode === 'rear_object' || mode === 'scene_only') {
+    /* 后置拍物/纯场景：持机手不算画面内容；只有动作手（且取景允许）才可能出现 */
+    const canShow = band === 'object' || band === 'hand_object'
+    const actionOnly = poseHands.filter((h) => h !== 'camera_hand')
+    hands = canShow ? actionOnly.slice(0, band === 'hand_object' ? 2 : 1) : []
+    if (camHands.includes('camera_hand') && hands.length === 0) {
+      conflicts.push({ field: 'hands', camera: camHands, pose: poseHands, resolvedBy: 'rear_camera_hand_not_visible' })
+    }
+  } else if (mode === 'front_selfie' || mode === 'face_closeup' || mode === 'video_call' || mode === 'back_view') {
+    /* 前摄/特写/通话/背影：手不入画（镜头就在手上/相机不拍手） */
+    hands = []
+    if (poseHands.length > 0) {
+      conflicts.push({ field: 'hands', camera: camHands, pose: poseHands, resolvedBy: 'portrait_mode_hides_hands' })
+    }
+  } else if (mode === 'first_person') {
+    /* 第一人称：动作手 = 画面内容；持机手永不入画 */
+    hands = poseHands.filter((h) => h !== 'camera_hand').slice(0, 2)
+  }
+
+  /* ⑤ 手臂：与手同源，最多两条 */
+  const arms = hands.length === 2 ? ['both'] : hands.length === 1 ? ['one'] : []
+
+  /* ⑥ 可见身体部位：机位给的范围，取景收窄时以取景为准 */
+  const bodyParts = Array.isArray(camVis.bodyParts) ? camVis.bodyParts.slice() : []
+
+  /* ⑦ 收集上游 unresolved（只搬运，不新增判断） */
+  for (const u of camera.unresolved ?? []) unresolved.push(u)
+  for (const u of framing.unresolved ?? []) unresolved.push(u)
+  for (const u of pose.unresolved ?? []) unresolved.push(u)
+
+  return {
+    face,
+    hands,
+    arms,
+    phone,
+    bodyParts,
+    unresolved: [...new Set(unresolved)],
+    conflicts,
+    source: conflicts.length ? 'merged_with_conflict' : 'merged',
+  }
+}

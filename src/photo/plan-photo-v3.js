@@ -10,6 +10,7 @@ import { planIntent } from './photo-planner.js'
 import { planCamera } from './camera-planner.js'
 import { planFraming } from './framing-planner.js'
 import { planPose } from './pose-planner.js'
+import { resolveVisibility } from './visibility-resolver.js'
 
 export function buildShotPlan({ scene = '', slot = 'afternoon', sceneOnly = false, raw = null } = {}) {
   const intent = planIntent({ scene, slot, sceneOnly })
@@ -17,6 +18,8 @@ export function buildShotPlan({ scene = '', slot = 'afternoon', sceneOnly = fals
   const camera = planCamera(intent)
   const framing = planFraming(intent, camera)
   const pose = planPose(intent, camera, framing)
+  /* 可见性唯一出口：合并 camera 上限与 pose 内容，并把冲突记下来 */
+  const visibility = resolveVisibility({ intent, camera, framing, pose })
 
   const unresolved = []
   for (const [layer, list] of [
@@ -34,14 +37,18 @@ export function buildShotPlan({ scene = '', slot = 'afternoon', sceneOnly = fals
     camera,
     framing,
     pose,
+    visibility,
     resolution: {
-      /* 是否已经能确定"拍什么、怎么拍、多远、身体怎么动" */
+      /* core：拍什么/怎么拍/多远 都能定下来（不含姿势细节） */
       resolved: Boolean(intent.subject && camera.mode && framing.band),
+      core: Boolean(intent.subject && camera.mode && framing.band),
+      /* strict：core + 可见性没有未决项、没有冲突 —— 才叫"全链路解决" */
+      strict: Boolean(intent.subject && camera.mode && framing.band && (visibility.unresolved || []).length === 0 && (visibility.conflicts || []).length === 0),
       mode: camera.mode,
       band: framing.band,
       posture: pose.pose.posture,
       handsRequired: pose.hands.requiredCount,
-      handsVisible: pose.visibility.visibleHands.length,
+      handsVisible: (visibility.hands || []).length,
     },
     unresolved,
   }
