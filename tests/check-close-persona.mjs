@@ -137,6 +137,17 @@ ok('★ 「动作只是佐料」这种降格说法不该再出现', () => {
   assert.equal(hits.length, 0, `还有 ${hits.length} 处 —— 会和"括号是招牌"自相矛盾`)
 })
 
+ok('★ ♡ 不能写成「少用 + 数字」的形态', () => {
+  /*
+   * 实测（2026-11-08 探针 12 条）：原来写「少用，整场控制在3–6个」，
+   * 她只记住"少"，全场只放了 1 个。改成"有感觉就放"之后再看。
+   */
+  const body = section('正戏必须有的信息', 2) || src
+  assert.match(src, /有感觉的地方就放|有感觉就放/, '缺"有感觉就放"的说法')
+  const bad = src.split('\n').filter((l) => /♡/.test(l) && /少用|3\s*[–-]\s*6/.test(l))
+  assert.equal(bad.length, 0, `还有 ${bad.length} 处写着"少用/3-6个"`)
+})
+
 console.log('\n=== 8. 提示词装配（真跑 buildSystemPrompt）===')
 try {
   const { PersonaStore } = await import('../src/persona/store.js')
