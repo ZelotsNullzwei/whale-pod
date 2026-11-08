@@ -10511,6 +10511,46 @@ export class QQBridge {
     } catch { return null }
   }
 
+  /**
+   * **去掉正文里的自我重复**（2026-11-08 用户：「加吧，避免 bug 影响对话」）。
+   *
+   * 现场（私聊 14:29:12）：
+   * ```
+   * （耳鳍抖了抖）现在才两点半不到，吃完就躺啊
+   * 本鲸下午没安排，看你怎么说
+   * （耳鳍抖了抖）现在才两点半不到，吃完就躺啊   ← 开场又写了一遍
+   * ```
+   * 这是**模型生成时的自我重复**（长回复末尾把开头抄回去），不是记忆问题。
+   * 直接发出去会让人看到"她反复说同一句"，所以按句检测、从重复处截断。
+   *
+   * 判据保守：
+   *   · 只比**句子级**、且去掉空白后**完全相同**才认
+   *   · 句子太短（<5 字）不比 —— 「哈哈」「嗯」重复是正常的
+   *   · 截断后不足 8 字就放弃截断（宁可留着，也别把话切没）
+   */
+  _stripSelfRepeat(text) {
+    try {
+      const s = String(text ?? '')
+      if (s.length < 16) return s
+      const re = /[^。！？!?\n]+[。！？!?]?/g
+      const seen = new Set()
+      let cutAt = -1
+      let mm
+      while ((mm = re.exec(s)) !== null) {
+        const t = mm[0].replace(/\s+/g, '').trim()
+        if (t.length < 5) continue
+        if (seen.has(t)) { cutAt = mm.index; break }
+        seen.add(t)
+      }
+      if (cutAt < 0) return s
+      // ⚠️ 按**原文字符位置**截 —— 用 join 会吃掉换行（实测「…躺啊本鲸…」粘成一行）
+      const kept = s.slice(0, cutAt).trim()
+      if (kept.length < 8) return s
+      this.log.info?.('bridge：正文自我重复（后段与前文相同）→ 截掉后半')
+      return kept
+    } catch { return text }
+  }
+
   async _send(msg, text, cover = null, target = null) {
     const reply = this.cfg.reply ?? {}
     const maxChars = reply.maxChars ?? 500
@@ -10578,6 +10618,7 @@ export class QQBridge {
      * 走 msg 这个属性而不是改返回值：`_send` 的返回值（message_id 数组）
      * 有 5 个调用点在用，改形状容易漏。
      */
+    text = this._stripSelfRepeat(text)
     try { msg.__sentText = text } catch { /* 只读对象就跳过，退回旧行为 */ }
     // 「正在输入…」—— 实验性，默认关（qq.actions.typing）
     if (this.cfg.actions?.typing === true) void this._typingIndicator(msg)
