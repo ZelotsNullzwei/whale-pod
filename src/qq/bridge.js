@@ -1705,6 +1705,147 @@ export class QQBridge {
     } catch { return '' }
   }
 
+  /**
+   * **说说缺图 → 按她写的那句话生成一张，再图文一起发**（2026-11-08 用户选 B）。
+   *
+   * ## 为什么不在这轮同步做
+   * 生图要 20 秒左右。同步做会把她的聊天回复拖到 30 秒 —— 那个代价比"说说晚几秒出现"大得多。
+   * 所以：这一轮先把说说标记**拦下来**（不发给 qqActions），回完消息后再异步补图并发。
+   *
+   * ## 图从哪来
+   * 用**说说的正文**当场景描述（`sceneOnly`，画面里没有人）：
+   * 「洗了三遍才敢用，这会儿还倒扣着没干」→ 拍一个倒扣着滴水的玻璃杯。
+   * 这正是"生图和表达是一回事"的落点 —— 先看她要说什么，再按那句话生成画面。
+   */
+  async _postQzoneWithImage({ scope, content }) {
+    const say = String(content ?? '').trim()
+    if (!say) return
+    let file = ''
+    try {
+      const imgCfg = this.cfg?.qq?.image ?? {}
+      const shot = planShot({
+        /*
+         * ★★ **画面描述用她自己说过的话**（2026-11-08 用户：
+         *   「有她对玻璃杯的详细描述」）。
+         *
+         * 她说得很具体：蓝点绕杯口一圈（不是杯底）、玻璃不厚拿手上轻、
+         * 蓝点像随手按上去的实心小点。
+         * 但生图时我只把说说的情绪句（「洗了三遍才敢用」）丢进去，
+         * 画面里没有"蓝点"，出来一堆白瓷碗和两个普通玻璃杯。
+         *
+         * 现在：从**她最近的发言**里捞跟这个主体有关的句子拼进画面描述，
+         * 她说得不够细时才用当日日程兜底。
+         */
+        scene: (() => {
+          try {
+            const WORDS = ['杯', '碗', '衣服', '裙', '鞋', '花', '猫', '书', '画', '灯', '桌', '窗', '快递', '水果', '面', '汤']
+            /*
+             * ⚠️ **主体词不能只看说说正文**（2026-11-08 实测）。
+             *
+             * 说说正文：「洗了三遍才敢用，这会儿还倒扣着没干」—— **一个"杯"字都没有**，
+             * 于是主体词识别成空、她那些描述（蓝点绕杯口一圈、玻璃薄）一句都没用上，
+             * 出图变成一堆白瓷碗。
+             *
+             * 现在：正文找不到就**往回翻最近的对话**，从最新一条往前找主体词。
+             */
+            let kw = WORDS.find((w) => say.includes(w)) ?? ''
+            if (!kw) {
+              try {
+                const back = (this.memory?.get?.(scope)?.recent?.(12) ?? []).slice().reverse()
+                for (const m of back) {
+                  const t = String(m?.text ?? '')
+                  if (!t) continue
+                  const hit = WORDS.find((w) => t.includes(w))
+                  if (hit) { kw = hit; break }
+                }
+              } catch { /* 翻不到就算了 */ }
+            }
+            let herWords = []
+            try {
+              const m0 = this.memory?.get?.(scope)
+              const recent = m0?.recent?.(24) ?? []
+              herWords = recent
+                .filter((x) => x?.isMe && typeof x.text === 'string' && kw && x.text.includes(kw))
+                .map((x) => String(x.text).replace(/[（(][^）)]*[）)]/g, '').replace(/\s+/g, ' ').trim())
+                .filter((t) => t.length >= 6)
+            } catch { herWords = [] }
+            const herDesc = [...new Set(herWords)].slice(-3).join('；').slice(0, 130)
+            const pt = (() => { try { return this.dayPlan?.today?.() ?? {} } catch { return {} } })()
+            const dayText = [pt.smallThing, pt.afternoon, pt.morning, pt.noon, pt.evening].filter(Boolean).join('。')
+            const dayLine = kw ? (dayText.split(/[。；;]/).map((x) => x.trim()).find((x) => x.includes(kw)) ?? '') : ''
+            const desc = [herDesc, dayLine, say].filter(Boolean).join('；').slice(0, 160)
+            this.log.info?.(`bridge：说说配图来源 — 她说过 ${herWords.length} 句 / 日程 ${dayLine ? 1 : 0} 句`)
+            return desc
+          } catch { return say.slice(0, 60) }
+        })(),
+        slot: currentSlot().id,
+        scope,
+        sceneOnly: true,          // 只拍东西，画面里没有人
+        mode: 'daily',
+        imageCfg: imgCfg,
+      })
+      const r = await generateImage({
+        prompt: shot.prompt,
+        url: imgCfg.url,
+        provider: imgCfg.provider ?? 'magpie-mcp',
+        baseUrl: imgCfg.baseUrl,
+        apiKeyEnv: imgCfg.keyEnv,
+        model: imgCfg.model,
+        size: imgCfg.size,
+        aspect: imgCfg.aspect ?? '9:16',
+        resolution: imgCfg.resolution ?? '1K',
+        refImage: null,           // 场景图绝不用参考图
+        home: this.cfg?.home ?? '',
+        log: this.log,
+      })
+      if (!r?.ok || !r?.url) {
+        this.log.warn?.(`bridge：说说配图生成失败（${String(r?.error ?? '无返回').slice(0, 60)}）→ 只发文字`)
+        return
+      }
+      const resp = await fetch(r.url)
+      if (!resp.ok) throw new Error(`下载图片 HTTP ${resp.status}`)
+      let buf = Buffer.from(await resp.arrayBuffer())
+      try { buf = await eraseCornerWatermark(buf, this.log) } catch { /* 失败用原图 */ }
+      try { buf = await cropBottom(buf, Number(this.cfg?.qq?.image?.cropBottom ?? 0.1), this.log) } catch { /* 同上 */ }
+      const dir = path.join(this.cfg?.home ?? '', 'generated')
+      try { fs.mkdirSync(dir, { recursive: true }) } catch { /* 已存在 */ }
+      file = path.join(dir, `qzone-${Date.now()}.jpg`)
+      fs.writeFileSync(file, buf)
+      this.log.info?.(`bridge：说说配图已生成 ${Math.round(buf.length / 1024)}KB → ${path.basename(file)}`)
+    } catch (e) {
+      this.log.warn?.(`bridge：说说配图出错 — ${String(e?.message ?? e).slice(0, 80)}`)
+      return
+    }
+    try {
+      const mem = this.memory?.get?.(scope)
+      const notes = await runQQMarkers({
+        items: [{ id: 'qzone', arg: say }],
+        onebot: this.onebot,
+        msg: { scope },
+        mem,
+        cfg: this.cfg?.actions ?? {},
+        log: this.log,
+        selfPhoto: { url: file, publishable: true },
+        selfName: this.selfName,
+      })
+      if (!notes?.some((n) => String(n).includes('发空间'))) return
+      this.log.info?.(`bridge：图文说说已发出（${notes.join('；')}）`)
+      /* 让她记得自己发过 —— 跟正常路径同一套记录 */
+      try {
+        mem?.push?.(makeMessage({
+          id: `qzone-${Date.now()}`,
+          sender: String(this.selfId ?? ''),
+          senderName: String(this.selfName ?? ''),
+          isMe: true,
+          at: Date.now(),
+          text: `（刚发了条说说：${say.slice(0, 100)}｜带图）`,
+        }))
+      } catch { /* 记忆写失败不影响 */ }
+    } catch (e) {
+      this.log.warn?.(`bridge：发说说失败 — ${String(e?.message ?? e).slice(0, 80)}`)
+    }
+  }
+
   async _ngaRefresh() {
     try {
       if (this._ngaBusy) return
@@ -6440,6 +6581,26 @@ ${drewNote}
       const marks = extractQQMarkers(text)
       if (marks.items.length > 0) {
         text = marks.text
+        /*
+         * ★★ **说说缺图 → 先摘下来，回完消息再补图发**（2026-11-08 用户选 B）。
+         *
+         * 实测 17:21：她说说先发出去（没图），图 17:22 才画 —— 图文两件事各走各的，
+         * 用户看到的就是"不带图大家看啥"。
+         *
+         * 这里拦住：本轮没有可公开的图 → 不发，改由 `_postQzoneWithImage`
+         * 在回复发出后异步：按她写的那句话生成场景图 → 图文一起发 → 写进记忆。
+         * 不同步做的原因：生图 20 秒，会把她的聊天回复拖到 30 秒。
+         */
+        try {
+          const qItem = marks.items.find((x) => x.id === 'qzone')
+          const hasPub = Boolean(drawnImage) && msg.__drawnPublishable !== false
+          if (qItem && !hasPub) {
+            marks.items = marks.items.filter((x) => x.id !== 'qzone')
+            if (!this._pendingQzone) this._pendingQzone = new Map()
+            this._pendingQzone.set(String(msg.scope ?? ''), { scope: String(msg.scope ?? ''), content: String(qItem.arg ?? '') })
+            this.log.info?.('bridge：说说缺图 → 延后到回完消息再补图发')
+          }
+        } catch { /* 拦截失败就按老路走 */ }
         qqNotes = await runQQMarkers({
           items: marks.items,
           onebot: this.onebot,
@@ -6661,6 +6822,14 @@ ${drewNote}
         this.log.info?.(`bridge：图有了但正文是空的 → 兜一句「${text}」`)
       }
       const sentIds = await this._send(msg, text, coverForSend)
+      /* ★ 回复已经出去了 —— 现在补说说的图（不占聊天延迟） */
+      try {
+        const pq = this._pendingQzone?.get?.(String(msg.scope ?? ''))
+        if (pq) {
+          this._pendingQzone.delete(String(msg.scope ?? ''))
+          void this._postQzoneWithImage(pq).catch(() => {})
+        }
+      } catch { /* 忽略 */ }
       /*
        * ★ 主图**真的发出去了**吗（2026-11-06）。
        *   读 _send 挂在 msg 上的结构化结果 —— 图段失败会被跳过、正文照发，
