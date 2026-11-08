@@ -12,7 +12,7 @@
  */
 
 import { MODES } from './photo-modes.js'
-import { planPhoto, shouldSkipPhoto } from './photo-planner.js'
+import { planPhoto, shouldSkipPhoto, planIntent, projectMode } from './photo-planner.js'
 import { validatePhotoPlan, applyFix } from './photo-validator.js'
 import { composeFraming } from './photo-composer.js'
 import { composePhotoPrompt } from './photo-prompt.js'
@@ -83,6 +83,25 @@ export function planShot(o = {}) {
 
   /* ② 规划拍摄方式 */
   let plan = planPhoto({ scene, slot, sceneOnly, anime })
+
+  /*
+   * ★★ **V3.0 影子对比**（2026-11-08，GPT 建议的低风险接入）：
+   *
+   * 新 intent **只算不用** —— 行为完全不变，只把「新逻辑会判成什么、跟旧的差在哪」
+   * 记录到 `shot.plan.__v3Shadow`，供调用方打日志 / 观察一段时间。
+   * 确认零意外之后，再切成真正使用 projectMode(intent)。
+   */
+  try {
+    const __intent = planIntent({ scene, slot, sceneOnly })
+    const __shadowMode = projectMode(__intent)
+    plan.__v3Shadow = {
+      intent: __intent,
+      shadowMode: __shadowMode,
+      modeDiff: __shadowMode !== plan.mode,
+    }
+  } catch (e) {
+    plan.__v3Shadow = { error: String(e && e.message ? e.message : e) }
+  }
 
   /* ③ 物理可行性检查 + 自动修正 */
   const loc = detectLocation(scene)
