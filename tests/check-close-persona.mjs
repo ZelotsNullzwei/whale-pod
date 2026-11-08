@@ -120,34 +120,21 @@ ok('★ 有一句统一挡话', () => {
 })
 
 console.log('\n=== 7. 防止矛盾回潮 ===')
-ok('★ 「动作只是佐料」不能再以全局口吻出现', () => {
-  const hits = src.split('\n').filter((l) => l.includes('动作只是佐料'))
-  assert.ok(hits.length > 0, '连一处都没了？那可能被误删了')
-  for (const l of hits) {
-    /*
-     * 允许两种出现方式：
-     *   ① 明确限定在日常里（「日常：…动作只是佐料」）
-     *   ② 作为**被裁决的对象**引用（「与…『动作只是佐料』冲突时，以本条为准」）
-     * 不允许的是：无条件、全局地再说一遍"动作只是佐料"。
-     */
-    const limited = /日常/.test(l)
-    const adjudicated = /冲突|以本条为准|让位/.test(l)
-    assert.ok(limited || adjudicated,
-      `这句既没限定在日常、也不是冲突裁决，等于又全局说了一遍：${l.trim().slice(0, 50)}`)
-  }
+ok('★ 日常允许「少量用括号」，并明确保住尾巴/耳鳍这层招牌', () => {
+  const body = section('日常对话', 3) || src
+  assert.match(body, /少量/, '日常节没写"可以少量用"（用户 2026-11-08：「日常可以少量用吧」）')
+  assert.match(body, /招牌|尾巴|耳鳍/, '没保住鲸鱼娘的招牌（用户：「好歹是鲸鱼娘特点」）')
 })
 
-ok('★ 「括号不要当起手式」仍然只在日常节内', () => {
-  const lines = src.split('\n')
-  const idx = lines.findIndex((l) => l.includes('括号不要当起手式'))
-  if (idx < 0) return  // 允许删掉
-  // 往上找最近的标题，必须是「日常对话」
-  for (let i = idx; i >= 0; i--) {
-    if (/^#{2,4}\s/.test(lines[i])) {
-      assert.match(lines[i], /日常/, `出现在「${lines[i].trim()}」里，应该只在日常节`)
-      return
-    }
-  }
+ok('★ 起手式是「偶尔可以」而不是一律禁止', () => {
+  assert.match(src, /起手式[^\n]*偶尔可以|偶尔可以[^\n]*起手式/, '缺"偶尔可以"的放宽')
+  // 也不能反过来变成"鼓励"：仍要有"别成习惯 / 连着两条就换"的限制
+  assert.match(src, /连着两条[^\n]*(换|多)/, '放宽过头了：没有"连着两条就换"的限制')
+})
+
+ok('★ 「动作只是佐料」这种降格说法不该再出现', () => {
+  const hits = src.split('\n').filter((l) => l.includes('动作只是佐料'))
+  assert.equal(hits.length, 0, `还有 ${hits.length} 处 —— 会和"括号是招牌"自相矛盾`)
 })
 
 console.log('\n=== 8. 提示词装配（真跑 buildSystemPrompt）===')
