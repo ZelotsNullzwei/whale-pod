@@ -1698,7 +1698,17 @@ export class QQBridge {
       const now = Date.now()
       const quota = this.searchQuota?.check(this.cfg?.qq?.search?.maxPerDay) ?? { ok: true }
       if (!quota.ok) return
+      /*
+       * ⚠️ **每小时限次也要过**（2026-11-08 补）。
+       *   第一版只查了每日额度就调 webSearch —— 跟主搜索那道闸不一致；
+       *   `check-search-quota` 的源码锁扫的正是"第一个 webSearch 调用前有没有两道闸"。
+       *   两道都过了才计数。
+       */
+      const pace = this.searchPacing?.allow(this.cfg?.qq?.pacing) ?? { ok: true }
+      if (!quota.ok) return
+      else if (!pace.ok) return
       this.searchQuota?.take()
+      this.searchPacing?.note()
       const r = await webSearch({
         question: 'site:ngabbs.com 明日方舟 讨论 新干员 强度',
         apiKey: this.searchKey,

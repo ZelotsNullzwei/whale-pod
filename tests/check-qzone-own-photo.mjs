@@ -18,6 +18,17 @@
  * ③ 正文里明确要求「这张/刚发的」时才收对方的图
  * ④ 都没有 → **不带图**（宁可纯文字说说，也不能把他的表情包发到她空间）
  */
+/*
+ * ⚠️ **隔离状态文件**（2026-11-08）：
+ *   qqActions 会把「上次发说说的时间」写到 <WHALE_POD_HOME>/qzone-last.json，
+ *   用来做 20 小时限频。测试如果不隔离，跑第一次之后**后面全被限频挡住**
+ *   （实测：check-qzone-own-photo 6 项全挂，原因就是这个文件被上一次测试写进去了）。
+ */
+import os from 'node:os'
+import path from 'node:path'
+import fsx from 'node:fs'
+const QZONE_TEST_HOME = fsx.mkdtempSync(path.join(os.tmpdir(), 'whalepod-qzone-'))
+process.env.WHALE_POD_HOME = QZONE_TEST_HOME
 import assert from 'node:assert/strict'
 import { runQQMarkers } from '../src/qq/qqActions.js'
 
@@ -44,7 +55,10 @@ async function run({ arg, msgImages = [], recent = [], selfPhoto = null }) {
     onebot,
     msg: { messageId: 'm1', scope: 'private:1', images: msgImages },
     mem: { recent: () => recent },
+    cfg: { qzone: true, qzoneMinGapMs: 0 }, // 测试环境关掉 20h 限频
+
     selfPhoto,
+    cfg: { qzone: true, qzoneMinGapMs: 0 },
     log: { info: () => {}, warn: () => {} },
   })
   const call = onebot.calls.find((c) => c.a === 'send_qzone_msg')
@@ -128,6 +142,7 @@ await ok('说说内容为空 → 根本不发', async () => {
     onebot,
     msg: { messageId: 'm1', scope: 'private:1', images: [] },
     mem: { recent: () => [] },
+    cfg: { qzone: true, qzoneMinGapMs: 0 },
     log: { info: () => {}, warn: () => {} },
   })
   assert.equal(onebot.calls.length, 0)
