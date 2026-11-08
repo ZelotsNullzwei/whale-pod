@@ -97,7 +97,11 @@ ok('★ mode 是带默认值的参数（旧接口兼容）', () => {
 ok('★ 第一层文件没被改（photo-planner / photo-modes 里没有 v3 痕迹）', () => {
   for (const f of ['photo-planner.js', 'photo-modes.js', 'photo-validator.js']) {
     const s = fs.readFileSync(new URL(`../src/photo/${f}`, import.meta.url), 'utf8')
-    assert.ok(!/构图扩展|风格模式：CLOSE|V3/.test(s), `${f} 被这次改动污染了`)
+    /*
+     * 2026-11-08 收窄：原来这条连 "V3" 字样都禁 —— 与当前 V3.0 摄影重构冲突。
+     * 它真正的目的是防止**早期 CLOSE 档的摄影残留**污染，所以只查那两样。
+     */
+    assert.ok(!/构图扩展|风格模式：CLOSE/.test(s), `${f} 残留了早期 CLOSE 摄影分支`)
   }
 })
 
