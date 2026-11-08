@@ -43,7 +43,14 @@ export function buildShotPlan({ scene = '', slot = 'afternoon', sceneOnly = fals
       resolved: Boolean(intent.subject && camera.mode && framing.band),
       core: Boolean(intent.subject && camera.mode && framing.band),
       /* strict：core + 可见性没有未决项、没有冲突 —— 才叫"全链路解决" */
-      strict: Boolean(intent.subject && camera.mode && framing.band && (visibility.unresolved || []).length === 0 && (visibility.conflicts || []).length === 0),
+      /*
+       * strict（评审第 3 条）：必须检查**整条链**的未决项，不只是 visibility。
+       *   core 说的是"三件事能定"，strict 说的是"全链路没有未决/冲突"。
+       */
+      strict: Boolean(intent.subject && camera.mode && framing.band)
+        && (visibility.unresolved || []).length === 0
+        && (visibility.conflicts || []).length === 0
+        && unresolved.length === 0,
       mode: camera.mode,
       band: framing.band,
       posture: pose.pose.posture,

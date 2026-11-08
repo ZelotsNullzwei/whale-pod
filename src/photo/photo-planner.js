@@ -539,6 +539,18 @@ export function planIntent({ scene = "", slot = "afternoon", sceneOnly = false }
   if (camera.mode === "scene_only") {
     constraints.push(C("no_person", "camera_mode", "scene"))
   }
+  /* 明确约束短语：no_face / no_person / no_phone 三种语义互不替代 */
+  const EXPLICIT_CONSTRAINT_PHRASES = [
+    { re: /(不露脸|别拍脸|不要脸|别露脸)/, type: 'no_face', scope: 'frame' },
+    { re: /(不出现人物|画面里没人|不要有人|别有人)/, type: 'no_person', scope: 'scene' },
+    { re: /(不出现手机|别拍到手机|手机不要入画|不要手机)/, type: 'no_phone', scope: 'frame' },
+  ]
+  for (const r of EXPLICIT_CONSTRAINT_PHRASES) {
+    if (r.re.test(text) && !constraints.some((c) => c.type === r.type)) {
+      constraints.push({ type: r.type, source: 'explicit_phrase', scope: r.scope })
+    }
+  }
+
   if (camera.mode === "back_view") {
     constraints.push(C("no_face", "camera_mode", "frame"))
   }
