@@ -74,6 +74,24 @@ export const OUTING_TRIP = [
  * @param {string} dayKey YYYY-MM-DD
  * @returns {{kind:'none'|'nearby'|'city'|'trip', label:string, text:string, slot:string}}
  */
+/**
+ * 今天出不出门、出多远。
+ *
+ * ## 频率（2026-11-08 用户：「随机特殊事件…一周一次，或者一个月一次？出门逛街或者其他的」）
+ *
+ * ⚠️ 改之前是**每天 90% 出门**（50% 附近 / 30% 市区 / 10% 远门）——
+ *   等于她天天在外面逛，跟"独居、多数时间在家"的设定打架，
+ *   而且每天都有新鲜事可说，反而显得假。
+ *
+ * 现在改成**周期制**：
+ *   · 附近（下楼买菜/取快递）：**每周 2 天** —— 这是日常，不算"事件"
+ *   · 市区（逛街/看展/电影/书店）：**每周 1 天** ← 用户说的"一周一次"
+ *   · 出远门（古镇/爬山/海边）：**每月 1 天** ← 用户说的"一个月一次"
+ *   · 其余时间**在家**
+ *
+ * 用「第几周 / 第几月」做种子 → 同一天永远同一个结果（可复现），
+ * 但每周/每月具体哪一天是散开的，不会固定在周一。
+ */
 export function outingForDay(dayKey) {
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(dayKey ?? ''))
   if (!m) return { kind: 'none', label: '', text: '', slot: '' }
@@ -82,23 +100,33 @@ export function outingForDay(dayKey) {
   // 时段：外出多半在上午或下午
   const slot = n % 2 === 0 ? 'morning' : 'afternoon'
 
-  const r = ((n % 10) + 10) % 10
-  if (r <= 4) {
-    const text = OUTING_NEARBY[hashKey(dayKey) % OUTING_NEARBY.length]
-    return { kind: 'nearby', label: '附近', text, slot }
-  }
-  if (r <= 7) {
-    const text = OUTING_CITY[hashKey(dayKey) % OUTING_CITY.length]
-    return { kind: 'city', label: '市区', text, slot }
-  }
-  if (r === 8) {
-    const text = OUTING_TRIP[hashKey(dayKey) % OUTING_TRIP.length]
+  const dow = ((n % 7) + 7) % 7
+  const weekNo = Math.floor(n / 7)
+  const monthNo = Math.floor(n / 30)
+
+  /* ① 出远门：每月一天（这一天不再安排别的外出） */
+  if (n % 30 === hashKey('trip' + monthNo) % 30) {
+    const text = OUTING_TRIP[(hashKey('t' + monthNo) + n) % OUTING_TRIP.length]
     return { kind: 'trip', label: '出远门', text, slot }
   }
-  // r === 9：这一天不出门
+
+  /* ② 市区：每周一天 */
+  if (dow === hashKey('city' + weekNo) % 7) {
+    const text = OUTING_CITY[(hashKey('c' + weekNo) + n) % OUTING_CITY.length]
+    return { kind: 'city', label: '市区', text, slot }
+  }
+
+  /* ③ 附近：每周两天（隔开三天） */
+  const nearA = hashKey('near' + weekNo) % 7
+  const nearB = (nearA + 3) % 7
+  if (dow === nearA || dow === nearB) {
+    const text = OUTING_NEARBY[(hashKey('n' + weekNo) + dow) % OUTING_NEARBY.length]
+    return { kind: 'nearby', label: '附近', text, slot }
+  }
+
+  // ④ 其余在家
   return { kind: 'none', label: '', text: '', slot: '' }
 }
-
 /** 调试用：打印一段时间的外出安排。 */
 export function describeOutings(startDate = new Date(), days = 14) {
   const out = []
