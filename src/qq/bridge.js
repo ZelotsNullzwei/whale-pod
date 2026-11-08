@@ -1778,6 +1778,14 @@ export class QQBridge {
         mode: 'daily',
         imageCfg: imgCfg,
       })
+      /*
+       * ★★ **只有"要看得见她脸"的档位才带参考图**（2026-11-08 用户：「a人物不对，视角也不对」）。
+       *
+       * 现场：第一人称（局部/只有手）也传了人脸参考图 → 模型把**整个人和脸**画进来，
+       * 镜头被她挤成第三人称侧拍，人还长得不像（参考图里的光照/角度带偏）。
+       * 规则：头肩/半身/全身 = 带脸参考图；第一人称/局部 = 不带。
+       */
+      const __needFace = /头肩|半身|全身/.test(String(shot?.framingInfo?.framing ?? ''))
       const r = await generateImage({
         prompt: shot.prompt,
         url: imgCfg.url,
@@ -1788,7 +1796,7 @@ export class QQBridge {
         size: imgCfg.size,
         aspect: imgCfg.aspect ?? '9:16',
         resolution: imgCfg.resolution ?? '1K',
-        refImage: imgCfg.faceRefImage ?? imgCfg.refImage ?? null,
+        refImage: __needFace ? (imgCfg.faceRefImage ?? imgCfg.refImage ?? null) : null,
         home: this.cfg?.home ?? '',
         log: this.log,
       })
