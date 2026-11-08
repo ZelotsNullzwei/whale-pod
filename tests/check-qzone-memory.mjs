@@ -48,5 +48,13 @@ ok('★ 隔离模块存在且是第一个 import', () => {
   assert.match(String(firstImport), /_isolate-home/, '第一个 import 不是隔离模块')
 })
 
+
+console.log('\n=== 3. 群聊不许发说说（公开动作）===')
+ok('★ 源码锁：群里直接跳过，连冷却都不谈', () => {
+  const QA = fs.readFileSync('D:/DSH WorkSpace/whale-pod/src/qq/qqActions.js', 'utf8')
+  assert.match(QA, /群里不发说说（公开动作，只允许私聊）/)
+  assert.ok(QA.includes('if (!isPrivate) {'), '群里要直接跳过')
+})
+
 console.log(`\n通过 ${pass} / 失败 ${fail}`)
 process.exit(fail === 0 ? 0 : 1)

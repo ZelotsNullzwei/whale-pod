@@ -271,7 +271,27 @@ export async function runQQMarkers({ items, onebot, msg, mem, cfg = {}, log = {}
        * 因为它既可能刷屏（连发几条），也可能被一句话驱使就发。
        * 间隔可配：`qq.actions.qzoneMinGapMs`（默认 20 小时）。
        */
-      const gapMs = Number(cfg?.qzoneMinGapMs ?? 20 * 3600_000)
+      /*
+       * ★ **私聊不设冷却**（2026-11-08 用户：「私聊主动让她发不设置冷却」）。
+       *
+       * 20 小时限频的初衷是防她在**群里**连着刷空间（公开动作，别人看得见）。
+       * 私聊只有他一个人，她想发就发；冷却反而会挡住"我说了句想发，她发不出来"。
+       */
+      const isPrivate = String(msg?.scope ?? '').startsWith('private:')
+      /*
+       * ★★ **群里一律不准发说说**（2026-11-08 用户：「群聊不应该能让他发吧」）。
+       *
+       * 空间是**公开动作**（好友/同事/家人都看得见）。群里是公开场合，
+       * 谁都能说一句「你去发个说说」——如果她能照做，等于把"往空间发东西"
+       * 这个开关交给了群里的任何人。
+       *
+       * 所以：**只有私聊能发**；群里连冷却都不谈，直接不发。
+       */
+      if (!isPrivate) {
+        log.info?.('qq-actions：群里不发说说（公开动作，只允许私聊）')
+        continue
+      }
+      const gapMs = Number(cfg?.qzoneMinGapMs ?? 0) * 0   // 私聊无冷却
       if (gapMs > 0 && lastQzone?.at && Date.now() - Number(lastQzone.at) < gapMs) {
         const h = Math.max(1, Math.round((Date.now() - Number(lastQzone.at)) / 3600_000))
         log.info?.(`qq-actions：${h} 小时前刚发过说说（${Math.round(gapMs / 3600_000)} 小时内只发一条）→ 这次不发`)
