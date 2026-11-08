@@ -367,7 +367,7 @@ export async function runQQMarkers({ items, onebot, msg, mem, cfg = {}, log = {}
         ;({ ok, r } = await call('send_qzone_msg', retry))
       }
       if (ok) {
-        notes.push(imgs.length ? '发空间了' : '发空间了（没图）')
+        notes.push(imgs.length ? '发空间了' : '发空间了，没带图')
         const tid = String(r?.data?.tid ?? r?.tid ?? '')
         if (tid) {
           lastQzone = { tid, at: Date.now() }

@@ -1683,6 +1683,20 @@ export class QQBridge {
       if (this.cfg?.proactive?.nga === false) return ''
       if (!this.searchKey) return ''
       const now = Date.now()
+      /*
+       * ★★ **缓存要落盘**（2026-11-08 修）。
+       *
+       * 原来 `_ngaCache` 只在内存：每重启一次就丢一次 →
+       * 重启后的第一条消息又去搜一遍 NGA，把当天的搜索配额吃光。
+       * 实测 17:22 日志「搜索：今天已达上限（18/12）」—— 一天重启十几次就是十几次搜索，
+       * 而真正需要联网兜底的时候反而搜不了了。
+       */
+      if (!this._ngaCache) {
+        try {
+          const f = path.join(this.cfg?.home ?? '', 'nga-digest.json')
+          this._ngaCache = JSON.parse(fs.readFileSync(f, 'utf8'))
+        } catch { /* 没有就算了 */ }
+      }
       const c = this._ngaCache
       if (c && now - c.at < 2 * 3600_000) return c.text
       // 过期/没有 → 后台刷一次（不阻塞这一轮回复）
@@ -1725,6 +1739,10 @@ export class QQBridge {
           '（只是让你知道大家在关心什么：挑一个能接的聊，别逐条念、别报来源）'].join('\n')
         : ''
       this._ngaCache = { at: now, text }
+      try {
+        const f = path.join(this.cfg?.home ?? '', 'nga-digest.json')
+        fs.writeFileSync(f, JSON.stringify(this._ngaCache), 'utf8')
+      } catch { /* 写不进去就还用内存的 */ }
       if (text) this.log.info?.(`bridge：NGA 话题已刷新（${titles.length} 条）`)
     } finally {
       this._ngaBusy = false
