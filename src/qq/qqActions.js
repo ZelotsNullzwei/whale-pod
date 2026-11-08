@@ -264,6 +264,19 @@ export async function runQQMarkers({ items, onebot, msg, mem, cfg = {}, log = {}
        */
       const content = String(it.arg ?? '').trim()
       if (!content) { log.warn?.('qq-actions：说说内容为空，跳过'); continue }
+      /*
+       * ★★ **一天最多一条**（2026-11-08 用户要"教她怎么发空间"时的底线）。
+       *
+       * 人格里写了频率，但模型不一定听；这里用 `qzone-last.json` 的 `at` 拦一道，
+       * 因为它既可能刷屏（连发几条），也可能被一句话驱使就发。
+       * 间隔可配：`qq.actions.qzoneMinGapMs`（默认 20 小时）。
+       */
+      const gapMs = Number(cfg?.qzoneMinGapMs ?? 20 * 3600_000)
+      if (gapMs > 0 && lastQzone?.at && Date.now() - Number(lastQzone.at) < gapMs) {
+        const h = Math.max(1, Math.round((Date.now() - Number(lastQzone.at)) / 3600_000))
+        log.info?.(`qq-actions：${h} 小时前刚发过说说（${Math.round(gapMs / 3600_000)} 小时内只发一条）→ 这次不发`)
+        continue
+      }
       // ⚠️ 字段名是 content（NapCat 的 payloadSchema 里写的），不是 message
       /*
        * ★★ **只发她自己的照片，绝不把对方的表情包带出去**（2026-11-06 修）。
