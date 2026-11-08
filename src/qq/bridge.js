@@ -13112,7 +13112,16 @@ export function classifyDrawIntent(text) {
    * ⚠️ 「手」要排除手机/手表/手环：「看看手机」不是要看手。
    */
   const PART_LOOK = /看看?(?:你的)?(?:脚趾|脚|手指|手(?!机|表|环|套|链|册)|腿|小肚子|小腹|锁骨|胸|腰)/
-  const wantsPic = PIC_REQUEST_PHRASES.some((p) => s.includes(p)) || lookHit || PART_LOOK.test(s)
+  /*
+   * ★★ **「拍了吗 / 图呢」也算要图**（2026-11-08 修）。
+   *
+   * 现场：他说「拍了吗」→ 她写了 [画图:…] → 闸门判「他没说要拍」→ 画图被跳过，
+   * 于是她说「拍了」，图根本没发出去（连她自己在下一轮都补「图没跟上」）。
+   *
+   * 语义上「拍了吗」就是在催那张图，必须放行。
+   */
+  const ASK_DONE = /(拍(?:了)?(?:吗|没|没有)|画(?:了)?(?:吗|没)|发(?:了)?(?:吗|没)|图呢|照片呢|那张呢|还拍不拍|重新拍|再拍一张)/
+  const wantsPic = PIC_REQUEST_PHRASES.some((p) => s.includes(p)) || lookHit || PART_LOOK.test(s) || ASK_DONE.test(s)
   const refused = PIC_REFUSE_PHRASES.some((p) => s.includes(p))
   return { wantsPic, saidNo: refused && !wantsPic }
 }
