@@ -1772,6 +1772,9 @@ export class QQBridge {
         slot: currentSlot().id,
         scope,
         sceneOnly: false,
+        /* 说说是自拍/第一人称，必须穿今天衣柜里那套，否则模型照参考图穿 */
+        outfit: (() => { try { return this._lastOutfit || this.dayPlan?.today?.()?.outfit || '' } catch { return '' } })(),
+        hair: (() => { try { return this.dayPlan?.today?.()?.hair || '' } catch { return '' } })(),
         mode: 'daily',
         imageCfg: imgCfg,
       })
@@ -1785,7 +1788,7 @@ export class QQBridge {
         size: imgCfg.size,
         aspect: imgCfg.aspect ?? '9:16',
         resolution: imgCfg.resolution ?? '1K',
-        refImage: null,
+        refImage: imgCfg.faceRefImage ?? imgCfg.refImage ?? null,
         home: this.cfg?.home ?? '',
         log: this.log,
       })
