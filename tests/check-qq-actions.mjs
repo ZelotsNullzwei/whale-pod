@@ -11,6 +11,7 @@
  * ④ **失败绝不影响回复**：onebot 抛错 → 返回空说明，不往外抛
  */
 import assert from 'node:assert/strict'
+import fs from 'node:fs'
 import { extractQQMarkers, runQQMarkers, ACTION_KEYS } from '../src/qq/qqActions.js'
 
 let pass = 0
@@ -174,6 +175,22 @@ await okAsync('协议端返回非 ok → 也不算成功', async () => {
     msg: { userId: '1' }, mem: mem(['x']), cfg: {}, log: {},
   })
   assert.deepEqual(notes, [])
+})
+
+
+console.log('\n=== 撤回的触发条件（2026-11-08）===')
+ok('★ 提示词里写清三种该撤的情形 + 可解释可不解释', () => {
+  const b = fs.readFileSync(new URL('../src/qq/bridge.js', import.meta.url), 'utf8')
+  assert.match(b, /话还没说完你就接了下半句/)
+  assert.match(b, /抽象得离谱/)
+  assert.match(b, /已经过时/)
+  assert.match(b, /撤完可以解释一句/)
+})
+ok('★ [撤回] 能被解析成动作并从文本里剥掉', async () => {
+  const { extractQQMarkers } = await import('../src/qq/qqActions.js')
+  const r = extractQQMarkers('刚说错了 [撤回] 当我没说')
+  assert.equal(r.items[0]?.id, 'recall')
+  assert.ok(!r.text.includes('撤回'))
 })
 
 console.log(`\n通过 ${pass} / 失败 ${fail}`)
