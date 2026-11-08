@@ -347,6 +347,7 @@ export function shouldSkipPhoto({ scene = '', lastScene = '' } = {}) {
 const OBJECT_CUES = [
   { re: /(拍给你看|给你看这个|拍下它|拍这个|拍一下这个|给你看看这个)/, why: "explicit_object" },
   { re: /(手里|手上的|端着的|桌上|碗里|锅里|台面上|捧着的|眼前)/, why: "nearby_object" },
+  { re: /(小物件|物件|摆件|饰品|钥匙|耳机|杯子特写|细节)/, why: "small_object" },
 ]
 const SCENE_CUES = [
   { re: /(窗外|阳台|楼下|街景|风景|日落|整个房间|屋里的一切)/, why: "scene_cue" },
@@ -437,7 +438,10 @@ export function planIntent({ scene = "", slot = "afternoon", sceneOnly = false }
     }
   }
   hits.sort((a, b) => a.at - b.at)
-  const activities = hits.map((h, i) => ({ type: h.type, target: null, order: i + 1 }))
+  const __seen = new Set()
+  const activities = hits
+    .filter((h) => (__seen.has(h.type) ? false : (__seen.add(h.type), true)))
+    .map((h, i) => ({ type: h.type, target: null, order: i + 1 }))
   if (activities.length) diagnostics.matchedRules.push("activity:" + activities.map((a) => a.type).join("+"))
 
   /* ---------- 2. explicit camera ---------- */
@@ -562,6 +566,7 @@ export function planIntent({ scene = "", slot = "afternoon", sceneOnly = false }
   if (/(穿搭|这身|新衣服)/.test(text)) secondarySubjects.push("outfit")
 
   return {
+    schemaVersion: "3.0.0-intent",
     subject,
     secondarySubjects,
     intent: { purpose, source: intentSource },
