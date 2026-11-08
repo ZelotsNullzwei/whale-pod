@@ -20,7 +20,7 @@
 
 import fs from 'node:fs'
 import { ImageCache } from './imageCache.js'
-import { reviewImage , reviewMatches } from './imageReview.js'
+import { reviewImage, countLimbs , reviewMatches } from './imageReview.js'
 import { shrinkForReview } from './imageShrink.js'
 import os from 'node:os'
 import path from 'node:path'
@@ -6370,6 +6370,9 @@ ${drewNote}
               try {
                 const small = await shrinkForReview(finalBuf, 640, this.log)
                 const gw = `http://127.0.0.1:${this.cfg.gateway?.port ?? 18899}/v1`
+                /* 先数手臂/手掌：多于两只 = 重拍（2026-11-08 用户：手多了） */
+                const limbs = await countLimbs({ buf: small, gateway: gw, key: this.cfg.gateway?.key ?? null, log: this.log })
+                if (!limbs.ok) this.log.warn?.(`bridge：手脚数量不对（` + limbs.why + `）→ 重拍`)
                 const rv = await reviewImage({
                   buf: small,
                   gateway: gw,

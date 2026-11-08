@@ -29,6 +29,12 @@ const PROMPT = `你在检查一张 AI 生成的"生活照"有没有硬伤。只�
    - 手臂伸出来的那一侧，末端**必须有手**；小臂直接接进裙子/身体/画面外，却没有手 = BAD
    - 两只手臂都要数一遍：一条手在脸边，另一条垂在身侧时，那条**别丢**
    - 只判"看得很清楚确实没有手"；被身体挡住、插兜、藏在身后（能看懂是藏起来）= OK
+   ⚠️ **也要数手臂和手掌**（2026-11-08 用户：「手多了」「手臂和手掌的问题」）：
+   - 一条手臂 = 从肩膀连到手；正常最多两条。**出现第三条手臂 = BAD**
+   - 胸前/腰侧多出一只**不连着身体的手臂或手掌** = BAD
+   - 这只手掌可能只有半只手、或只露一段小臂 —— **别因为"被挡了一半"就放过**
+   - 这一条**不适用上面的"保守"原则**：只要看起来多出一条完整的臂/一只多余的手，就判 BAD
+
 2. 脸：五官有没有错位、两只眼睛瞳孔对不上、脖子接不上头、嘴歪得不自然？
 3. 多余东西：有没有不该出现的肢体（第三只手从画面边缘伸进来）、悬空的物体、
    **画面里不该有的人**（自拍/独居场景里冒出别人、凭空多出一个摄影师）。
@@ -115,7 +121,7 @@ const MATCH_PROMPT = [
   '你是图片质检员。用户给你一张图 + 一句「画面应该是什么样」。',
   '只判断关键特征对不对：东西对不对、位置对不对、颜色/朝向对不对。',
   '不看美观、不看构图、不评画质。',
-  '回答严格 JSON，不要多余文字：{"match": true|false, "why": "不超过30字"}',
+  `回答严格 JSON：{"arms": 数字, "hands": 数字, "why": "不超过20字"}`,
   '· 关键特征明显缺失或不一致（描述说杯口、图里在杯底）→ match=false，why 说清差在哪',
   '· 没有明显违反描述 → match=true',
   '· 看不清、拿不准 → match=true',
@@ -159,5 +165,49 @@ export async function reviewMatches({ buf, expect, gateway, key, log = {}, timeo
     return { match: parsed.match !== false, why: String(parsed.why ?? '').slice(0, 80) }
   } catch (e) {
     return { match: true, why: `核对出错（放行）：${String(e?.message ?? e).slice(0, 40)}` }
+  }
+}
+
+/**
+ * 数手臂/手掌（2026-11-08 用户：手多了、我感觉是你审查没写对）。
+ * 开放式问"有没有硬伤"模型看不见多出的手臂；改成让它数数。
+ */
+const COUNT_PROMPT = [
+  "数这张图里可见的手臂和手掌。",
+  "手臂 = 从肩膀连下来的那条肢体（只露小臂也算一条）；手掌 = 能看到的掌/手。",
+  "只数画面里真能看见的，被完全挡住的不要数。",
+  `回答严格 JSON：{"arms": 数字, "hands": 数字, "why": "不超过20字"}`,
+].join('\n')
+
+export async function countLimbs({ buf, gateway, key, log = {}, timeoutMs = 20_000 }) {
+  if (!buf || buf.length < 1024 || !gateway || !key) return { ok: true, why: "跳过" }
+  try {
+    const dataUrl = "data:image/jpeg;base64," + buf.toString("base64")
+    const body = {
+      model: "auto", stream: false, whale_pod_search: false, max_tokens: 80,
+      messages: [
+        { role: "system", content: COUNT_PROMPT },
+        { role: "user", content: [{ type: "text", text: "数一下。" }, { type: "image_url", image_url: { url: dataUrl } }] },
+      ],
+    }
+    const r = await fetch(String(gateway).replace(/\/$/, "") + "/chat/completions", {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: "Bearer " + key },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(timeoutMs),
+    })
+    if (!r.ok) return { ok: true, why: "网关 " + r.status }
+    const j = await r.json().catch(() => null)
+    const txt = String(j?.choices?.[0]?.message?.content ?? "")
+    const m = /\{[\s\S]*\}/.exec(txt)
+    if (!m) return { ok: true, why: "解析不出来" }
+    const p = JSON.parse(m[0])
+    const arms = Number(p.arms)
+    const hands = Number(p.hands)
+    if (Number.isFinite(arms) && arms > 2) return { ok: false, why: "数出 " + arms + " 条手臂" }
+    if (Number.isFinite(hands) && hands > 2) return { ok: false, why: "数出 " + hands + " 只手掌" }
+    return { ok: true, why: "arms=" + arms + " hands=" + hands }
+  } catch (e) {
+    return { ok: true, why: "计数出错（放行）" }
   }
 }
