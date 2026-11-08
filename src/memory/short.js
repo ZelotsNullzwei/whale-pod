@@ -163,6 +163,56 @@ export class ConversationMemory {
      * ⚠️ 计数逻辑（myLastAt / consecutiveTurns / pendingSinceMyLast）仍按
      *    **调用顺序**更新 —— 那是"谁刚说过话"的语义，与插入位置无关。
      */
+    /*
+     * ★★ **按 `at` 插入 + 同 id 去重**（2026-11-08 补实现）。
+     *
+     * 上面那段注释早就写着"按 at 插入到正确位置，不再无脑 append"，
+     * 但代码一直是 `this.messages.push(m)` —— 注释和实现不一致，
+     * 于是「断线补历史」把 8 小时前的旧消息**追加到末尾**：
+     * ```
+     * 数组: [..., 她(11:50), 她(12:13), 他(11:46), ...]   ← 时间倒挂
+     * ```
+     * 后果就是她读上下文时"刚发生的事"在后面、顺序颠倒 → 反复追问、重复回答。
+     *
+     * 顺带修重复：补历史的批次里已经有实时收到过的消息，
+     * 原来的去重只比对最近 40 条 id，补 59 条时前面全对不上 → 同一句话记两遍。
+     * 现在按 id 查**整个会话**。
+     */
+    /*
+     * ★ **同人同文 3 秒内算同一条**（2026-11-08）。
+     *
+     * 现场：她发的一条消息被记了两遍 ——
+     *   一次是发送成功后本地 push（合成 id `1794109723276-xxx`）
+     *   一次是 QQ 回传/补历史带的真实 id（`1924540669`）
+     * id 不同，按 id 去重抓不到；时间只差 2 秒、文字完全一样。
+     *
+     * ⚠️ 只对 **≥6 个字** 的文本做这条，短句（"嗯"/"？"）真人确实会连发两条。
+     */
+    {
+      const t = String(m.text ?? '').trim()
+      if (t.length >= 6) {
+        const near = this.messages.find((x) => String(x.sender) === String(m.sender)
+          && String(x.text ?? '').trim() === t
+          && Math.abs(Number(x.at) - Number(m.at)) <= 3000)
+        if (near) {
+          this.onChange?.()
+          return near
+        }
+      }
+    }
+    if (m.id) {
+      const dup = this.messages.find((x) => String(x.id) === String(m.id))
+      if (dup) {
+        this.onChange?.()
+        return dup
+      }
+    }
+    /*
+     * ⚠️ **这里必须 append，不能按 at 插入**（2026-11-08 再次确认）。
+     *   `_checkSuperseded` / `_coalesceInbound` 依赖"数组顺序 = 推送顺序"，
+     *   按 at 插入会让 `check-concurrency` 从 32/0 掉到 29/3（三条只回一条）。
+     *   时间乱序在**渲染副本**和**载入时排序**解决，不动这里。
+     */
     this.messages.push(m)
     this.totalPushed++
     if (m.isMe) {
