@@ -10528,6 +10528,49 @@ export class QQBridge {
    *   · 句子太短（<5 字）不比 —— 「哈哈」「嗯」重复是正常的
    *   · 截断后不足 8 字就放弃截断（宁可留着，也别把话切没）
    */
+  /**
+   * **两条气泡之间该等多久**（2026-11-08 用户：「没人打字这么快」「短的话快，长的肯定慢」）。
+   *
+   * 纯计算，方便单测（见 tests/check-bubble-gap.mjs）。
+   *   · 默认 **90ms/字**（中文手打量级）
+   *   · 夹在 [300ms, 6000ms]
+   *   · ±15% 抖动，避免每次间隔一模一样
+   *   ·  关闭；给正数就是固定间隔
+   *
+   * @param {string} prevText 上一条气泡的正文
+   * @param {object} reply    
+   */
+  _bubbleGapMs(prevText, reply = {}, { inScene = false } = {}) {
+    const fixed = Number(reply.bubbleGapMs ?? -1)
+    if (fixed === 0) return 0
+    const chars = String(prevText ?? '').length
+    /*
+     * ★ **场景里另说**（2026-11-08 用户：「进入场景了就另说」）。
+     *
+     * 平常用 90ms/字 模拟手打；但进入正戏后，短句连发本来就是那个节奏 ——
+     * 在这里硬等 1~3 秒反而破戏（对方会以为卡住）。
+     * 所以场景内换成 **35ms/字**、上限压到 1.5 秒。
+     */
+    const perChar = inScene
+      ? Number(reply.sceneTypingMsPerChar ?? 35)
+      : Number(reply.typingMsPerChar ?? 90)
+    const lo = inScene ? 200 : 300
+    const hi = inScene ? 1500 : 6000
+    let gap = fixed > 0 ? fixed : chars * perChar
+    gap = Math.max(lo, Math.min(hi, gap))
+    /* ⚠️ `_rand` 不是所有调用方都有（测试桩 / 少数旁路）→ 兜底 Math.random */
+    const r = typeof this._rand === 'function' ? this._rand() : Math.random()
+    return Math.round(gap * (0.85 + r * 0.3))
+  }
+
+  /** 这个会话现在算不算"场景里"（亲密状态）—— 给气泡节奏用。 */
+  _inScene(msg) {
+    try {
+      const mem = this.memory?.get?.(msg?.scope)
+      return mem ? Boolean(this._looksIntimate?.(mem)) : false
+    } catch { return false }
+  }
+
   _stripSelfRepeat(text) {
     try {
       const s = String(text ?? '')
@@ -10633,6 +10676,25 @@ export class QQBridge {
 
     for (let i = 0; i < segments.length; i++) {
       const seg = segments[i]
+      /*
+       * ★★ **气泡之间按字数停顿**（2026-11-08 用户：「没人打字这么快」）。
+       *
+       * 现场：13:30:14 / 13:30:14 / 13:30:15 —— 三条气泡在两秒内喷完，
+       * 一眼就是机器。真人打一条短句也要一两秒，长句更久。
+       *
+       * 计价方式：**上一条气泡的字数 × 每字毫秒数**（默认 60ms/字，中文手打量级），
+       * 再夹到 [500ms, 6000ms]，最后 ±15% 抖动 ——
+       *   · 「嗯。」            → 0.5s（快）
+       *   · 「可算到了。」       → 约 1.0s
+       *   · 一行 30 字的话       → 约 1.8s
+       *   · 60 字的长段          → 3.6s（慢，符合"长句肯定慢"）
+       *
+       * 关掉：`qq.reply.bubbleGapMs = 0`（固定值）；给正数就是固定间隔。
+       */
+      if (i > 0) {
+        const gap = this._bubbleGapMs(segments[i - 1]?.text, reply, { inScene: this._inScene(msg) })
+        if (gap > 0) await new Promise((r) => setTimeout(r, gap))
+      }
       let payload
       if (seg.kind === 'image') {
         // OneBot 的 image 段直接收 URL
