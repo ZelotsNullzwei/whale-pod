@@ -175,7 +175,11 @@ export function renderDayPlan(plan, slotId) {
   if (worn?.text) parts.push(`今天穿的（刚换上的）：${worn.text}`)
   else if (plan.outfit) parts.push(`今天穿的：${plan.outfit}`)
   if (plan.sleepwear) parts.push(`睡觉穿的：${plan.sleepwear}`)
-  if (plan.outing) parts.push(`今天出门：${plan.outing}`)
+  if (plan.outing) {
+    /* ★ 标出时段（2026-11-08）：不然正文说"下午去便利店"、这行说"去公园"，读起来像同一下午两件事 */
+    const slotLabel = SLOTS.find((x) => x.id === String(plan.outingSlot ?? ''))?.label ?? ''
+    parts.push(`今天出门${slotLabel ? `（${slotLabel}）` : ''}：${plan.outing}`)
+  }
   if (plan.mood) parts.push(`心情：${plan.mood}`)
   if (plan.smallThing) parts.push(`今天的小事：${plan.smallThing}`)
   if (parts.length === 0) return ''
@@ -270,7 +274,26 @@ export class DayPlanStore {
     const outing = outingForDay(k)
     p.outing = outing.text
     p.outingKind = outing.kind
-    p.outingSlot = outing.slot
+    /*
+     * ★ **出门的时段要和日程正文错开**（2026-11-08 用户：
+     *   「时间错开好像也没问题，看这么园得回来」）。
+     *
+     * 实测 2026-11-08：正文写「两点多去楼下便利店买生抽」，
+     * outing 又写「去公园坐了一下午」—— **同一个下午两个外出**，
+     * 她会两个都说（之前「下午去公园遛狗」那次混乱就是这个源头）。
+     *
+     * 用户的判断是对的：只要**不在同一格**就成立 —— 去公园回来顺路进便利店很自然。
+     * 所以这里**换格，不删任何一个**。
+     */
+    let outingSlot = outing.slot
+    if (outing.kind && outing.kind !== 'none') {
+      const OUT = /(去|逛|出门|下楼|便利店|超市|商场|公园|市场|快递|药店|理发|看电影|书店|咖啡)/
+      if (OUT.test(String(p[outingSlot] ?? ''))) {
+        const other = outingSlot === 'morning' ? 'afternoon' : 'morning'
+        if (!OUT.test(String(p[other] ?? ''))) outingSlot = other
+      }
+    }
+    p.outingSlot = outingSlot
     this.data.plans[k] = p
     this.save()
     return plan
