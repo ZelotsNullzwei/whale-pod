@@ -7746,6 +7746,64 @@ export class QQBridge {
     } catch { return '' }
   }
 
+  /**
+   * **明日方舟外号 → 正式名**（2026-11-08）。
+   *
+   * 数据来源：萌娘百科《明日方舟/梗》的「干员外号 / 敌方外号 / 组织别称」三张表，
+   * 存成 `<home>/arknights-alias.json`（132 条）。
+   *
+   * 目的只有一个：**认得出在说谁**，好接话。不解释、不科普。
+   *
+   * ⚠️ 误判防护：
+   *   · 没有方舟语境时，只认**手挑的低歧义外号**（肥鸭/图图姐/蒂蒂/鸡翅…）
+   *     —— 否则「叔叔」「大哥」「小羊」这种日常词会被当成干员
+   *   · 纯数字外号（42/52/174）只在有方舟语境时才认
+   *   · 一次最多给 3 个，避免刷屏
+   */
+  _arknightsAliasHint(text) {
+    try {
+      const s0 = String(text ?? '')
+      if (!s0.trim()) return ''
+      if (this._akAlias === undefined) {
+        const file = path.join(this.cfg?.home ?? '', 'arknights-alias.json')
+        try {
+          const j = JSON.parse(fs.readFileSync(file, 'utf8'))
+          const map = {}
+          for (const [k, v] of Object.entries(j)) {
+            if (k.startsWith('_')) continue
+            const canon = typeof v === 'string' ? v : String(v?.canon ?? '')
+            if (k && canon) map[k] = canon
+          }
+          this._akAlias = map
+        } catch { this._akAlias = null }
+      }
+      const map = this._akAlias
+      if (!map) return ''
+      /* 方舟语境：有这些词时放宽（含纯数字外号） */
+      const akCtx = /(明日方舟|方舟|阿米娅|罗德岛|干员|卫戍|保全|集成战略|剿灭|卡池|抽卡|精英|专精|部署|落地|关卡|突袭|合约|肉鸽)/.test(s0)
+      /* 没有语境时只认这些（手挑，低歧义） */
+      const SAFE = new Set([
+        '肥鸭', '图图姐', '蒂蒂', '鸡翅', '鸡精', '龟龟', '火凛', '火子姐', '鲨鲨',
+        '异德', '翼德', '阿能', '小火龙', '小羊', '粉毛', '叔叔', '闪羊羊', '胖狐狸',
+        '很傻的狗', '咕噜灵波', '萨卡兹大姑娘', '红刀哥', '磕头哥', '1750哥', '奇趣蛋',
+      ])
+      const hits = []
+      for (const [alias, canon] of Object.entries(map)) {
+        if (!s0.includes(alias)) continue
+        if (/^[0-9]+哥?$/.test(alias) && !akCtx) continue
+        if (!akCtx && !SAFE.has(alias)) continue
+        hits.push([alias, canon])
+        if (hits.length >= 3) break
+      }
+      if (!hits.length) return ''
+      return [
+        '## 他在说的名字（认人用，别解释）',
+        ...hits.map(([a, c]) => `- 「${a}」= ${c}`),
+        '知道是谁就行，**别科普、别报出处**；直接接他的话。',
+      ].join('\n')
+    } catch { return '' }
+  }
+
   _crossLongDigest(scope) {
     try {
       const self = String(scope ?? '')
@@ -9159,6 +9217,8 @@ export class QQBridge {
         this._crossLongDigest(msg.scope),
         /* ★ 同一个人：私聊里也要认得群里的那个名字（2026-11-08） */
         this._aliasHint(msg),
+        /* ★ 明日方舟外号：认得出在说谁（2026-11-08） */
+        this._arknightsAliasHint(msg.text),
         /* ★ 我离线过多久（2026-11-07） */
         this._offlineHint(),
         /* ★ 订阅的吧在聊什么（2026-11-07） */
