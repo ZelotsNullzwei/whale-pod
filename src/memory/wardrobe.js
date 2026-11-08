@@ -453,6 +453,75 @@ export function effectivePools() {
   }
 }
 
+/**
+ * **把她随口说的衣服映射到衣柜里的某一套**（2026-11-08 用户：「统一了吧，不要有衣柜以外的衣服」）。
+ *
+ * 背景：她说「穿白衬衫配牛仔裤」这种衣柜里没有的组合时，如果直接照她那句去画，
+ * 就会出现"衣柜外的一套"——衣服开始漂、跟日程/外出服也对不上。
+ * 所以：
+ *   · 能匹配到衣柜里某套（相似度够）→ **用那一套的原文**（保证是衣柜里的）
+ *   · 匹配不到 → 返回空串，调用方**忽略她的说法**，回落到日程/外出服
+ */
+/**
+ * 从她的话里抽出"她声称自己穿的是什么"。抽不到返回空串。
+ *
+ * 专门抽出来是为了**能单测**（之前这段埋在 bridge 的 IIFE 里，只能整体跑）。
+ */
+export function extractSaidOutfit(text) {
+  const t = String(text ?? '')
+  const m = /(?:穿着|穿了|今天穿|这身|身上是|换上)([^，。；\n]{2,50})/.exec(t)
+  if (!m) return ''
+  /* 去掉括号里的神态/动作，去掉尾部「了/呢/啊」这类助词 */
+  let out = m[1].replace(/[（(][^）)]*[）)]/g, '').trim()
+  out = out.replace(/[了吧呢啊呐哦]+$/, '').trim()
+  if (out.length < 2) return ''
+  /*
+   * **必须提到衣服主体词才算描述衣服**（2026-11-08 实测修正）。
+   *
+   * 「身上是昨天那件」会被抽成"昨天那件" —— 那是指代，不是描述，
+   * 直接照它去画就会凭空造衣服。改成：没有主体词就返回空。
+   * （和 `matchOutfit` 里那道闸同一个判据，两处一致。）
+   */
+  const GARMENT = ['吊带', '背心', '短裤', '长裤', '裤', '裙', '衬衫', '衬衣', 'T恤', 't恤', '卫衣', '毛衣', '针织', '开衫', '外套', '风衣', '睡衣', '睡裙', '制服', '水手', '泳', '内衣']
+  if (!GARMENT.some((w) => out.includes(w))) return ''
+  return out.slice(0, 60)
+}
+
+export function matchOutfit(text) {
+  const t = String(text ?? '').trim()
+  if (t.length < 2) return ''
+  const pools = effectivePools()
+  const all = [...(pools.home ?? []), ...(pools.outing ?? []), ...(pools.sleepwear ?? []), ...(pools.signature ?? [])]
+  if (!all.length) return ''
+  /* 二元字组相似度：中文衣着描述短，2 字组已经够区分「吊带/短裤」和「针织/半裙」 */
+  const grams = (x) => {
+    const out = new Set()
+    const k = String(x ?? '').replace(/[\s，。,.;；、:：*（）()「」\/]/g, '')
+    for (let i = 0; i + 2 <= k.length; i++) out.add(k.slice(i, i + 2))
+    return out
+  }
+  /*
+   * ⚠️ **必须提到"衣服主体"才算换装**（2026-11-08 实测）。
+   * 「白棉袜和木色拖鞋」这种只提鞋袜的，会被错误映射成另一整套 — 她根本没说换衣服。
+   */
+  const GARMENT_WORDS = ['吊带', '背心', '短裤', '长裤', '裤', '裙', '衬衫', '衬衣', 'T恤', 't恤', '卫衣', '毛衣', '针织', '开衫', '外套', '风衣', '睡衣', '睡裙', '制服', '水手', '泳', '内衣']
+  if (!GARMENT_WORDS.some((w) => t.includes(w))) return ''
+  const want = grams(t)
+  if (!want.size) return ''
+  let best = ''
+  let bestScore = 0
+  for (const item of all) {
+    const have = grams(item)
+    if (!have.size) continue
+    let hit = 0
+    for (const g of want) if (have.has(g)) hit++
+    const score = hit / want.size
+    if (score > bestScore) { bestScore = score; best = String(item) }
+  }
+  /* 阈值 0.35：能认出"吊带+短裤"这种，又不至于把不相干的两句凑成一套 */
+  return bestScore >= 0.45 ? best : ''
+}
+
 /** 哪些类被文件覆盖了（给 UI/日志看） */
 export function wardrobeOverrides() {
   const { data } = readWardrobeOverrides()

@@ -50,7 +50,7 @@ import { figurePoseForDay, detectBodyPart } from '../photo/photo-composer.js'
 import { buildPartRef } from '../photo/partRef.js'
 import { detectFaceBottom } from '../photo/faceBand.js'
 import { dayKey } from '../memory/dayPlan.js'
-import { outingOutfitForDay, signatureOutfitForDay, sleepwearForDay, wardrobeBrief, resolveOutfitText } from '../memory/wardrobe.js'
+import { outingOutfitForDay, signatureOutfitForDay, sleepwearForDay, wardrobeBrief, resolveOutfitText, matchOutfit, extractSaidOutfit } from '../memory/wardrobe.js'
 // 今天临时换上的那套（2026-11-06）：当天有效，晚上/第二天自动让位
 import { wearingFor, setWearing } from '../memory/wearing.js'
 import { hasBiliLink, resolveBvid, fetchVideoInfo, fetchTopComments, fetchDanmaku, fetchAudioCandidates, downloadAudio, formatVideoContext } from './bilibili.js'
@@ -5781,12 +5781,17 @@ ${drewNote}
                * 优先级修正：**她嘴里说的 > 临时换的 > 标志性那套 > 外出服 > 日程**。
                * 理由：她说的话是对外的承诺，画面必须跟话一致；日程/外出服只是默认值。
                */
-              const saidOutfit = (() => {
-                const t = String(msg.text ?? '')
-                const m = /(?:穿着|穿了|今天穿|这身|身上是|换上)([^，。；\n]{3,50})/.exec(t)
-                return m ? m[1].replace(/[（(][^）)]*[）)]/g, '').trim() : ''
-              })()
-              if (saidOutfit) return saidOutfit.slice(0, 120)
+              /* ★ 她说自己穿什么：先抽出来，再**映射到衣柜里某一套**（2026-11-08 用户：
+ *   「统一了吧，不要有衣柜以外的衣服」）；映射不到就当没说。 */
+              const saidRaw = extractSaidOutfit(msg.text)
+              if (saidRaw) {
+                const mapped = matchOutfit(saidRaw)
+                if (mapped) {
+                  this.log.info?.(`bridge：她说「${saidRaw.slice(0, 20)}」→ 用衣柜里那套`)
+                  return mapped
+                }
+                this.log.info?.(`bridge：她说「${saidRaw.slice(0, 20)}」不在衣柜里 → 按日程/外出服`)
+              }
 
               const worn = wearingFor(dayKey(), currentSlot().id)
               if (worn) return String(worn.text).replace(/\s+/g, ' ').slice(0, 160)
