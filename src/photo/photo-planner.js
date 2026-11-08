@@ -341,117 +341,171 @@ export function shouldSkipPhoto({ scene = '', lastScene = '' } = {}) {
  *   7 明确要求 > 时段        8 人物动作 ≠ 拍摄动作
  *   9 背景物件 ≠ 拍摄对象
  */
-const SUBJECT_RULES = [
-  { re: /(拍给你看|给你看这个|拍下它|拍这个|拍一下这个|给你看看这个)/, subject: "object" },
-  { re: /(站在|坐在|靠着|望着|看着|望向).{0,6}(窗|外面|窗外|阳台)/, subject: "character" },
-  { re: /(窗外|阳台|楼下|街景|风景|日落|整个房间|环境)/, subject: "scene" },
-  { re: /(手里|手上的|端着的|桌上|碗里|锅里|台面上|捧着的|眼前)/, subject: "object" },
-  { re: /(穿着|穿上|这身|全身|半身|自拍|看我|看我一眼|背影)/, subject: "character" },
+/* ===================== V3.0 planIntent（复核后 v2 结构） ===================== */
+
+/* 内容线索：她在拍什么（只描述画面主体，不看机位） */
+const OBJECT_CUES = [
+  { re: /(拍给你看|给你看这个|拍下它|拍这个|拍一下这个|给你看看这个)/, why: "explicit_object" },
+  { re: /(手里|手上的|端着的|桌上|碗里|锅里|台面上|捧着的|眼前)/, why: "nearby_object" },
+]
+const SCENE_CUES = [
+  { re: /(窗外|阳台|楼下|街景|风景|日落|整个房间|屋里的一切)/, why: "scene_cue" },
+]
+const PERSON_CUES = [
+  { re: /(穿着|穿上|衣服|裙子|裙摆|领口|袖口|全身|半身|头肩|自拍|看我|背影|妆|头发|发饰|头饰|站在|坐在|坐着|躺|蹲)/, why: "person_cue" },
 ]
 
+/* 动作（可多动作，按出现顺序） */
 const ACTIVITY_RULES = [
-  { re: /(整理|收拾|擦拭|打扫|叠|洗|挑|翻找|摆弄)/, activity: "tidying" },
-  { re: /(看漫画|看书|翻书|翻页|刷手机|看手机)/, activity: "reading" },
-  { re: /(做饭|煮|炒|洗碗|切菜|蒸|熬)/, activity: "cooking" },
-  { re: /(吃|喝|端|拿着|举着|捧着)/, activity: "holding_item" },
-  { re: /(躺|窝在|靠|坐|站|蹲)/, activity: "resting" },
+  { type: "tidying", re: /(整理|收拾|擦拭|打扫|叠|洗|挑|翻找|摆弄)/g },
+  { type: "reading", re: /(看漫画|看书|翻书|翻页|刷手机|看手机)/g },
+  { type: "cooking", re: /(做饭|煮|炒|洗碗|切菜|蒸|熬)/g },
+  { type: "holding_item", re: /(吃|喝|端|拿着|举着|捧着)/g },
+  { type: "resting", re: /(躺|窝在|靠|坐|站|蹲)/g },
 ]
+const ACTIVITY_ABOUT_HER = /(裙|衣|发|袖|领|围裙|袜|鞋|头饰|刘海|裙摆|肩带|吊带|妆)/
 
+/* 构图（只描述画面包含什么） */
 const FRAMING_RULES = [
-  { re: /(怼脸|面部特写|只拍脸|脸贴镜头)/, framing: "face" },
-  { re: /(头肩|锁骨以上)/, framing: "head_shoulder" },
-  { re: /(半身)/, framing: "half" },
-  { re: /(全身|三分之二身)/, framing: "full" },
-  { re: /(局部|特写|手上的|手里)/, framing: "part" },
+  { type: "face", re: /(怼脸|面部特写|只拍脸|脸贴镜头)/ },
+  { type: "head_shoulder", re: /(头肩|锁骨以上)/ },
+  { type: "half", re: /(半身)/ },
+  { type: "full", re: /(全身|三分之二身)/ },
+  { type: "part", re: /(局部|特写|手上的|手里)/ },
 ]
 
-/** 明确要求（优先级最高，不可被时段/目的覆盖） */
-const EXPLICIT_RULES = [
-  { re: /(怼脸|面部特写|只拍脸|脸贴镜头)/, cameraMode: "face_closeup", device: "front_cam", position: "close" },
-  { re: /(对镜|照镜子|穿衣镜|镜前|对着镜子|镜子里)/, cameraMode: "mirror_selfie", device: "mirror", position: "mirror_front" },
-  { re: /(第一人称|第一视角|POV|pov)/, cameraMode: "first_person", device: "phone", position: "eye" },
-  { re: /(背影|后脑|背对)/, cameraMode: "back_view", device: "phone", position: "behind" },
-  { re: /(前置|自拍)/, cameraMode: "front_selfie", device: "phone", position: "arm_length" },
-  { re: /(视频通话|视频里|通话中)/, cameraMode: "video_call", device: "phone", position: "desk" },
-  { re: /(后置|拍这块|拍它)/, cameraMode: "rear_object", device: "rear_cam", position: "rear" },
+/* 明确机位要求（最高优先级） */
+const EXPLICIT_CAMERA = [
+  { mode: "face_closeup", device: "front_cam", position: "close", re: /(怼脸|面部特写|只拍脸|脸贴镜头)/ },
+  { mode: "mirror_selfie", device: "mirror", position: "mirror_front", re: /(对镜|照镜子|穿衣镜|镜前|对着镜子|镜子里)/ },
+  { mode: "first_person", device: "phone", position: "eye", re: /(第一人称|第一视角|POV|pov)/ },
+  { mode: "back_view", device: "phone", position: "behind", re: /(背影|后脑|背对)/ },
+  { mode: "video_call", device: "phone", position: "desk", re: /(视频通话|视频里|通话中)/ },
+  { mode: "front_selfie", device: "phone", position: "arm_length", re: /(前置|自拍)/ },
+  { mode: "rear_object", device: "rear_cam", position: "rear", re: /(后置|拍这块|拍它)/ },
 ]
 
-function grab(rules, text, key) {
-  for (const r of rules) {
-    const m = r.re.exec(text)
-    if (!m) continue
-    if (r.notNear) {
-      const near = text.slice(Math.max(0, m.index - 6), m.index + m[0].length + 6)
-      if (r.notNear.test(near)) continue
-    }
-    return { hit: r, match: m }
-  }
+/** 目的大类（少而稳；拿不准一律 null，不猜） */
+function inferPurpose(text, subject, cameraMode) {
+  if (cameraMode === "video_call") return "conversation"
+  if (cameraMode === "face_closeup") return "show_face"
+  if (/(穿搭|这身|这一身|新衣服|新买|试衣|好不好看|新发饰)/.test(text)) return "show_outfit"
+  if (subject === "object") return "share_object"
+  if (subject === "scene") return "share_scene"
+  if (subject === "character") return "daily_moment"
   return null
+}
+
+/** 第一人称子型 */
+function firstPersonSubtype(text) {
+  const t = String(text)
+  if (/(双手|两只手|捧|拧|撕开|掰|搓|揉)/.test(t)) return "two_hands"
+  if (/(桌面|书桌|桌上|键盘|写字|笔记本|台面|砧板)/.test(t)) return "desk_work"
+  if (/(窗外|房间|屋里|环境|风景)/.test(t)) return "observe"
+  if (/(端着|拿着|举着|手握|喝|杯|碗|筷|勺|瓶)/.test(t)) return "handheld"
+  return "object_only"
 }
 
 export function planIntent({ scene = "", slot = "afternoon", sceneOnly = false } = {}) {
   const text = String(scene)
+  const diagnostics = { matchedRules: [], conflicts: [], unresolved: [] }
+
   if (sceneOnly) {
     return {
-      subject: "scene", activity: null, framing: "object",
-      camera: { mode: "scene_only", device: "rear_cam", position: "rear" },
+      subject: "scene",
+      intent: { purpose: "share_scene", source: "explicit" },
+      activities: [],
+      framing: { type: "object", source: "explicit" },
+      composition: null,
+      camera: { mode: "scene_only", device: "rear_cam", position: "rear", source: "explicit" },
       scene: { location: "current", background: [] },
-      explicitRequirements: [], confidence: { subject: 0.99, activity: 0.9, camera: 0.99 },
+      explicitRequirements: [],
+      constraints: ["no_person"],
+      diagnostics: { matchedRules: ["sceneOnly"], conflicts: [], unresolved: [] },
+      confidence: null,
     }
   }
 
-  /* ---- 动作（含对象判定：整理她自己身上的东西 ≠ 整理物品） ---- */
-  let activity = null
-  let activityAboutHer = false
+  /* ---------- 1. activities（可多个，按出现顺序） ---------- */
+  const hits = []
   for (const r of ACTIVITY_RULES) {
+    const re = new RegExp(r.re.source, "g")
+    let m
+    while ((m = re.exec(text))) {
+      const near = text.slice(Math.max(0, m.index - 6), m.index + m[0].length + 6)
+      hits.push({ type: r.type, at: m.index, aboutHer: ACTIVITY_ABOUT_HER.test(near) })
+    }
+  }
+  hits.sort((a, b) => a.at - b.at)
+  const activities = hits.map((h, i) => ({ type: h.type, target: null, order: i + 1 }))
+  if (activities.length) diagnostics.matchedRules.push("activity:" + activities.map((a) => a.type).join("+"))
+
+  /* ---------- 2. explicit camera ---------- */
+  const explicitRequirements = []
+  let camera = null
+  for (const r of EXPLICIT_CAMERA) {
     const m = r.re.exec(text)
     if (!m) continue
-    activity = r.activity
-    const near = text.slice(Math.max(0, m.index - 6), m.index + m[0].length + 6)
-    activityAboutHer = /(裙|衣|发|袖|领|围裙|袜|鞋|头饰|刘海|裙摆|肩带|吊带|妆)/.test(near)
+    camera = { mode: r.mode, device: r.device, position: r.position, source: "explicit" }
+    explicitRequirements.push({ type: "camera", mode: r.mode, source: "explicit", spans: [{ start: m.index, end: m.index + m[0].length, text: m[0] }] })
+    diagnostics.matchedRules.push("explicit:" + r.mode)
     break
   }
 
-  /* ---- 主体：先看明确指向，再看动作对象，最后看穿着/自拍 ---- */
+  /* ---------- 3. subject（主体类型；不由机位推导） ---------- */
   let subject = null
-  const sHit = grab(SUBJECT_RULES, text)
-  if (sHit) subject = sHit.hit.subject
-  if (!subject && activity) {
-    if (activityAboutHer) subject = "character"
-    else if (activity === "reading") subject = /(拍|给你看|记录)/.test(text) ? "object" : "character"
-    /* 站着/坐着/躺着 = 她本人在画面里，不是"拍眼前的东西"（2026-11-08 修） */
-    else if (activity === "resting") subject = "character"   // resting 是人在画面里
-    else subject = "object"
-  }
-  if (!subject) subject = /(穿着|站在|坐在|躺|妆|头发)/.test(text) ? "character" : "scene"
+  let subjectWhy = null
+  const objHit = OBJECT_CUES.map((r) => ({ r, m: r.re.exec(text) })).find((x) => x.m)
+  const scnHit = SCENE_CUES.map((r) => ({ r, m: r.re.exec(text) })).find((x) => x.m)
+  const perHit = PERSON_CUES.map((r) => ({ r, m: r.re.exec(text) })).find((x) => x.m)
 
-  /* ---- 构图 ---- */
-  const fHit = grab(FRAMING_RULES, text)
-  const framing = fHit ? fHit.hit.framing : (subject === "character" ? "half" : "object")
+  const readingWantsObject = activities.some((a) => a.type === "reading") && /(拍|给你看|记录)/.test(text)
+  const aboutHerOnly = hits.length > 0 && hits.every((h) => h.aboutHer)
 
-  /* ---- 机位：明确要求 → 目的 → 主体兜底 ---- */
-  const explicitRequirements = []
-  let camera = null
-  for (const r of EXPLICIT_RULES) {
-    if (r.re.test(text)) {
-      camera = { mode: r.cameraMode, device: r.device, position: r.position }
-      explicitRequirements.push(r.cameraMode)
-      break
-    }
+  if (readingWantsObject) { subject = "object"; subjectWhy = "reading_wants_object" }
+  else if (objHit && !(perHit && !aboutHerOnly && !activities.length)) { subject = "object"; subjectWhy = objHit.r.why }
+  else if (scnHit && !perHit) { subject = "scene"; subjectWhy = scnHit.r.why }
+  else if (perHit || aboutHerOnly) { subject = "character"; subjectWhy = "person_signal" }
+  /* 只有动作、且动作对象不是她身上的东西 → 拍的是那些东西（例：桌前挑笔） */
+  else if (activities.length) { subject = "object"; subjectWhy = "activity_target_object" }
+  else { subject = "character"; subjectWhy = "default_character" }
+  if (subjectWhy) diagnostics.matchedRules.push("subject:" + subjectWhy)
+
+  /* 机位是"拍人"的模式时，主体必然是人物（特写/视频/自拍/背影/镜子） */
+  const personCam = camera && ["face_closeup", "video_call", "front_selfie", "mirror_selfie", "back_view"].includes(camera.mode)
+  if (personCam && subject !== "character" && !readingWantsObject) {
+    diagnostics.conflicts.push(`camera=${camera.mode} 但 subject=${subject}`)
+    subject = "character"
+    subjectWhy = "forced_by_camera_mode"
   }
+
+  /* ---------- 4. framing ---------- */
+  let framing = null
+  const fHit = FRAMING_RULES.map((r) => ({ r, m: r.re.exec(text) })).find((x) => x.m)
+  if (fHit) framing = { type: fHit.r.type, source: "explicit" }
+  else if (subject === "object") framing = { type: "object", source: "inferred" }
+  else if (subject === "scene") framing = { type: "object", source: "inferred" }
+  else if (/(穿搭|这身|这一身|新衣服|试衣|好不好看)/.test(text)) framing = { type: "full", source: "inferred" } /* show_outfit_framing */
+  else framing = { type: null, source: "unresolved" }
+  if (framing.type === null) diagnostics.unresolved.push("framing")
+
+  /* ---------- 5. camera（没有明确要求时不要无脑默认 selfie） ---------- */
   if (!camera) {
-    if (/(穿搭|这身|新衣服|好不好看|试衣)/.test(text)) camera = { mode: "mirror_selfie", device: "mirror", position: "mirror_front" }
-    else if (subject === "object") {
-      const fp = framing === "part" || /(桌面|桌上|碗里|锅里|手里|手上|台面|眼前)/.test(text) || activity === "tidying" || activity === "cooking" || activity === "holding_item"
-      camera = fp
-        ? { mode: "first_person", device: "phone", position: "eye" }
-        : { mode: "rear_object", device: "rear_cam", position: "rear" }
+    const outfit = /(穿搭|这身|这一身|新衣服|新买|试衣|好不好看|新发饰)/.test(text)
+    const fpCue = framing.type === "part" || /(桌面|桌上|碗里|锅里|手里|手上|台面|眼前)/.test(text)
+    const tidyOrCook = activities.some((a) => a.type === "tidying" || a.type === "cooking")
+    if (outfit) camera = { mode: "mirror_selfie", device: "mirror", position: "mirror_front", source: "purpose" }
+    else if (subject === "object" && (fpCue || tidyOrCook || activities.some((a) => a.type === "holding_item"))) {
+      camera = { mode: "first_person", device: "phone", position: "eye", source: "inferred" }
+    } else if (subject === "object") camera = { mode: "rear_object", device: "rear_cam", position: "rear", source: "inferred" }
+    else if (subject === "scene") camera = { mode: "scene_only", device: "rear_cam", position: "rear", source: "inferred" }
+    else {
+      camera = { mode: null, device: null, position: null, source: "context" }
+      diagnostics.unresolved.push("camera")
     }
-    else if (subject === "scene") camera = { mode: "scene_only", device: "rear_cam", position: "rear" }
-    else camera = { mode: "front_selfie", device: "phone", position: "arm_length" }
   }
 
-  /* ---- 环境（只作背景信息，绝不据此定机位） ---- */
+  /* ---------- 6. scene（只作背景，永不参与机位决策） ---------- */
   const background = []
   if (/(窗|窗帘|窗台)/.test(text)) background.push("window")
   if (/(书桌|桌子|台面)/.test(text)) background.push("desk")
@@ -459,18 +513,41 @@ export function planIntent({ scene = "", slot = "afternoon", sceneOnly = false }
   if (/(衣柜|镜子)/.test(text)) background.push("closet")
   const location = /(外面|街上|店里|公园|阳台)/.test(text) ? "outdoor" : "indoor"
 
-  const conf = { subject: 0.9, activity: activity ? 0.9 : 0.6, camera: explicitRequirements.length ? 0.98 : 0.75 }
-  return { subject, activity, framing, camera, scene: { location, background }, explicitRequirements, confidence: conf }
+  /* ---------- 7. constraints ---------- */
+  const constraints = []
+  if (camera.mode === "first_person") constraints.push("no_face", "no_phone")
+  if (camera.mode === "front_selfie" || camera.mode === "face_closeup") constraints.push("no_phone_in_frame")
+  if (camera.mode === "rear_object" || camera.mode === "scene_only") constraints.push("no_person")
+  if (camera.mode === "back_view") constraints.push("no_face")
+
+  const purpose = inferPurpose(text, subject, camera.mode)
+  const intentSource = explicitRequirements.length ? "explicit" : (camera.source === "context" ? "context" : "inferred")
+
+  return {
+    subject,
+    intent: { purpose, source: intentSource },
+    activities,
+    framing,
+    composition: null,
+    camera,
+    scene: { location, background },
+    explicitRequirements,
+    constraints,
+    diagnostics,
+    /* 兼容旧测试/旧代码的只读别名（不再作为真源） */
+    legacy: { activity: activities[0] ? activities[0].type : null, framingType: framing.type },
+    confidence: null,
+  }
 }
 
 /**
- * 投影：intent → 旧 mode id（供 index.js 及所有下游无痛迁移）。
- * 这只是**过渡层**，等 camera/framing planner 就位后可以拆掉。
+ * 投影：intent → 旧 mode id（过渡层）。
+ * ⚠️ 会掩盖 rear_object/scene_only 的差异，所以调用方必须同时记录**投影前后**。
  */
-export function projectMode(intent) {
-  const m = String(intent?.camera?.mode ?? "")
-  if (m === "rear_object") return "rear_selfie"
-  if (m === "scene_only") return "rear_selfie"
-  if (m) return m
-  return "front_selfie"
+export function projectMode(intent, fallback = "front_selfie") {
+  const m = intent && intent.camera ? intent.camera.mode : null
+  if (!m) return fallback
+  if (m === "rear_object" || m === "scene_only") return "rear_selfie"
+  return m
 }
+

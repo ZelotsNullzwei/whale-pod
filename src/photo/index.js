@@ -93,11 +93,15 @@ export function planShot(o = {}) {
    */
   try {
     const __intent = planIntent({ scene, slot, sceneOnly })
-    const __shadowMode = projectMode(__intent)
+    /* camera=null 表示"新逻辑认为还需上下文决定"，不要用 fallback 伪装成 mode */
+    const __resolved = Boolean(__intent && __intent.camera && __intent.camera.mode)
+    const __shadowMode = __resolved ? projectMode(__intent) : null
     plan.__v3Shadow = {
       intent: __intent,
       shadowMode: __shadowMode,
-      modeDiff: __shadowMode !== plan.mode,
+      modeDiff: __resolved ? __shadowMode !== plan.mode : false,
+      unresolved: __intent && __intent.diagnostics ? __intent.diagnostics.unresolved : [],
+      resolved: __resolved,
     }
   } catch (e) {
     plan.__v3Shadow = { error: String(e && e.message ? e.message : e) }
