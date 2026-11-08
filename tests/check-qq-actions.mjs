@@ -16,11 +16,7 @@
  *   用来做 20 小时限频。测试如果不隔离，跑第一次之后**后面全被限频挡住**
  *   （实测：check-qzone-own-photo 6 项全挂，原因就是这个文件被上一次测试写进去了）。
  */
-import os from 'node:os'
-import path from 'node:path'
-import fsx from 'node:fs'
-const QZONE_TEST_HOME = fsx.mkdtempSync(path.join(os.tmpdir(), 'whalepod-qzone-'))
-process.env.WHALE_POD_HOME = QZONE_TEST_HOME
+import './_isolate-home.mjs' // ★ 必须是第一个 import：ESM 提升，晚设 env 无效
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import { extractQQMarkers, runQQMarkers, ACTION_KEYS } from '../src/qq/qqActions.js'

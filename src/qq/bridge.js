@@ -6442,6 +6442,43 @@ ${drewNote}
         })
         if (crossGroupNote) qqNotes.push(crossGroupNote)
         if (qqNotes.length > 0) this.log.info?.(`bridge：QQ 动作执行了 — ${qqNotes.join('、')}`)
+        /*
+         * ★★ **发完说说，得让她自己知道发了什么**（2026-11-08 用户：「她发空间她知道吗」+「这一点也很重要」）。
+         *
+         * 原来动作说明只是拼进她那句话（「…（发空间了）」），记忆里只留一个括号注 ——
+         * 她不知道**发的内容**，于是：
+         *   · 被问「你刚发了什么」答不上来，或者开始编
+         *   · 过一会儿又把同一件事再说一遍（她以为没说过）
+         *
+         * 这里单独写一条**只进记忆、不发出去**的记录，形式用括号 ——
+         * 读起来像她自己的动作记录，不像别人塞给她的话。
+         */
+        try {
+          const said = (marks.items ?? []).find((x) => x.id === 'qzone')
+          const didDel = (marks.items ?? []).some((x) => x.id === 'qzoneDel')
+          if (said && qqNotes.some((n) => String(n).includes('发空间'))) {
+            const body = String(said.arg ?? '').trim().slice(0, 120)
+            const withImg = qqNotes.some((n) => String(n).includes('发空间了') && !String(n).includes('没图'))
+            mem.push(makeMessage({
+              id: 'qzone-' + Date.now(),
+              sender: String(this.selfId ?? ''),
+              senderName: String(this.selfName ?? ''),
+              isMe: true,
+              at: Date.now(),
+              text: '（刚发了条说说：' + body + (withImg ? '｜带图' : '｜没图') + '）',
+            }))
+            this.log.info?.('bridge：已把「发说说」写进她的记忆 — ' + body.slice(0, 20))
+          } else if (didDel && qqNotes.some((n) => String(n).includes('删了刚发的说说'))) {
+            mem.push(makeMessage({
+              id: 'qzone-del-' + Date.now(),
+              sender: String(this.selfId ?? ''),
+              senderName: String(this.selfName ?? ''),
+              isMe: true,
+              at: Date.now(),
+              text: '（把刚发的说说删了）',
+            }))
+          }
+        } catch { /* 记忆写失败不影响回复 */ }
       }
     }
 
