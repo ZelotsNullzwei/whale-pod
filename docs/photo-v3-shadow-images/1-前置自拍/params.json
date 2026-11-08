@@ -1,0 +1,8 @@
+{
+  "model": "",
+  "size": "",
+  "aspect": "9:16",
+  "resolution": "1K",
+  "refImageRule": "旧=plan.faceVisible / V3=visibility.face",
+  "seed": "unsupported_by_provider（未固定，差异可能含随机性）"
+}

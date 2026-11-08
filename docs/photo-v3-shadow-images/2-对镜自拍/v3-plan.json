@@ -1,0 +1,225 @@
+{
+  "schemaVersion": "3.0.0-shot",
+  "intent": {
+    "schemaVersion": "3.0.0-intent",
+    "subject": "character",
+    "secondarySubjects": [],
+    "intent": {
+      "purpose": "daily_moment",
+      "source": "explicit"
+    },
+    "activities": [
+      {
+        "type": "resting",
+        "target": null,
+        "order": 1
+      }
+    ],
+    "framing": {
+      "type": "full",
+      "source": "explicit"
+    },
+    "composition": null,
+    "camera": {
+      "mode": "mirror_selfie",
+      "device": "mirror",
+      "position": "mirror_front",
+      "source": "explicit"
+    },
+    "scene": {
+      "location": "indoor",
+      "background": [
+        "closet"
+      ]
+    },
+    "explicitRequirements": [
+      {
+        "type": "camera",
+        "mode": "mirror_selfie",
+        "source": "explicit",
+        "spans": [
+          {
+            "start": 0,
+            "end": 2,
+            "text": "对镜"
+          }
+        ]
+      }
+    ],
+    "constraints": [],
+    "diagnostics": {
+      "matchedRules": [
+        "activity:resting",
+        "explicit:mirror_selfie",
+        "subject:person_signal"
+      ],
+      "conflicts": [],
+      "unresolved": [],
+      "decisionTrace": [
+        {
+          "field": "camera",
+          "value": "mirror_selfie",
+          "reason": "explicit"
+        },
+        {
+          "field": "subject",
+          "value": "character",
+          "reason": "person_signal"
+        }
+      ]
+    },
+    "_raw": "对镜全身自拍，站在衣柜前",
+    "legacy": {
+      "activity": "resting",
+      "framingType": "full"
+    },
+    "confidence": null
+  },
+  "camera": {
+    "mode": "mirror_selfie",
+    "source": "explicit",
+    "povSubtype": null,
+    "capture": {
+      "device": "rear_cam_via_mirror",
+      "deviceVisible": true,
+      "holdingDevice": true
+    },
+    "geometry": {
+      "position": "in_front_of_mirror",
+      "height": "chest_level",
+      "orientation": "toward_mirror",
+      "distance": "60-120cm",
+      "direction": "forward"
+    },
+    "visibility": {
+      "face": true,
+      "hands": [
+        "camera_hand"
+      ],
+      "arms": [
+        "one"
+      ],
+      "phone": true,
+      "bodyParts": [
+        "full_or_half_body"
+      ]
+    },
+    "hands": {
+      "actionHands": 0,
+      "poseHands": 0,
+      "cameraHands": 1
+    },
+    "unresolved": []
+  },
+  "framing": {
+    "band": "full",
+    "aspect": "9:16",
+    "entry": "whole_body",
+    "layout": null,
+    "visibleRange": {
+      "top": "top_of_head",
+      "bottom": "feet"
+    },
+    "composition": null,
+    "source": "intent_framing",
+    "unresolved": []
+  },
+  "pose": {
+    "pose": {
+      "type": null,
+      "orientation": "facing_camera",
+      "posture": "standing"
+    },
+    "limbs": {
+      "leftArm": null,
+      "rightArm": null,
+      "leftLeg": null,
+      "rightLeg": null
+    },
+    "hands": {
+      "requiredCount": 1,
+      "actionHands": 0,
+      "poseHands": 0,
+      "cameraHands": 1,
+      "left": {
+        "role": null,
+        "action": null
+      },
+      "right": {
+        "role": null,
+        "action": null
+      }
+    },
+    "contacts": [],
+    "visibility": {
+      "visibleHands": [],
+      "visibleArms": [],
+      "visibleBodyParts": [],
+      "limited": true
+    },
+    "source": "no_action",
+    "unresolved": [
+      "hand_sides_unknown",
+      "action_exceeds_visible_range"
+    ]
+  },
+  "visibility": {
+    "face": true,
+    "hands": [
+      "camera_hand"
+    ],
+    "arms": [
+      "one"
+    ],
+    "phone": true,
+    "bodyParts": [
+      "full_or_half_body"
+    ],
+    "unresolved": [
+      "hand_sides_unknown",
+      "action_exceeds_visible_range"
+    ],
+    "conflicts": [
+      {
+        "field": "hands",
+        "ruleId": "mirror.camera_hand_forced",
+        "camera": [
+          "camera_hand"
+        ],
+        "pose": [],
+        "resolvedBy": "camera_mirror_rule"
+      }
+    ],
+    "source": "merged_with_conflict"
+  },
+  "composition": {
+    "layout": null,
+    "source": null,
+    "unresolved": []
+  },
+  "resolution": {
+    "resolved": true,
+    "core": true,
+    "strict": false,
+    "reasons": {
+      "core": true,
+      "noUnresolved": false,
+      "noConflict": false
+    },
+    "mode": "mirror_selfie",
+    "band": "full",
+    "posture": "standing",
+    "handsRequired": 1,
+    "handsVisible": 1
+  },
+  "unresolved": [
+    {
+      "layer": "pose",
+      "item": "hand_sides_unknown"
+    },
+    {
+      "layer": "pose",
+      "item": "action_exceeds_visible_range"
+    }
+  ]
+}

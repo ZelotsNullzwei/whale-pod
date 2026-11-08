@@ -1,0 +1,38 @@
+[
+  {
+    "name": "1-前置自拍",
+    "dir": "C:\\Users\\Null_zwei\\Documents\\deepseek-harness\\default-workspace\\_scratch\\results\\1-前置自拍",
+    "legacy": "C:\\Users\\Null_zwei\\Documents\\deepseek-harness\\default-workspace\\_scratch\\results\\1-前置自拍\\legacy.jpg",
+    "v3": "C:\\Users\\Null_zwei\\Documents\\deepseek-harness\\default-workspace\\_scratch\\results\\1-前置自拍\\v3.jpg"
+  },
+  {
+    "name": "2-对镜自拍",
+    "dir": "C:\\Users\\Null_zwei\\Documents\\deepseek-harness\\default-workspace\\_scratch\\results\\2-对镜自拍",
+    "legacy": "C:\\Users\\Null_zwei\\Documents\\deepseek-harness\\default-workspace\\_scratch\\results\\2-对镜自拍\\legacy.jpg",
+    "v3": "C:\\Users\\Null_zwei\\Documents\\deepseek-harness\\default-workspace\\_scratch\\results\\2-对镜自拍\\v3.jpg"
+  },
+  {
+    "name": "3-第一人称端杯",
+    "dir": "C:\\Users\\Null_zwei\\Documents\\deepseek-harness\\default-workspace\\_scratch\\results\\3-第一人称端杯",
+    "legacy": "C:\\Users\\Null_zwei\\Documents\\deepseek-harness\\default-workspace\\_scratch\\results\\3-第一人称端杯\\legacy.jpg",
+    "v3": "C:\\Users\\Null_zwei\\Documents\\deepseek-harness\\default-workspace\\_scratch\\results\\3-第一人称端杯\\v3.jpg"
+  },
+  {
+    "name": "4-桌面写字",
+    "dir": "C:\\Users\\Null_zwei\\Documents\\deepseek-harness\\default-workspace\\_scratch\\results\\4-桌面写字",
+    "legacy": "C:\\Users\\Null_zwei\\Documents\\deepseek-harness\\default-workspace\\_scratch\\results\\4-桌面写字\\legacy.jpg",
+    "v3": "C:\\Users\\Null_zwei\\Documents\\deepseek-harness\\default-workspace\\_scratch\\results\\4-桌面写字\\v3.jpg"
+  },
+  {
+    "name": "5-后置拍物",
+    "dir": "C:\\Users\\Null_zwei\\Documents\\deepseek-harness\\default-workspace\\_scratch\\results\\5-后置拍物",
+    "legacy": "C:\\Users\\Null_zwei\\Documents\\deepseek-harness\\default-workspace\\_scratch\\results\\5-后置拍物\\legacy.jpg",
+    "v3": "C:\\Users\\Null_zwei\\Documents\\deepseek-harness\\default-workspace\\_scratch\\results\\5-后置拍物\\v3.jpg"
+  },
+  {
+    "name": "6-背影",
+    "dir": "C:\\Users\\Null_zwei\\Documents\\deepseek-harness\\default-workspace\\_scratch\\results\\6-背影",
+    "legacy": "C:\\Users\\Null_zwei\\Documents\\deepseek-harness\\default-workspace\\_scratch\\results\\6-背影\\legacy.jpg",
+    "v3": "C:\\Users\\Null_zwei\\Documents\\deepseek-harness\\default-workspace\\_scratch\\results\\6-背影\\v3.jpg"
+  }
+]

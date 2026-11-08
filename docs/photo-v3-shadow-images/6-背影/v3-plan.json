@@ -1,0 +1,218 @@
+{
+  "schemaVersion": "3.0.0-shot",
+  "intent": {
+    "schemaVersion": "3.0.0-intent",
+    "subject": "character",
+    "secondarySubjects": [],
+    "intent": {
+      "purpose": "daily_moment",
+      "source": "explicit"
+    },
+    "activities": [],
+    "framing": {
+      "type": null,
+      "source": "unresolved"
+    },
+    "composition": null,
+    "camera": {
+      "mode": "back_view",
+      "device": "phone",
+      "position": "behind",
+      "source": "explicit"
+    },
+    "scene": {
+      "location": "indoor",
+      "background": []
+    },
+    "explicitRequirements": [
+      {
+        "type": "camera",
+        "mode": "back_view",
+        "source": "explicit",
+        "spans": [
+          {
+            "start": 4,
+            "end": 6,
+            "text": "背影"
+          }
+        ]
+      }
+    ],
+    "constraints": [
+      {
+        "type": "no_face",
+        "source": "camera_mode",
+        "scope": "frame"
+      }
+    ],
+    "diagnostics": {
+      "matchedRules": [
+        "explicit:back_view",
+        "subject:person_signal"
+      ],
+      "conflicts": [],
+      "unresolved": [
+        "framing"
+      ],
+      "decisionTrace": [
+        {
+          "field": "camera",
+          "value": "back_view",
+          "reason": "explicit"
+        },
+        {
+          "field": "subject",
+          "value": "character",
+          "reason": "person_signal"
+        }
+      ]
+    },
+    "_raw": "想要一个背影",
+    "legacy": {
+      "activity": null,
+      "framingType": null
+    },
+    "confidence": null
+  },
+  "camera": {
+    "mode": "back_view",
+    "source": "explicit",
+    "povSubtype": null,
+    "capture": {
+      "device": "rear_cam",
+      "deviceVisible": false,
+      "holdingDevice": true
+    },
+    "geometry": {
+      "position": "behind_subject",
+      "height": "shoulder_level",
+      "orientation": "toward_back",
+      "distance": "60-150cm",
+      "direction": "forward"
+    },
+    "visibility": {
+      "face": false,
+      "hands": [],
+      "arms": [],
+      "phone": false,
+      "bodyParts": [
+        "back",
+        "back_of_head"
+      ]
+    },
+    "hands": {
+      "actionHands": 0,
+      "poseHands": 0,
+      "cameraHands": 1
+    },
+    "unresolved": []
+  },
+  "framing": {
+    "band": "back",
+    "aspect": "9:16",
+    "entry": "back_of_body",
+    "layout": null,
+    "visibleRange": {
+      "top": "back_of_head",
+      "bottom": "waist_or_feet"
+    },
+    "composition": null,
+    "source": "mode_default",
+    "unresolved": []
+  },
+  "pose": {
+    "pose": {
+      "type": null,
+      "orientation": "back_to_camera",
+      "posture": null
+    },
+    "limbs": {
+      "leftArm": null,
+      "rightArm": null,
+      "leftLeg": null,
+      "rightLeg": null
+    },
+    "hands": {
+      "requiredCount": 1,
+      "actionHands": 0,
+      "poseHands": 0,
+      "cameraHands": 1,
+      "left": {
+        "role": null,
+        "action": null
+      },
+      "right": {
+        "role": null,
+        "action": null
+      }
+    },
+    "contacts": [],
+    "visibility": {
+      "visibleHands": [],
+      "visibleArms": [],
+      "visibleBodyParts": [],
+      "limited": true
+    },
+    "source": "no_action",
+    "unresolved": [
+      "posture",
+      "hand_sides_unknown",
+      "action_exceeds_visible_range"
+    ]
+  },
+  "visibility": {
+    "face": false,
+    "hands": [],
+    "arms": [],
+    "phone": false,
+    "bodyParts": [
+      "back",
+      "back_of_head"
+    ],
+    "unresolved": [
+      "posture",
+      "hand_sides_unknown",
+      "action_exceeds_visible_range"
+    ],
+    "conflicts": [],
+    "source": "merged"
+  },
+  "composition": {
+    "layout": null,
+    "source": null,
+    "unresolved": []
+  },
+  "resolution": {
+    "resolved": true,
+    "core": true,
+    "strict": false,
+    "reasons": {
+      "core": true,
+      "noUnresolved": false,
+      "noConflict": true
+    },
+    "mode": "back_view",
+    "band": "back",
+    "posture": null,
+    "handsRequired": 1,
+    "handsVisible": 0
+  },
+  "unresolved": [
+    {
+      "layer": "intent",
+      "item": "framing"
+    },
+    {
+      "layer": "pose",
+      "item": "posture"
+    },
+    {
+      "layer": "pose",
+      "item": "hand_sides_unknown"
+    },
+    {
+      "layer": "pose",
+      "item": "action_exceeds_visible_range"
+    }
+  ]
+}

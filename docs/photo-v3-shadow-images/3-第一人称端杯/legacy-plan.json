@@ -1,0 +1,116 @@
+{
+  "mode": "first_person",
+  "modeLabel": "第一人称记录",
+  "shooter": "本人",
+  "device": "手机（举在手里，镜头朝前）",
+  "camera": "镜头位置≈她的眼睛，俯视或平视眼前的东西",
+  "look": "她看着自己正在做的事",
+  "framing": [
+    "手部特写",
+    "桌面",
+    "食物",
+    "局部"
+  ],
+  "rules": [
+    "**不出现她自己的完整脸部**（镜头就是她的眼睛，看不到自己的脸）。",
+    "**画面里最多出现一只手**（正在做事的那只，比如翻书/端碗）。",
+    "⚠️ 举手机的那只手**不入画**（它就是镜头）—— 不要画成两只手。",
+    "桌面、食物、书页、腿、脚可以自然入画 —— 那是\"她视野里\"的东西。",
+    "⚠️ **必须是同一个身体、同一个朝向**：手臂从哪边进来，同侧的腿/膝就该在同一边；不能出现\"手在左、膝盖在右\"这种身体拼错的情况。",
+    "⚠️ 腿/脚如果要入画，只能在画面**下方**（低头看的角度），不能横在别处。",
+    "不要强行把人物塞进画面（这类照片的主体是**东西**，不是她）。"
+  ],
+  "needs": [],
+  "subject": "她自己",
+  "faceVisible": false,
+  "needsCharacterRef": false,
+  "skip": false,
+  "reason": "眼前的东西值得拍一张",
+  "__v3Shadow": {
+    "intent": {
+      "schemaVersion": "3.0.0-intent",
+      "subject": "character",
+      "secondarySubjects": [],
+      "intent": {
+        "purpose": "daily_moment",
+        "source": "explicit"
+      },
+      "activities": [],
+      "framing": {
+        "type": null,
+        "source": "unresolved"
+      },
+      "composition": null,
+      "camera": {
+        "mode": "first_person",
+        "device": "phone",
+        "position": "eye",
+        "source": "explicit"
+      },
+      "scene": {
+        "location": "indoor",
+        "background": []
+      },
+      "explicitRequirements": [
+        {
+          "type": "camera",
+          "mode": "first_person",
+          "source": "explicit",
+          "spans": [
+            {
+              "start": 0,
+              "end": 4,
+              "text": "第一人称"
+            }
+          ]
+        }
+      ],
+      "constraints": [
+        {
+          "type": "no_face",
+          "source": "camera_mode",
+          "scope": "frame"
+        },
+        {
+          "type": "no_phone",
+          "source": "camera_mode",
+          "scope": "frame"
+        }
+      ],
+      "diagnostics": {
+        "matchedRules": [
+          "explicit:first_person",
+          "subject:default_character"
+        ],
+        "conflicts": [],
+        "unresolved": [
+          "framing"
+        ],
+        "decisionTrace": [
+          {
+            "field": "camera",
+            "value": "first_person",
+            "reason": "explicit"
+          },
+          {
+            "field": "subject",
+            "value": "character",
+            "reason": "default_character"
+          }
+        ]
+      },
+      "_raw": "第一人称",
+      "legacy": {
+        "activity": null,
+        "framingType": null
+      },
+      "confidence": null
+    },
+    "shadowMode": "first_person",
+    "modeDiff": false,
+    "unresolved": [
+      "framing"
+    ],
+    "resolved": true
+  }
+}

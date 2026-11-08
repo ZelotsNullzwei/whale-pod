@@ -1,0 +1,88 @@
+{
+  "mode": "rear_selfie",
+  "modeLabel": "后置拍物",
+  "shooter": "本人",
+  "device": "手机后摄",
+  "camera": "手持，镜头朝**被拍的东西**",
+  "look": "她通常不看镜头（她在看那个东西）",
+  "framing": [
+    "物品特写",
+    "环境照",
+    "局部（手入画）"
+  ],
+  "rules": [
+    "必须明确**拍的是什么**（桌面、食物、窗外的天、刚洗完的衣服）。",
+    "她本人**可以完全不在画面里**，也可以只露手/手臂。",
+    "如果要拍自己的穿搭，必须有镜子（否则后摄拍不到自己正面）。"
+  ],
+  "needs": [],
+  "subject": "她自己",
+  "faceVisible": false,
+  "needsCharacterRef": false,
+  "skip": false,
+  "reason": "想把眼前看到的东西发给他",
+  "__v3Shadow": {
+    "intent": {
+      "schemaVersion": "3.0.0-intent",
+      "subject": "object",
+      "secondarySubjects": [],
+      "intent": {
+        "purpose": "share_object",
+        "source": "inferred"
+      },
+      "activities": [],
+      "framing": {
+        "type": "object",
+        "source": "inferred"
+      },
+      "composition": null,
+      "camera": {
+        "mode": "rear_object",
+        "device": "rear_cam",
+        "position": "rear",
+        "source": "inferred"
+      },
+      "scene": {
+        "location": "indoor",
+        "background": []
+      },
+      "explicitRequirements": [],
+      "constraints": [
+        {
+          "type": "no_person",
+          "source": "camera_mode",
+          "scope": "scene"
+        }
+      ],
+      "diagnostics": {
+        "matchedRules": [
+          "subject:explicit_object"
+        ],
+        "conflicts": [],
+        "unresolved": [],
+        "decisionTrace": [
+          {
+            "field": "camera",
+            "value": "rear_object",
+            "reason": "inferred"
+          },
+          {
+            "field": "subject",
+            "value": "object",
+            "reason": "explicit_object"
+          }
+        ]
+      },
+      "_raw": "把漫画拍给你看",
+      "legacy": {
+        "activity": null,
+        "framingType": "object"
+      },
+      "confidence": null
+    },
+    "shadowMode": "rear_selfie",
+    "modeDiff": false,
+    "unresolved": [],
+    "resolved": true
+  }
+}

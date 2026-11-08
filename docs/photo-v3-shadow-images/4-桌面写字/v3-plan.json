@@ -1,0 +1,236 @@
+{
+  "schemaVersion": "3.0.0-shot",
+  "intent": {
+    "schemaVersion": "3.0.0-intent",
+    "subject": "character",
+    "secondarySubjects": [],
+    "intent": {
+      "purpose": "daily_moment",
+      "source": "explicit"
+    },
+    "activities": [],
+    "framing": {
+      "type": null,
+      "source": "unresolved"
+    },
+    "composition": null,
+    "camera": {
+      "mode": "first_person",
+      "device": "phone",
+      "position": "eye",
+      "source": "explicit"
+    },
+    "scene": {
+      "location": "indoor",
+      "background": []
+    },
+    "explicitRequirements": [
+      {
+        "type": "camera",
+        "mode": "first_person",
+        "source": "explicit",
+        "spans": [
+          {
+            "start": 0,
+            "end": 4,
+            "text": "第一人称"
+          }
+        ]
+      }
+    ],
+    "constraints": [
+      {
+        "type": "no_face",
+        "source": "camera_mode",
+        "scope": "frame"
+      },
+      {
+        "type": "no_phone",
+        "source": "camera_mode",
+        "scope": "frame"
+      }
+    ],
+    "diagnostics": {
+      "matchedRules": [
+        "explicit:first_person",
+        "subject:default_character"
+      ],
+      "conflicts": [],
+      "unresolved": [
+        "framing"
+      ],
+      "decisionTrace": [
+        {
+          "field": "camera",
+          "value": "first_person",
+          "reason": "explicit"
+        },
+        {
+          "field": "subject",
+          "value": "character",
+          "reason": "default_character"
+        }
+      ]
+    },
+    "_raw": "第一人称 书桌上写字",
+    "legacy": {
+      "activity": null,
+      "framingType": null
+    },
+    "confidence": null
+  },
+  "camera": {
+    "mode": "first_person",
+    "source": "explicit",
+    "povSubtype": "tabletop_pov",
+    "capture": {
+      "device": "phone",
+      "deviceVisible": false,
+      "holdingDevice": true
+    },
+    "geometry": {
+      "position": "above_table",
+      "height": "above_chest",
+      "orientation": "down_to_table",
+      "distance": "40-70cm",
+      "direction": "down_60_90"
+    },
+    "visibility": {
+      "face": false,
+      "hands": [
+        "action_hand"
+      ],
+      "arms": [
+        "one"
+      ],
+      "phone": false,
+      "bodyParts": [
+        "table",
+        "object"
+      ]
+    },
+    "hands": {
+      "actionHands": 1,
+      "poseHands": 0,
+      "cameraHands": 1
+    },
+    "unresolved": [],
+    "note": "桌面承载：没有拿取/书写动作时手不入镜"
+  },
+  "framing": {
+    "band": "object",
+    "aspect": "9:16",
+    "entry": "object_only",
+    "layout": "上半部桌面与物品，下半部桌面延伸",
+    "visibleRange": {
+      "top": "object_top",
+      "bottom": "object_bottom"
+    },
+    "composition": null,
+    "source": "camera_pov",
+    "unresolved": []
+  },
+  "pose": {
+    "pose": {
+      "type": null,
+      "orientation": "facing_camera",
+      "posture": null
+    },
+    "limbs": {
+      "leftArm": null,
+      "rightArm": null,
+      "leftLeg": null,
+      "rightLeg": null
+    },
+    "hands": {
+      "requiredCount": 1,
+      "actionHands": 1,
+      "poseHands": 0,
+      "cameraHands": 1,
+      "left": {
+        "role": null,
+        "action": null
+      },
+      "right": {
+        "role": null,
+        "action": null
+      }
+    },
+    "contacts": [
+      {
+        "source": "hand",
+        "target": "book",
+        "relation": "manipulating"
+      }
+    ],
+    "visibility": {
+      "visibleHands": [
+        "hand"
+      ],
+      "visibleArms": [
+        "one"
+      ],
+      "visibleBodyParts": [],
+      "limited": false
+    },
+    "source": "action_inferred",
+    "unresolved": [
+      "posture",
+      "hand_sides_unknown"
+    ]
+  },
+  "visibility": {
+    "face": false,
+    "hands": [
+      "hand"
+    ],
+    "arms": [
+      "one"
+    ],
+    "phone": false,
+    "bodyParts": [
+      "table",
+      "object"
+    ],
+    "unresolved": [
+      "posture",
+      "hand_sides_unknown"
+    ],
+    "conflicts": [],
+    "source": "merged"
+  },
+  "composition": {
+    "layout": null,
+    "source": null,
+    "unresolved": []
+  },
+  "resolution": {
+    "resolved": true,
+    "core": true,
+    "strict": false,
+    "reasons": {
+      "core": true,
+      "noUnresolved": false,
+      "noConflict": true
+    },
+    "mode": "first_person",
+    "band": "object",
+    "posture": null,
+    "handsRequired": 1,
+    "handsVisible": 1
+  },
+  "unresolved": [
+    {
+      "layer": "intent",
+      "item": "framing"
+    },
+    {
+      "layer": "pose",
+      "item": "posture"
+    },
+    {
+      "layer": "pose",
+      "item": "hand_sides_unknown"
+    }
+  ]
+}

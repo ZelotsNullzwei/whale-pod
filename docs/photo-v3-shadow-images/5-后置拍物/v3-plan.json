@@ -1,0 +1,198 @@
+{
+  "schemaVersion": "3.0.0-shot",
+  "intent": {
+    "schemaVersion": "3.0.0-intent",
+    "subject": "object",
+    "secondarySubjects": [],
+    "intent": {
+      "purpose": "share_object",
+      "source": "inferred"
+    },
+    "activities": [],
+    "framing": {
+      "type": "object",
+      "source": "inferred"
+    },
+    "composition": null,
+    "camera": {
+      "mode": "rear_object",
+      "device": "rear_cam",
+      "position": "rear",
+      "source": "inferred"
+    },
+    "scene": {
+      "location": "indoor",
+      "background": []
+    },
+    "explicitRequirements": [],
+    "constraints": [
+      {
+        "type": "no_person",
+        "source": "camera_mode",
+        "scope": "scene"
+      }
+    ],
+    "diagnostics": {
+      "matchedRules": [
+        "subject:explicit_object"
+      ],
+      "conflicts": [],
+      "unresolved": [],
+      "decisionTrace": [
+        {
+          "field": "camera",
+          "value": "rear_object",
+          "reason": "inferred"
+        },
+        {
+          "field": "subject",
+          "value": "object",
+          "reason": "explicit_object"
+        }
+      ]
+    },
+    "_raw": "把漫画拍给你看",
+    "legacy": {
+      "activity": null,
+      "framingType": "object"
+    },
+    "confidence": null
+  },
+  "camera": {
+    "mode": "rear_object",
+    "source": "inferred",
+    "povSubtype": null,
+    "capture": {
+      "device": "rear_cam",
+      "deviceVisible": false,
+      "holdingDevice": true
+    },
+    "geometry": {
+      "position": "in_front_of_object",
+      "height": "eye_level",
+      "orientation": "toward_object",
+      "distance": "30-70cm",
+      "direction": "forward_down"
+    },
+    "visibility": {
+      "face": false,
+      "hands": [],
+      "arms": [],
+      "phone": false,
+      "bodyParts": [
+        "object"
+      ]
+    },
+    "hands": {
+      "actionHands": 0,
+      "poseHands": 0,
+      "cameraHands": 1
+    },
+    "unresolved": []
+  },
+  "framing": {
+    "band": "object",
+    "aspect": "9:16",
+    "entry": "object_only",
+    "layout": null,
+    "visibleRange": {
+      "top": "object_top",
+      "bottom": "object_bottom"
+    },
+    "composition": null,
+    "source": "intent_framing",
+    "unresolved": []
+  },
+  "pose": {
+    "pose": {
+      "type": null,
+      "orientation": "facing_camera",
+      "posture": null
+    },
+    "limbs": {
+      "leftArm": null,
+      "rightArm": null,
+      "leftLeg": null,
+      "rightLeg": null
+    },
+    "hands": {
+      "requiredCount": 1,
+      "actionHands": 0,
+      "poseHands": 0,
+      "cameraHands": 1,
+      "left": {
+        "role": null,
+        "action": null
+      },
+      "right": {
+        "role": null,
+        "action": null
+      }
+    },
+    "contacts": [],
+    "visibility": {
+      "visibleHands": [
+        "hand"
+      ],
+      "visibleArms": [
+        "one"
+      ],
+      "visibleBodyParts": [],
+      "limited": false
+    },
+    "source": "no_action",
+    "unresolved": [
+      "posture",
+      "hand_sides_unknown"
+    ]
+  },
+  "visibility": {
+    "face": false,
+    "hands": [
+      "hand"
+    ],
+    "arms": [
+      "one"
+    ],
+    "phone": false,
+    "bodyParts": [
+      "object"
+    ],
+    "unresolved": [
+      "posture",
+      "hand_sides_unknown"
+    ],
+    "conflicts": [],
+    "source": "merged"
+  },
+  "composition": {
+    "layout": null,
+    "source": null,
+    "unresolved": []
+  },
+  "resolution": {
+    "resolved": true,
+    "core": true,
+    "strict": false,
+    "reasons": {
+      "core": true,
+      "noUnresolved": false,
+      "noConflict": true
+    },
+    "mode": "rear_object",
+    "band": "object",
+    "posture": null,
+    "handsRequired": 1,
+    "handsVisible": 1
+  },
+  "unresolved": [
+    {
+      "layer": "pose",
+      "item": "posture"
+    },
+    {
+      "layer": "pose",
+      "item": "hand_sides_unknown"
+    }
+  ]
+}
