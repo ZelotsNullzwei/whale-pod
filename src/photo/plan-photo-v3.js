@@ -12,6 +12,26 @@ import { planFraming } from './framing-planner.js'
 import { planPose } from './pose-planner.js'
 import { resolveVisibility } from './visibility-resolver.js'
 
+/**
+ * 计算 core / strict。抽出来是为了可以**逐条件**验证（评审第 3 条）：
+ *   strict 必须同时满足：core && 整链无 unresolved && visibility 无 conflicts。
+ */
+export function computeResolution({ intent = {}, camera = {}, framing = {}, visibility = {}, unresolved = [] } = {}) {
+  const core = Boolean(intent.subject && camera.mode && framing.band)
+  const noUnresolved = (unresolved || []).length === 0 && (visibility.unresolved || []).length === 0
+  const noConflict = (visibility.conflicts || []).length === 0
+  return {
+    resolved: core,
+    core,
+    strict: core && noUnresolved && noConflict,
+    reasons: {
+      core,
+      noUnresolved,
+      noConflict,
+    },
+  }
+}
+
 export function buildShotPlan({ scene = '', slot = 'afternoon', sceneOnly = false, raw = null } = {}) {
   const intent = planIntent({ scene, slot, sceneOnly })
   if (raw) intent._raw = raw
@@ -38,25 +58,9 @@ export function buildShotPlan({ scene = '', slot = 'afternoon', sceneOnly = fals
     framing,
     pose,
     visibility,
-    resolution: {
-      /* core：拍什么/怎么拍/多远 都能定下来（不含姿势细节） */
-      resolved: Boolean(intent.subject && camera.mode && framing.band),
-      core: Boolean(intent.subject && camera.mode && framing.band),
-      /* strict：core + 可见性没有未决项、没有冲突 —— 才叫"全链路解决" */
-      /*
-       * strict（评审第 3 条）：必须检查**整条链**的未决项，不只是 visibility。
-       *   core 说的是"三件事能定"，strict 说的是"全链路没有未决/冲突"。
-       */
-      strict: Boolean(intent.subject && camera.mode && framing.band)
-        && (visibility.unresolved || []).length === 0
-        && (visibility.conflicts || []).length === 0
-        && unresolved.length === 0,
-      mode: camera.mode,
-      band: framing.band,
-      posture: pose.pose.posture,
-      handsRequired: pose.hands.requiredCount,
-      handsVisible: (visibility.hands || []).length,
-    },
+    /* Composition 暂不独立：只占位，不参与决策（评审 2026-11-09） */
+    composition: { layout: null, source: null, unresolved: [] },
+    resolution: computeResolution({ intent, camera, framing, visibility, unresolved }),
     unresolved,
   }
 }
