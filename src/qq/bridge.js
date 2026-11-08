@@ -1795,6 +1795,36 @@ export class QQBridge {
     }
   }
 
+  /**
+   * 把本轮画好的图变成**磁盘文件**（说说要 file:/// 才能发）。
+   * 支持 base64://、file:///、本地绝对路径；http(s) 会下载一次。
+   */
+  async _materializeImage(u) {
+    const v = String(u ?? '').trim()
+    if (!v) return ''
+    try {
+      const dir = path.join(this.cfg?.home ?? '', 'generated')
+      try { fs.mkdirSync(dir, { recursive: true }) } catch { /* 已存在 */ }
+      const out = path.join(dir, `qzone-${Date.now()}.jpg`)
+      if (v.startsWith('base64://')) {
+        fs.writeFileSync(out, Buffer.from(v.slice('base64://'.length), 'base64'))
+        return out
+      }
+      if (v.startsWith('file:///')) {
+        const p = v.slice('file:///'.length)
+        return fs.existsSync(p) ? p : ''
+      }
+      if (/^[A-Za-z]:[\\/]/.test(v)) return fs.existsSync(v) ? v : ''
+      if (/^https?:/i.test(v)) {
+        const r = await fetch(v)
+        if (!r.ok) return ''
+        fs.writeFileSync(out, Buffer.from(await r.arrayBuffer()))
+        return out
+      }
+      return ''
+    } catch { return '' }
+  }
+
   /** 把图文说说真正发出去（确认之后调）。 */
   async _sendQzoneNow(scope, content, file) {
     const say = String(content ?? '').trim()
@@ -1837,10 +1867,11 @@ export class QQBridge {
    * 他说「发吧/行/可以」→ `_sendQzoneNow` 发出去；
    * 他说「换一张/别发」→ 丢掉重来或取消。
    */
-  async _askQzoneConfirm({ scope, content }) {
+  async _askQzoneConfirm({ scope, content, imageUrl = '' }) {
     const say = String(content ?? '').trim()
     if (!say) return
-    const file = await this._makeQzoneImage(scope, say)
+    let file = await this._materializeImage(imageUrl)
+    if (!file) file = await this._makeQzoneImage(scope, say)
     if (!this._qzonePending) this._qzonePending = new Map()
     this._qzonePending.set(String(scope), { content: say, file, at: Date.now() })
     const userId = String(scope).startsWith('private:') ? String(scope).slice('private:'.length) : ''
