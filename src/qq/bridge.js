@@ -1773,7 +1773,22 @@ export class QQBridge {
             const pt = (() => { try { return this.dayPlan?.today?.() ?? {} } catch { return {} } })()
             const dayText = [pt.smallThing, pt.afternoon, pt.morning, pt.noon, pt.evening].filter(Boolean).join('。')
             const dayLine = kw ? (dayText.split(/[。；;]/).map((x) => x.trim()).find((x) => x.includes(kw)) ?? '') : ''
-            const desc = [herDesc, dayLine, say].filter(Boolean).join('；').slice(0, 160)
+            /*
+             * ⚠️ **否定句在生图里等于反效果**（2026-11-08 实测）。
+             *
+             * 她说「不是杯底，是靠近杯口那圈」—— 模型抓走了"杯底"，
+             * 于是倒扣的杯子上，蓝点被画在**朝上的杯底**上（正是她说不是的那面）。
+             *
+             * 两条处理：
+             *   ① 把带「不是/不在」的句子整段去掉（那是纠错句，不是画面描述）
+             *   ② 末尾补一句**正面方位约束**（只说"在哪"，不说"不在哪"）
+             */
+            const posOnly = herWords.map((t) => t.replace(/[^；。]*[不是不在][^；。]*[；。]?/g, ' ').replace(/\s+/g, ' ').trim()).filter(Boolean)
+            const herClean = posOnly.slice(-3).join('；').slice(0, 120)
+            const posHint = kw
+              ? `（方位：${kw}口朝下倒着放，蓝色小点在${kw}口边缘那一圈）`
+              : ''
+            const desc = [herClean, dayLine, say, posHint].filter(Boolean).join('；').slice(0, 200)
             this.log.info?.(`bridge：说说配图来源 — 她说过 ${herWords.length} 句 / 日程 ${dayLine ? 1 : 0} 句`)
             return desc
           } catch { return say.slice(0, 60) }
