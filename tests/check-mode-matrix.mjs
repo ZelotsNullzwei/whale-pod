@@ -52,8 +52,9 @@ ok('所有模式 framing 都是字符串数组', () => {
 })
 
 console.log('\n=== 未实现模式（明确记录，避免误以为已支持） ===')
-ok('half_selfie / rear_object / scene_only / back_view 目前未定义', () => {
-  const notYet = ['half_selfie', 'rear_object', 'scene_only', 'back_view'].filter((k) => MODES[k])
+ok('half_selfie / rear_object / scene_only 目前未定义（back_view 已正式注册）', () => {
+  assert.ok(MODES.back_view, 'back_view 应已注册')
+  const notYet = ['half_selfie', 'rear_object', 'scene_only'].filter((k) => MODES[k])
   assert.deepEqual(notYet, [], '这些还没实现，出现说明有人提前改了 photo-modes：' + notYet.join(','))
 })
 
