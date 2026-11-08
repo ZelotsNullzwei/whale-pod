@@ -1888,7 +1888,7 @@ export class QQBridge {
     let file = await this._materializeImage(imageUrl)
     if (!file) file = await this._makeQzoneImage(scope, say)
     if (!this._qzonePending) this._qzonePending = new Map()
-    this._qzonePending.set(String(scope), { content: say, file, at: Date.now() })
+    this._qzonePending.set(String(scope), { scope: String(scope), content: say, file, at: Date.now() })
     const userId = String(scope).startsWith('private:') ? String(scope).slice('private:'.length) : ''
     if (!userId) return
     const text = file ? '图先给你看看，这张发空间行吗？' : '这段发空间行吗？（图没拍成，先发文字）'
