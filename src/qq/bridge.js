@@ -8048,6 +8048,22 @@ export class QQBridge {
           for (const m of list) {
             const mid = String(m.message_id ?? m.real_id ?? '')
             if (!mid || known.has(mid)) continue
+            /*
+             * ★★ **跳过她自己发的消息**（2026-11-08 修重复）。
+             *
+             * 现场：私聊里同一句回复在记忆中出现两三遍 ——
+             * ```
+             * 13:24:44「（尾巴一下抬起来）可算到了。\n\n趁热吃，别放凉了再动筷子。」  ← 发送时 push 的整段
+             * 13:24:46「（尾巴一下抬起来）可算到了。」                              ← 补历史拉回来的气泡
+             * ```
+             * 原因是她一条回复会被拆成**多个气泡**发送，发送时我们按整段记了一次，
+             * 重连补历史又把每个气泡当成一条新消息拉回来 —— id 不同、文本不同，
+             * 去重拦不住，于是上下文里她自己说的话翻倍。
+             *
+             * 她发的东西**发送时已经进过记忆**了，补历史只需要补别人的。
+             */
+            const senderId = String(m.sender?.user_id ?? m.user_id ?? m.sender ?? '')
+            if (senderId && String(this.selfId ?? '') && senderId === String(this.selfId)) continue
             /* ★ 早于“上次存活时间”的是旧消息，跳过（按真实时间） */
             if (sinceMs && Number(m.ts ?? m.time ?? 0) > 0 && Number(m.ts ?? m.time ?? 0) * 1000 < sinceMs) continue
             if (!touched.includes(sc)) touched.push(sc)
