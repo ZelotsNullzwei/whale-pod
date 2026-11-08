@@ -5600,6 +5600,18 @@ export class QQBridge {
            * ⚠️ 手不做（位置不固定，硬裁会把脸裁进去）；裁不出来就回退原参考图。
            */
           let useRefPath = shot.refImage
+          /*
+           * ★★ **场景图不带参考图**（2026-11-08 用户：「我问她要了，还是有人」）。
+           *
+           * 根因：`refImage` 会走 `/v1/images/edits`，而**参考图就是构图基线** ——
+           * 提示词里写「画面里没有人」也没用，模型照着她的参考图把人画进去。
+           * 所以纯场景（`[场景图:…]`，拍杯子/衣服/桌上的东西）必须**丢掉参考图**，
+           * 变成纯文本生成，画面里才真的没有人。
+           */
+          if (hitScene || shot.framingInfo?.framing === '环境照') {
+            useRefPath = null
+            this.log.info?.('bridge：场景图 → 不带参考图（带了会把她画进去）')
+          }
           try {
             const bp = shot.framingInfo?.bodyPart
             if (bp) {
@@ -6579,7 +6591,8 @@ export class QQBridge {
               apiKeyEnv: cfg2.keyEnv,
               model: cfg2.model,
               size: s2.framingInfo?.feet ? (cfg2.size || '1024x2048') : cfg2.size,
-              refImage: s2.refImage,
+              /* 场景图同样不带参考图（2026-11-08） */
+              refImage: mark.sceneOnly ? null : s2.refImage,
               aspect: cfg2.aspect ?? '9:16',
               resolution: cfg2.resolution ?? '2K',
               log: this.log,
