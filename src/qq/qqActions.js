@@ -322,9 +322,32 @@ export async function runQQMarkers({ items, onebot, msg, mem, cfg = {}, log = {}
       }
       log.info?.(`qq-actions：说说带图 ${imgs.length} 张${wantsTheirPic ? '（含对方明确要求的那张）' : '（只带她自己的）'}`)
       log.info?.(`qq-actions：说说内容「${content.slice(0, 60)}」`)
+      /*
+       * ★ **本地图片路径要转成 `file:///`**（2026-11-08）。
+       *
+       * 她的照片存在 `<home>/generated/*.png`，原来把**裸 Windows 路径**
+       * （`C:/Users/…/x.png`）直接塞进 `images`。协议端对"URL / file:// / base64"
+       * 三种形式有明确约定，裸路径不在其中 —— 大概率被判成无效图。
+       *
+       * 做法：本地绝对路径 → `file:///C:/...`；
+       * 失败了**再用原样重试一次**（万一这版协议端恰好认裸路径）。
+       */
+      const toImgUrl = (p) => {
+        const v = String(p ?? '')
+        if (/^(https?|base64|file):/i.test(v)) return v
+        if (/^[A-Za-z]:[\\/]/.test(v)) return `file:///${v.replace(/\\/g, '/')}`
+        return v
+      }
       const payload = { content: content.slice(0, 300), ugc_right: 1 }
-      if (imgs.length) payload.images = imgs
-      const { ok, r } = await call('send_qzone_msg', payload)
+      const rawImgs = imgs.slice()
+      if (rawImgs.length) payload.images = rawImgs.map(toImgUrl)
+      let { ok, r } = await call('send_qzone_msg', payload)
+      /* 转成 file:/// 之后失败，且确实动过路径 → 原样再试一次 */
+      if (!ok && rawImgs.some((x) => toImgUrl(x) !== String(x))) {
+        log.warn?.('qq-actions：file:/// 形式被拒 → 用原始路径重试一次')
+        const retry = { ...payload, images: rawImgs }
+        ;({ ok, r } = await call('send_qzone_msg', retry))
+      }
       if (ok) {
         notes.push(imgs.length ? '发空间了' : '发空间了（没图）')
         const tid = String(r?.data?.tid ?? r?.tid ?? '')
