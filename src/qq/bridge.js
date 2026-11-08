@@ -1752,11 +1752,26 @@ export class QQBridge {
       const desc = [herClean, dayLine, say, posHint].filter(Boolean).join('；').slice(0, 200)
       this._lastQzoneDesc = desc
 
+      /*
+       * ★★ **说说配图只允许两种**（2026-11-08 用户：「发空间就只留第一人称拍事情或者自拍，按照日程来」）。
+       *
+       * 事故：她发说说时配了一张**纯环境图**（书桌台灯，画面里没有人），
+       * 而他说的事情是我在看纪录片——图文完全对不上，用户看到的是一张无主之景。
+       *
+       * 现在：
+       *   ① 允许「自拍」（画面里有她）
+       *   ② 允许「第一人称拍事情」（她的视角：手里的东西/正在做的事，有手或腿入镜）
+       *   ③ **禁止纯环境图**（没有人、也没有她的手）
+       *   ④ 内容跟**当日日程**一致（dayLine 已拼进 desc）
+       */
+      const descWithRule = [desc,
+        '（这一张必须是自拍或第一人称视角：画面里要有她本人，或者她自己的手/腿正在做事；不要纯环境照，不要空景）',
+      ].filter(Boolean).join('；')
       const shot = planShot({
-        scene: desc,
+        scene: descWithRule,
         slot: currentSlot().id,
         scope,
-        sceneOnly: true,
+        sceneOnly: false,
         mode: 'daily',
         imageCfg: imgCfg,
       })
