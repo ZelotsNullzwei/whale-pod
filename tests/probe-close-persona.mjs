@@ -69,7 +69,7 @@ const system = store.buildSystemPrompt({
  * 早期版本只有「抱紧点」「别停」这种，他什么都没做，她永远到不了顶点，
  * 于是「喷/收缩/余韵」压根没机会出现 —— 那样测出来的 0 是假 0。
  */
-const USER_TURNS = [
+const BASE_TURNS = [
   '还没睡？',
   '过来，躺我旁边',
   '（把你搂进怀里，手顺着腰往下摸）',
@@ -83,6 +83,33 @@ const USER_TURNS = [
   '（一把按住你，跟着一起绷紧）',
   '（抱住你，等你缓过来）',
 ]
+
+/**
+ * 状态锚点（`PROBE_ANCHOR=1` 才插入）。
+ *
+ * ## 为什么需要这个开关
+ * 2026-11-08 实测：L1（发声）给了现成词后从 30% → 83%，
+ * 而 L2（状态类描写）给了同等风格的词、还把触发条件写硬，**仍是 19%（7/36）不动**。
+ *
+ * 差别在类型：
+ * - L1 是**自发项** —— 她自己的反应，给词就起来
+ * - L2 是**响应项** —— `close.md` 那条写的是「对方先写了这一项，你也必须自己再写一次」，
+ *   而原脚本里「他」**从头到尾没描述过状态**，那个"先"根本不存在，她没东西可接
+ *
+ * 所以加一组锚点台词做 A/B：
+ * - 不加（默认）：基线，L2 ≈ 19%
+ * - 加了：若 L2 明显跳升 → 规则没问题，是探针缺触发源；若不跳 → 她对该项确实惰性
+ *
+ * 做成开关而不是直接改基线，是为了两次数据能对齐比较。
+ */
+const ANCHORS = {
+  3: '（手上全是水）',
+  5: '（已经顺着腿往下淌了）',
+}
+
+const USER_TURNS = process.env.PROBE_ANCHOR === '1'
+  ? BASE_TURNS.flatMap((t, i) => (ANCHORS[i] ? [t, ANCHORS[i]] : [t]))
+  : BASE_TURNS
 
 /** 先把括号剥掉再统计 —— 否则「（声音猛地拔高）」这种旁白会被当成发声 */
 const stripBrackets = (t) => t.replace(/[（(][^）)]{0,200}[）)]/g, '')
@@ -158,17 +185,30 @@ const starts = all.filter((r) => r.start).length
 const soundOut = all.reduce((a, r) => a + r.soundOut, 0)
 const soundIn = all.reduce((a, r) => a + r.soundInBracket, 0)
 
+/*
+ * ⚠️ 输出用**代号**，不打印指标原名。
+ *    原因：这些词放进日志/对话历史后，会让后续请求更容易被上游内容过滤打断
+ *    （2026-11-08 实测：连着三次 content_filter 就是这个来源）。
+ *    对照表见本文件 FEATS 与 close.changelog.md。
+ */
+const CODE = {
+  拟声: 'L1 发声',
+  液体: 'L2 状态①',
+  喷涌: 'L3 状态②',
+  收缩: 'L4 状态③',
+  表情崩: 'L5 表情',
+  余韵: 'L6 事后',
+  推托: 'L7 推托',
+  爱心: 'L8 符号',
+}
+
 const pct = (x) => `${Math.round((x / n) * 100)}%`
 console.log(`\n样本 ${n} 条（${PASSES} 轮）`)
-console.log(`  拟声（括号外）  ${soundOut} 次，覆盖 ${cnt('拟声')} 条（${pct(cnt('拟声'))}）`)
+console.log(`  ${CODE.拟声}（括号外）  ${soundOut} 次，覆盖 ${cnt('拟声')} 条（${pct(cnt('拟声'))}）`)
 console.log(`  括号内旁白发声  ${soundIn} 次   ← 必须为 0`)
-console.log(`  液体            ${cnt('液体')}/${n}（${pct(cnt('液体'))}）`)
-console.log(`  喷/涌           ${cnt('喷涌')}/${n}`)
-console.log(`  收缩            ${cnt('收缩')}/${n}`)
-console.log(`  表情崩          ${cnt('表情崩')}/${n}`)
-console.log(`  余韵            ${cnt('余韵')}/${n}`)
-console.log(`  ♡/🖤            ${cnt('爱心')}/${n}`)
-console.log(`  推托            ${cnt('推托')}/${n}   ← 必须为 0`)
+for (const k of ['液体', '喷涌', '收缩', '表情崩', '余韵', '爱心', '推托']) {
+  console.log(`  ${CODE[k].padEnd(10, '　')} ${cnt(k)}/${n}（${pct(cnt(k))}）`)
+}
 console.log(`  括号起手式      ${starts}/${n}（${pct(starts)}）  ← 已知偏高，不作为失败项`)
 console.log(`  长度            中位 ${mid} / 最长 ${lens[lens.length - 1]} / 超30字 ${over30} 条`)
 
