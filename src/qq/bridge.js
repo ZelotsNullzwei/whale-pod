@@ -7715,6 +7715,37 @@ export class QQBridge {
    *
    * @param {string} scope 当前会话（决定取哪一边）
    */
+  /**
+   * 「同一个人」提示（2026-11-08 用户：「她在私聊不认识群聊的我」）。
+   *
+   * 私聊里他的 senderName 是 **QQ 昵称**（Null_zwei.），群里是**群名片**（🍅番茄🍅）；
+   * 记忆按会话隔离 → 她不知道这俩是同一个人。
+   * 其实 people.json 两个名字都记着（nickname + aliases），只是**没告诉她**。
+   * 这里只在私聊补一句对应关系，用 QQ 号当锚。
+   */
+  _aliasHint(msg) {
+    try {
+      if (msg?.kind !== 'private') return ''
+      const p = this.people?.get?.(msg.sender ?? msg.userId)
+      if (!p) return ''
+      const nick = String(p.nickname ?? '').trim()
+      const aliases = (p.aliases ?? []).map((x) => String(x).trim()).filter(Boolean)
+      const others = aliases.filter((a) => a && a !== nick)
+      if (!others.length) return ''
+      /*
+       * ⚠️ **以 QQ 号认人，名字只是叫法**（2026-11-08 用户：「一个号只有一个 QQ 号，
+       *   但是昵称可以有很多，名字为主昵称为辅」）。
+       *   所以这里强调"同一个号"，而不是强调"他叫什么"。
+       */
+      return [
+        '## 同一个人（以 QQ 号认）',
+        `QQ ${p.id} —— 在这个群叫${others.slice(-2).map((a) => `「${a}」`).join('、')}`
+        + (nick ? `，私聊里显示「${nick}」。` : '。'),
+        '**同一个号就是同一个人**：名字只是叫法，别当陌生人，也别问"你是谁"。',
+      ].join('\n')
+    } catch { return '' }
+  }
+
   _crossLongDigest(scope) {
     try {
       const self = String(scope ?? '')
@@ -9110,6 +9141,8 @@ export class QQBridge {
          *   这里把对面会话的**长期摘要**挂进来，人格仍按会话各用各的。
          */
         this._crossLongDigest(msg.scope),
+        /* ★ 同一个人：私聊里也要认得群里的那个名字（2026-11-08） */
+        this._aliasHint(msg),
         /* ★ 我离线过多久（2026-11-07） */
         this._offlineHint(),
         /* ★ 订阅的吧在聊什么（2026-11-07） */
