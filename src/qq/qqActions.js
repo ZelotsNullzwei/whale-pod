@@ -299,9 +299,27 @@ export async function runQQMarkers({ items, onebot, msg, mem, cfg = {}, log = {}
        *      也不能把他的表情包发到她空间
        */
       let imgs = []
-      const own = selfPhoto ?? msg?.selfPhoto
+      /*
+       * ★★ **只带"能公开发"的图**（2026-11-08 用户：「不是要得是能发空间的素材」）。
+       *
+       * 现场：让她发说说时，带的是**床上半身自拍**（吊带+短裤）——
+       * 那是私聊里能发、但**发到空间就变味**的图。空间是公开的，
+       * 好友、同事、家人都看得见。
+       *
+       * 所以 bridge 传进来的是 { url, publishable }：
+       *   publishable = 场景图（只拍东西）或全身/对镜穿搭 —— 这种能公开
+       *   其它（床上、半身、睡衣、局部特写）→ **不带图，宁可只发文字**
+       */
+      const ownRaw = selfPhoto ?? msg?.selfPhoto
+      const ownPublishable = typeof ownRaw === 'object' && ownRaw !== null
+        ? ownRaw.publishable !== false
+        : true
+      const own = ownRaw
+      if (ownRaw && !ownPublishable) {
+        log.info?.('qq-actions：这轮的图不适合公开发（不是场景图/全身穿搭）→ 说说只发文字')
+      }
       if (own) {
-        const u = typeof own === 'string' ? own : String(own?.url ?? own?.file ?? '')
+        const u = ownPublishable ? (typeof own === 'string' ? own : String(own?.url ?? own?.file ?? '')) : ''
         if (u) imgs.push(u)
       }
       if (imgs.length === 0) {

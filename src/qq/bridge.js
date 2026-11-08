@@ -5890,6 +5890,29 @@ export class QQBridge {
               }
             }
             drawnImage = { url: file }
+            /*
+             * ★ **这张能不能发到空间**（2026-11-08 用户：「不是要得是能发空间的素材」）。
+             *
+             * 空间是公开的：好友、同事、家人都看得见。
+             * 能公开的只有两种：
+             *   · 场景图（`[场景图:]`，只拍东西/环境，画面里没有人）
+             *   · 全身/对镜穿搭（人穿好衣服站在那）
+             * 床上半身、睡衣、局部特写 → **不能公开**，说说宁可不带图。
+             */
+            try {
+              const fr = String(shot?.framingInfo?.framing ?? '')
+              /*
+               * 只有两种能公开：
+               *   ① 场景图（只拍东西，画面里没人）
+               *   ② **穿了外出衣服**的全身/对镜穿搭
+               * 家居服（灰吊带+短裤）拍的全身对镜**不算** —— 实测那张仍有私房感，
+               * 用户说的"能发空间的素材"不是这个。
+               */
+              const planNow = (() => { try { return this.dayPlan?.today?.() } catch { return null } })()
+              const outed = Boolean(planNow?.outing)
+                && String(planNow?.outingSlot ?? '') === currentSlot().id
+              msg.__drawnPublishable = Boolean(hitScene) || (outed && /全身|对镜/.test(fr))
+            } catch { /* 判不出来就当不能公开 */ }
             drawGenerated = true
             /* ★ 记下刚拍过（2026-11-07）：5 分钟内别再问"拍什么、怎么拍" */
             this._lastDrewAt = this._lastDrewAt ?? {}
@@ -6361,7 +6384,9 @@ export class QQBridge {
            *   发说说时只能用这个，绝不能把对方的表情包带出去
            *   （2026-11-06 用户实测：「她会把我表情包带出去而不是自己的照片」）。
            */
-          selfPhoto: drawnImage ?? null,
+          selfPhoto: drawnImage
+            ? { url: drawnImage.url, publishable: msg.__drawnPublishable !== false }
+            : null,
           // 改签名必须同时带 nickname（协议端 schema 必填），用当前昵称原样传
           selfName: this.selfName,
         })
