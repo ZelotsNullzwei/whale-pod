@@ -6039,8 +6039,25 @@ ${drewNote}
            *   恢复只需把下面这行改回按 persona 判断。
            */
           const photoMode = 'daily'
+          /*
+           * ★★ **背景跟着今日日程走**（2026-11-08 用户：「背景就根据当前的日程计划而定」）。
+           *
+           * 现场：她说"对镜全身自拍，站在床边"，出图背景却是**零食货架** ——
+           * 因为场景描述里只有动作，没有"她在哪"。
+           * 这里把当天所在环境拼进画面描述（在家 / 出门），模型才有依据。
+           */
+          const envAnchor = (() => {
+            try {
+              const pt = this.dayPlan?.today?.() ?? {}
+              const outed = Boolean(pt.outing) && String(pt.outingKind ?? 'none') !== 'none'
+                && String(pt.outingSlot ?? '') === currentSlot().id
+              return outed
+                ? '所在环境：外面（街上/店里，背景有路人和店面，不要室内卧室）'
+                : '所在环境：家里朝北的小单间（灰床单、书桌对着窗、窗台绿萝、有点杂物的衣柜），不要商场或店铺背景'
+            } catch { return '' }
+          })()
           const shot = planShot({
-            scene: String(hit?.[1] ?? '').trim(),
+            scene: [String(hit?.[1] ?? '').trim(), envAnchor].filter(Boolean).join('；'),
             slot: currentSlot().id,
             outfit: outfitText,
             hair: hairText,
