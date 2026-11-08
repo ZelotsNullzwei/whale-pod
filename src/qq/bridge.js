@@ -1717,6 +1717,154 @@ export class QQBridge {
    * 「洗了三遍才敢用，这会儿还倒扣着没干」→ 拍一个倒扣着滴水的玻璃杯。
    * 这正是"生图和表达是一回事"的落点 —— 先看她要说什么，再按那句话生成画面。
    */
+  /**
+   * **只生成说说配图**，不发出去（2026-11-08 用户：「先和我发照片确认，然后再发」）。
+   * 画面来源规则见 `_postQzoneWithImage` 的注释：优先她自己说过的话。
+   */
+  async _makeQzoneImage(scope, content) {
+    const say = String(content ?? '').trim()
+    if (!say) return ''
+    const imgCfg = this.cfg?.qq?.image ?? {}
+    try {
+      const WORDS = ['杯', '碗', '衣服', '裙', '鞋', '花', '猫', '书', '画', '灯', '桌', '窗', '快递', '水果', '面', '汤']
+      let kw = WORDS.find((w) => say.includes(w)) ?? ''
+      const mem0 = this.memory?.get?.(scope)
+      const recent = mem0?.recent?.(24) ?? []
+      if (!kw) {
+        for (const m of [...recent].reverse()) {
+          const t = String(m?.text ?? '')
+          if (!t) continue
+          const hit = WORDS.find((w) => t.includes(w))
+          if (hit) { kw = hit; break }
+        }
+      }
+      const herWords = recent
+        .filter((x) => x?.isMe && typeof x.text === 'string' && kw && x.text.includes(kw))
+        .map((x) => String(x.text).replace(/[（(][^）)]*[）)]/g, '').replace(/\s+/g, ' ').trim())
+        .filter((t) => t.length >= 6)
+      /* 否定句在生图里等于反效果：整句去掉，另补正面方位句 */
+      const posOnly = herWords.map((t) => t.replace(/[^；。]*[不是不在][^；。]*[；。]?/g, ' ').replace(/\s+/g, ' ').trim()).filter(Boolean)
+      const herClean = posOnly.slice(-3).join('；').slice(0, 120)
+      const posHint = kw ? `（方位：${kw}口朝下倒着放，特征在${kw}口边缘那一圈）` : ''
+      const pt = (() => { try { return this.dayPlan?.today?.() ?? {} } catch { return {} } })()
+      const dayText = [pt.smallThing, pt.afternoon, pt.morning, pt.noon, pt.evening].filter(Boolean).join('。')
+      const dayLine = kw ? (dayText.split(/[。；;]/).map((x) => x.trim()).find((x) => x.includes(kw)) ?? '') : ''
+      const desc = [herClean, dayLine, say, posHint].filter(Boolean).join('；').slice(0, 200)
+      this._lastQzoneDesc = desc
+
+      const shot = planShot({
+        scene: desc,
+        slot: currentSlot().id,
+        scope,
+        sceneOnly: true,
+        mode: 'daily',
+        imageCfg: imgCfg,
+      })
+      const r = await generateImage({
+        prompt: shot.prompt,
+        url: imgCfg.url,
+        provider: imgCfg.provider ?? 'magpie-mcp',
+        baseUrl: imgCfg.baseUrl,
+        apiKeyEnv: imgCfg.keyEnv,
+        model: imgCfg.model,
+        size: imgCfg.size,
+        aspect: imgCfg.aspect ?? '9:16',
+        resolution: imgCfg.resolution ?? '1K',
+        refImage: null,
+        home: this.cfg?.home ?? '',
+        log: this.log,
+      })
+      if (!r?.ok || !r?.url) {
+        this.log.warn?.(`bridge：说说配图生成失败（${String(r?.error ?? '无返回').slice(0, 60)}）`)
+        return ''
+      }
+      const resp = await fetch(r.url)
+      if (!resp.ok) throw new Error(`下载图片 HTTP ${resp.status}`)
+      let buf = Buffer.from(await resp.arrayBuffer())
+      try { buf = await eraseCornerWatermark(buf, this.log) } catch { /* 原图 */ }
+      try { buf = await cropBottom(buf, Number(this.cfg?.qq?.image?.cropBottom ?? 0.1), this.log) } catch { /* 原图 */ }
+      const dir = path.join(this.cfg?.home ?? '', 'generated')
+      try { fs.mkdirSync(dir, { recursive: true }) } catch { /* 已存在 */ }
+      const file = path.join(dir, `qzone-${Date.now()}.jpg`)
+      fs.writeFileSync(file, buf)
+      this.log.info?.(`bridge：说说配图已生成 ${Math.round(buf.length / 1024)}KB → ${path.basename(file)}`)
+      return file
+    } catch (e) {
+      this.log.warn?.(`bridge：说说配图出错 — ${String(e?.message ?? e).slice(0, 80)}`)
+      return ''
+    }
+  }
+
+  /** 把图文说说真正发出去（确认之后调）。 */
+  async _sendQzoneNow(scope, content, file) {
+    const say = String(content ?? '').trim()
+    if (!say) return false
+    try {
+      const mem = this.memory?.get?.(scope)
+      const notes = await runQQMarkers({
+        items: [{ id: 'qzone', arg: say }],
+        onebot: this.onebot,
+        msg: { scope },
+        mem,
+        cfg: this.cfg?.actions ?? {},
+        log: this.log,
+        selfPhoto: file ? { url: file, publishable: true } : null,
+        selfName: this.selfName,
+      })
+      if (!notes?.some((n) => String(n).includes('发空间'))) return false
+      this.log.info?.(`bridge：图文说说已发出（${notes.join('；')}）`)
+      try {
+        mem?.push?.(makeMessage({
+          id: `qzone-${Date.now()}`,
+          sender: String(this.selfId ?? ''),
+          senderName: String(this.selfName ?? ''),
+          isMe: true,
+          at: Date.now(),
+          text: `（刚发了条说说：${say.slice(0, 100)}${file ? '｜带图' : '｜没图'}）`,
+        }))
+      } catch { /* 忽略 */ }
+      return true
+    } catch (e) {
+      this.log.warn?.(`bridge：发说说失败 — ${String(e?.message ?? e).slice(0, 80)}`)
+      return false
+    }
+  }
+
+  /**
+   * **先给他看图确认，再发**（2026-11-08 用户：「叫她发的话应该先和我发照片确认，然后再发」）。
+   *
+   * 流程：生成配图 → 私聊发图 + 一句询问 → 存 pending；
+   * 他说「发吧/行/可以」→ `_sendQzoneNow` 发出去；
+   * 他说「换一张/别发」→ 丢掉重来或取消。
+   */
+  async _askQzoneConfirm({ scope, content }) {
+    const say = String(content ?? '').trim()
+    if (!say) return
+    const file = await this._makeQzoneImage(scope, say)
+    if (!this._qzonePending) this._qzonePending = new Map()
+    this._qzonePending.set(String(scope), { content: say, file, at: Date.now() })
+    const userId = String(scope).startsWith('private:') ? String(scope).slice('private:'.length) : ''
+    if (!userId) return
+    const text = file ? '图先给你看看，这张发空间行吗？' : '这段发空间行吗？（图没拍成，先发文字）'
+    try {
+      await this._send({ scope, kind: 'private', userId, images: [] }, text, file ? { url: file } : null)
+    } catch (e) {
+      this.log.warn?.(`bridge：发确认图失败 — ${String(e?.message ?? e).slice(0, 60)}`)
+    }
+  }
+
+  /**
+   * 他在私聊回的这句，是"确认发"还是"不发了"。
+   * @returns {'yes'|'no'|null}
+   */
+  _qzoneAnswer(text) {
+    const t = String(text ?? '').replace(/\s+/g, '')
+    if (!t || t.length > 12) return null
+    if (/(不发|不行|别发|不要发|别了|换一张|重拍|算了|不好看|删了)/.test(t)) return 'no'
+    if (/(发吧|发出去|可以发|就这个|行|好的|发|嗯|确认)/.test(t)) return 'yes'
+    return null
+  }
+
   async _postQzoneWithImage({ scope, content }) {
     const say = String(content ?? '').trim()
     if (!say) return
@@ -4554,6 +4702,32 @@ ${drewNote}
      */
     const tStart = Date.now()
     /*
+     * ★★ **说说确认闸**（2026-11-08 用户：「先和我发照片确认，然后再发」）。
+     *
+     * 她写了 [说说:…] 之后不会直接发：先把配图发到私聊问一句，等他点头。
+     * 这里处理他的回答（只有私聊、只有 30 分钟内的 pending 才算）。
+     */
+    if (String(msg.scope ?? '').startsWith('private:')) {
+      try {
+        const pq = this._qzonePending?.get?.(String(msg.scope ?? ''))
+        if (pq && Date.now() - pq.at < 30 * 60_000) {
+          const ans = this._qzoneAnswer(msg.text)
+          if (ans === 'yes') {
+            this._qzonePending.delete(String(msg.scope ?? ''))
+            this.log.info?.(`bridge：他确认了 → 发说说「${String(pq.content).slice(0, 20)}」`)
+            void this._sendQzoneNow(pq.scope, pq.content, pq.file).catch(() => {})
+            await this._send({ ...msg }, '发上了。', null)
+            return
+          } else if (ans === 'no') {
+            this._qzonePending.delete(String(msg.scope ?? ''))
+            this.log.info?.('bridge：他说不发 → 丢掉这条说说')
+            await this._send({ ...msg }, '那就不发了。', null)
+            return
+          }
+        }
+      } catch { /* 确认链出错就正常聊 */ }
+    }
+    /*
      * ★ 出现结束性的话 → 这一轮聊完就归档（2026-11-07 用户）。
      *   等 8 秒：让她的回复也进短期记忆，再一起摘进长期档案。
      */
@@ -6927,7 +7101,7 @@ ${drewNote}
         const pq = this._pendingQzone?.get?.(String(msg.scope ?? ''))
         if (pq) {
           this._pendingQzone.delete(String(msg.scope ?? ''))
-          void this._postQzoneWithImage(pq).catch(() => {})
+          void this._askQzoneConfirm(pq).catch(() => {})
         }
       } catch { /* 忽略 */ }
       /*
