@@ -485,6 +485,13 @@ export class PersonaStore {
     try {
       return fs.readdirSync(this.dir)
         .filter((f) => f.endsWith('.md'))
+        /*
+         * ★ 过滤掉**不是人格**的 md（2026-11-08）。
+         *   实测 Web 界面把 close.changelog.md 也当成了一个叫「close.changelog」的人格 —
+         *   那是变更记录，只给人看、不进提示词。
+         *   以后凡是 .changelog.md 或 _ 开头的都不算角色。
+         */
+        .filter((f) => !f.includes('.changelog') && !f.startsWith('_'))
         .map((f) => f.slice(0, -3))
         .sort()
     } catch { return [] }
