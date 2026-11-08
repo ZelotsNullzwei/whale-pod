@@ -65,6 +65,29 @@ function rotateIfNeeded(file, maxBytes, keep) {
   }
 }
 
+/**
+ * **本地时间戳**（2026-11-08 用户：「日志时间和我本地时间不同步」）。
+ *
+ * 原来日志用 `toISOString()` —— 那是 **UTC**，比本地（UTC+8）慢 8 小时，
+ * 用户对着日志看"刚才发生了什么"时永远对不上。
+ *
+ * 现在输出 `2026-11-08T13:50:12.345+08:00`：
+ *   · 前半段就是**本地钟点**，肉眼直接对得上
+ *   · 尾巴带时区偏移，机器解析也不会歧义
+ */
+export function localStamp(t = Date.now()) {
+  const d = new Date(t)
+  const pad = (n, w = 2) => String(n).padStart(w, '0')
+  // getTimezoneOffset() 返回"UTC 减本地"的分钟数（东八区是 -480）
+  const offMin = -d.getTimezoneOffset()
+  const sign = offMin >= 0 ? '+' : '-'
+  const oh = pad(Math.floor(Math.abs(offMin) / 60))
+  const om = pad(Math.abs(offMin) % 60)
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+    + `T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
+    + `.${pad(d.getMilliseconds(), 3)}${sign}${oh}:${om}`
+}
+
 export class Logger {
   /**
    * @param {object} [opts]
@@ -125,12 +148,12 @@ export class Logger {
           if (rotated) {
             // 轮转完写一行说明 —— 否则下一个人会以为"日志怎么突然短了"
             this._stream.write(
-              `${new Date().toISOString()} [info] 日志已轮转：上一份 = ${path.basename(rotated)}`
+              `${localStamp()} [info] 日志已轮转：上一份 = ${path.basename(rotated)}`
               + `（阈值 ${Math.round(this.maxBytes / 1024 / 1024)}MB，保留 ${this.keep} 份）\n`,
             )
           }
         }
-        this._stream.write(`${new Date(entry.t).toISOString()} [${level}] ${entry.msg}\n`)
+        this._stream.write(`${localStamp(entry.t)} [${level}] ${entry.msg}\n`)
       } catch { /* 落盘失败不影响运行 */ }
     }
 
