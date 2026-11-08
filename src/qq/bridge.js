@@ -1663,6 +1663,64 @@ export class QQBridge {
    * 现在：关键词 + 每吧最多 2 条标题，进普通对话的提示词；
    * 但**只在沾边时用**，不许报菜名（否则又变成"复读梗表"那种毛病）。
    */
+  /**
+   * **NGA 话题源**（2026-11-08 用户：「把贴吧换成 NGA」「这样话题更多」）。
+   *
+   * ## 为什么不直接抓
+   * 实测鱼（Node）抓 NGA **一律 403**：裸 UA、加 Referer、加 Accept、加 guest cookie
+   * 四种都试过；真实浏览器却能正常打开。所以直接抓这条路走不通。
+   *
+   * ## 走搜索当代理
+   * `site:ngabbs.com 明日方舟 …` 能搜到**版内真帖子**（标题+链接），
+   * 标题就够当话题引子 —— 她不需要读正文，知道"大家在聊抽不抽新六星"就能接。
+   *
+   * ## 同步返回 + 后台刷新
+   * 这个函数被拼进 extras 的**同步数组**里，不能返回 Promise。
+   * 所以：**有缓存就返回缓存**，过期了在后台刷（不 await），下次自然就是新的。
+   */
+  _ngaDigest() {
+    try {
+      if (this.cfg?.proactive?.nga === false) return ''
+      if (!this.searchKey) return ''
+      const now = Date.now()
+      const c = this._ngaCache
+      if (c && now - c.at < 2 * 3600_000) return c.text
+      // 过期/没有 → 后台刷一次（不阻塞这一轮回复）
+      void this._ngaRefresh().catch(() => {})
+      return c?.text ?? ''
+    } catch { return '' }
+  }
+
+  async _ngaRefresh() {
+    try {
+      if (this._ngaBusy) return
+      this._ngaBusy = true
+      const now = Date.now()
+      const quota = this.searchQuota?.check(this.cfg?.qq?.search?.maxPerDay) ?? { ok: true }
+      if (!quota.ok) return
+      this.searchQuota?.take()
+      const r = await webSearch({
+        question: 'site:ngabbs.com 明日方舟 讨论 新干员 强度',
+        apiKey: this.searchKey,
+        timeoutMs: 20000,
+        log: () => {},
+      })
+      if (!r?.ok) return
+      const titles = (r.sources ?? [])
+        .map((x) => String(x.title ?? '').replace(/\s+/g, ' ').trim())
+        .filter((t) => t.length >= 4)
+        .slice(0, 6)
+      const text = titles.length
+        ? ['## NGA 明日方舟版最近在聊', ...titles.map((t) => `- ${t.slice(0, 40)}`),
+          '（只是让你知道大家在关心什么：挑一个能接的聊，别逐条念、别报来源）'].join('\n')
+        : ''
+      this._ngaCache = { at: now, text }
+      if (text) this.log.info?.(`bridge：NGA 话题已刷新（${titles.length} 条）`)
+    } finally {
+      this._ngaBusy = false
+    }
+  }
+
   _forumDigest() {
     try {
       const names = this.cfg?.proactive?.tiebaForums ?? []
@@ -9223,6 +9281,8 @@ export class QQBridge {
         this._offlineHint(),
         /* ★ 订阅的吧在聊什么（2026-11-07） */
         this._forumDigest(),
+        /* ★ NGA 话题（走搜索，2026-11-08） */
+        this._ngaDigest(),
         /* ★ 刚拍过就别再问怎么拍（2026-11-07） */
         this._recentDrewHint(msg.scope),
         /*
