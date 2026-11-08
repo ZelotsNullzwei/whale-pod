@@ -60,7 +60,14 @@ export function buildShotPlan({ scene = '', slot = 'afternoon', sceneOnly = fals
     visibility,
     /* Composition 暂不独立：只占位，不参与决策（评审 2026-11-09） */
     composition: { layout: null, source: null, unresolved: [] },
-    resolution: computeResolution({ intent, camera, framing, visibility, unresolved }),
+    resolution: {
+      ...computeResolution({ intent, camera, framing, visibility, unresolved }),
+      mode: camera.mode,
+      band: framing.band,
+      posture: pose.pose.posture,
+      handsRequired: pose.hands.requiredCount,
+      handsVisible: (visibility.hands || []).length,
+    },
     unresolved,
   }
 }
