@@ -13126,7 +13126,11 @@ export function classifyDrawIntent(text) {
    *   前两版正则一条都没盖住，于是她每次都写了 [画图:…] 又被跳过。
    *   所以这里按**语义**收：任何快拍/拍一张 + 任何图没来/没图都算要图。
    */
-  const ASK_DONE = /(快拍|拍(?:了|一张|张|吧|啊|过|一拍)|画(?:了|一张)|图(?:呢|没来|还没|没到|不到)|没图|没收到图|收到图|照片(?:呢|没来)|重新拍|再拍|还没来)/
+  /*
+   * ⚠️ 「**重新来 / 再试一次 / 再来**」也算要图（2026-11-08 实测漏网）：
+   *   他说的是「重新来呢」，我只写了「重新拍」→ 不命中 → 她又去问/干脆拒拍。
+   */
+  const ASK_DONE = /(快拍|拍(?:了|一张|张|吧|啊|过|一拍)|画(?:了|一张)|图(?:呢|没来|还没|没到|不到)|没图|没收到图|收到图|照片(?:呢|没来)|重新(?:拍|来)|再拍|再试|再来|还没来)/
   const wantsPic = PIC_REQUEST_PHRASES.some((p) => s.includes(p)) || lookHit || PART_LOOK.test(s) || ASK_DONE.test(s)
   const refused = PIC_REFUSE_PHRASES.some((p) => s.includes(p))
   return { wantsPic, saidNo: refused && !wantsPic }
