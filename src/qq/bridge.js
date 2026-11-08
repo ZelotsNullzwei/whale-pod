@@ -20,7 +20,7 @@
 
 import fs from 'node:fs'
 import { ImageCache } from './imageCache.js'
-import { reviewImage } from './imageReview.js'
+import { reviewImage , reviewMatches } from './imageReview.js'
 import { shrinkForReview } from './imageShrink.js'
 import os from 'node:os'
 import path from 'node:path'
@@ -1790,6 +1790,7 @@ export class QQBridge {
               : ''
             const desc = [herClean, dayLine, say, posHint].filter(Boolean).join('；').slice(0, 200)
             this.log.info?.(`bridge：说说配图来源 — 她说过 ${herWords.length} 句 / 日程 ${dayLine ? 1 : 0} 句`)
+            try { this._lastQzoneDesc = desc } catch { /* 忽略 */ }
             return desc
           } catch { return say.slice(0, 60) }
         })(),
@@ -1822,6 +1823,63 @@ export class QQBridge {
       let buf = Buffer.from(await resp.arrayBuffer())
       try { buf = await eraseCornerWatermark(buf, this.log) } catch { /* 失败用原图 */ }
       try { buf = await cropBottom(buf, Number(this.cfg?.qq?.image?.cropBottom ?? 0.1), this.log) } catch { /* 同上 */ }
+      /*
+       * ★★ **发出去之前，先核对图和她说的是不是一回事**（2026-11-08 用户：
+       *   「她假如要直接发的话，这种细节就没人看，也没人检查」）。
+       *
+       * 现场：她说「蓝点在杯口那圈」，图把蓝点画在杯底 —— 我方是人工回复核三轮才发现。
+       * 她自己发的时候没人核，所以这一步必须自动做。
+       *
+       * 不合格 → 带着"差在哪"重画一次；仍不合格 → **不发这张图**（只发文字），
+       * 宁可少一张图，也不发一张跟她说的话对不上的图。
+       */
+      const expectDesc = String(this._lastQzoneDesc ?? say).slice(0, 160)
+      const gwUrl = this.cfg?.gateway?.url ?? 'http://127.0.0.1:18899/v1'
+      const gwKey = this.cfg?.gateway?.key ?? null
+      const firstCheck = await reviewMatches({ buf, expect: expectDesc, gateway: gwUrl, key: gwKey, log: this.log })
+      if (!firstCheck.match) {
+        this.log.warn?.(`bridge：图文对不上（${firstCheck.why}）→ 重画一次`)
+        try {
+          const shot2 = planShot({
+            // 把"差在哪"写进描述，并强调必须改正
+            scene: `${expectDesc}；注意：${firstCheck.why}（这一张必须改过来）`.slice(0, 220),
+            slot: currentSlot().id,
+            scope,
+            sceneOnly: true,
+            mode: 'daily',
+            imageCfg,
+          })
+          const r2 = await generateImage({
+            prompt: shot2.prompt,
+            url: imageCfg.url,
+            provider: imageCfg.provider ?? 'magpie-mcp',
+            baseUrl: imageCfg.baseUrl,
+            apiKeyEnv: imageCfg.keyEnv,
+            model: imageCfg.model,
+            size: imageCfg.size,
+            aspect: imageCfg.aspect ?? '9:16',
+            resolution: imageCfg.resolution ?? '1K',
+            refImage: null,
+            home: this.cfg?.home ?? '',
+            log: this.log,
+          })
+          if (r2?.ok && r2?.url) {
+            const resp2 = await fetch(r2.url)
+            if (resp2.ok) {
+              let buf2 = Buffer.from(await resp2.arrayBuffer())
+              try { buf2 = await eraseCornerWatermark(buf2, this.log) } catch { /* 原图 */ }
+              try { buf2 = await cropBottom(buf2, Number(this.cfg?.qq?.image?.cropBottom ?? 0.1), this.log) } catch { /* 原图 */ }
+              const secondCheck = await reviewMatches({ buf: buf2, expect: expectDesc, gateway: gwUrl, key: gwKey, log: this.log })
+              if (secondCheck.match) { buf = buf2; this.log.info?.('bridge：重画后对上了') }
+              else {
+                this.log.warn?.(`bridge：重画还是对不上（${secondCheck.why}）→ 只发文字，不带这张图`)
+                return
+              }
+            }
+          }
+        } catch (e2) { this.log.warn?.(`bridge：重画失败 — ${String(e2?.message ?? e2).slice(0, 60)}`); return }
+      }
+
       const dir = path.join(this.cfg?.home ?? '', 'generated')
       try { fs.mkdirSync(dir, { recursive: true }) } catch { /* 已存在 */ }
       file = path.join(dir, `qzone-${Date.now()}.jpg`)
@@ -5710,6 +5768,26 @@ ${drewNote}
                * 现在：`wearingFor(dayKey, slot)` 只返回**当天且还没到睡衣时段**的
                * 临时那套；第二天 / 晚上自动让位给日程表（见 memory/wearing.js）。
                */
+              /*
+               * ★★ **她自己说了穿什么，就以她说的为准**（2026-11-08 用户：「不是有问题，有大问题」）。
+               *
+               * 现场（17:37）：
+               *   她的 request：「对镜自拍，穿着浅灰吊带背心和米色家居短裤…」
+               *   系统 outfitText：外出服「藏青水手服 + 百褶短裙 + 白棉袜」（因为此刻是 afternoon，
+               *   而日程的 outingSlot 也是 afternoon → 触发了外出服）
+               *   → 提示词里两套衣服打架，模型听了强的那个 → 出图是水手服，
+               *     她说自己穿的吊带短裤，图和嘴完全两张皮。
+               *
+               * 优先级修正：**她嘴里说的 > 临时换的 > 标志性那套 > 外出服 > 日程**。
+               * 理由：她说的话是对外的承诺，画面必须跟话一致；日程/外出服只是默认值。
+               */
+              const saidOutfit = (() => {
+                const t = String(msg.text ?? '')
+                const m = /(?:穿着|穿了|今天穿|这身|身上是|换上)([^，。；\n]{3,50})/.exec(t)
+                return m ? m[1].replace(/[（(][^）)]*[）)]/g, '').trim() : ''
+              })()
+              if (saidOutfit) return saidOutfit.slice(0, 120)
+
               const worn = wearingFor(dayKey(), currentSlot().id)
               if (worn) return String(worn.text).replace(/\s+/g, ' ').slice(0, 160)
               /*
@@ -5738,6 +5816,8 @@ ${drewNote}
             } catch { return '' }
           })()
           /** 今天头发怎么弄的（2026-11-05 加）—— 发型是生图里最容易漂的一项。 */
+          /* ★ 记下这一轮的衣服 —— 提示词里的「今天穿的」要用同一份（单一来源） */
+          this._lastOutfit = outfitText
           const hairText = (() => {
             try {
               const v = this.dayPlan?.today?.()?.hair
@@ -9300,7 +9380,7 @@ ${drewNote}
         (() => {
           const plan = this.dayPlan?.today()
           if (!plan) return ''
-          return renderDayPlan(plan, currentSlot().id)
+          return renderDayPlan(plan, currentSlot().id, { outfit: this._lastOutfit })
         })(),
         /*
          * ★ 衣柜（2026-11-06 用户：「衣柜要她自己也能看吧」）：

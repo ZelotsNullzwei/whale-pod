@@ -23,7 +23,7 @@
 
 import fs from 'node:fs'
 import path from 'node:path'
-import { outfitForDay, sleepwearForDay, hairForDay } from './wardrobe.js'
+import { outfitForDay, sleepwearForDay, hairForDay, outingOutfitForDay } from './wardrobe.js'
 /*
  * ★ **今天临时换上的那套**（2026-11-06，用户：「有要换衣服就同步一下，
  *   临时替换？第二天或者到了晚上换睡衣的时候再换」）。
@@ -146,7 +146,7 @@ export function parseDayPlan(text) {
  * @param {string} slotId
  * @returns {string}
  */
-export function renderDayPlan(plan, slotId) {
+export function renderDayPlan(plan, slotId, opts = {}) {
   if (!plan) return ''
   const order = ['morning', 'noon', 'afternoon', 'evening']
   const idx = order.indexOf(slotId)
@@ -172,8 +172,37 @@ export function renderDayPlan(plan, slotId) {
      */
     try { return wearingFor(dayKey(), slotId) } catch { return null }
   })()
-  if (worn?.text) parts.push(`今天穿的（刚换上的）：${worn.text}`)
-  else if (plan.outfit) parts.push(`今天穿的：${plan.outfit}`)
+  /*
+   * ★ **出门时段要显示"外出服"**（2026-11-08 用户：「神了」）。
+   *
+   * 生图那边在 outingSlot 会换成外出服（藏青水手服那套），
+   * 但这里一直显示日程里的家居服 —— 于是她说"浅灰吊带配短裤"，
+   * 画出来却是水手服：**她看到的和实际穿的从来不一致**。两边必须同源。
+   */
+  const outingNowHere = (() => {
+    if (!plan?.outing) return false
+    if (String(plan.outingKind ?? 'none') === 'none') return false
+    return String(plan.outingSlot ?? '') === String(slotId ?? '')
+  })()
+  /*
+   * ★ **衣服只留一个来源**（2026-11-08 用户：「时间和其他的啥有问题吗，还是单纯的没同步而已」）。
+   *
+   * 审查结果：不止出门那一条。**深夜/刚醒时，生图用的是睡衣，而这里仍显示「今天穿的＝家居服」**
+   * —— 同一类"同一个值在两条路径上各自取一次"。
+   *
+   * 现在：生图那边算好的那份（`opts.outfit`）直接传进来当唯一来源；
+   * 没传时才退回原来那套本地推断（出门服 / 日程服 / 刚换上的）。
+   */
+  const outfitFromCaller = String(opts?.outfit ?? '').trim()
+  const outfitLabel = String(opts?.outfitLabel ?? '').trim()
+  if (outfitFromCaller) {
+    parts.push(`今天穿的${outfitLabel ? `（${outfitLabel}）` : ''}：${outfitFromCaller}`)
+  } else if (worn?.text) parts.push(`今天穿的（刚换上的）：${worn.text}`)
+  else if (outingNowHere) {
+    let txt = String(plan.outfit ?? '')
+    try { txt = String(outingOutfitForDay(dayKey()) ?? '') || txt } catch { /* 用日程的 */ }
+    parts.push(`今天穿的（出门这套）：${txt}`)
+  } else if (plan.outfit) parts.push(`今天穿的：${plan.outfit}`)
   if (plan.sleepwear) parts.push(`睡觉穿的：${plan.sleepwear}`)
   if (plan.outing) {
     /* ★ 标出时段（2026-11-08）：不然正文说"下午去便利店"、这行说"去公园"，读起来像同一下午两件事 */
