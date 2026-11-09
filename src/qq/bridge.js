@@ -13232,7 +13232,7 @@ export function classifyDrawIntent(text) {
   const NO_DRAW = /(别拍|不要拍|不拍了|不想拍|不用拍)/
   if (NO_DRAW.test(s)) return { wantsPic: false, saidNo: true }
 
-  const ASK_DONE = /(快拍|拍(?:了|一张|张|吧|啊|过|一拍)|画(?:了|一张)|图(?:呢|没来|还没|没到|不到)|没图|没收到图|收到图|照片(?:呢|没来)|重新(?:拍|来)|再拍|再试|再来|还没来)/
+  const ASK_DONE = /(快拍|拍(?:了|一张|张|吧|啊|过|一拍)|画(?:了|一张)|图(?:呢|没来|还没|没到|不到)|没图|没收到图|收到图|照片(?:呢|没来)|重新(?:拍|来)|再拍|再试|还没来)/
   const wantsPic = PIC_REQUEST_PHRASES.some((p) => s.includes(p)) || lookHit || PART_LOOK.test(s) || ASK_DONE.test(s)
   const refused = PIC_REFUSE_PHRASES.some((p) => s.includes(p))
   return { wantsPic, saidNo: refused && !wantsPic }
