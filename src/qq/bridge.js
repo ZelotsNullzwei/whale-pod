@@ -6370,8 +6370,8 @@ ${drewNote}
             const captureReviewer = (qcReviewer || handContract)
               ? async ({ buf: b }) => {
                   const results = []
-                  if (qcReviewer) results.push(await qcReviewer({ buf: b, gateway: gwQc, key: qcKey, timeoutMs: 30000 }))
-                  if (handContract) results.push(await reviewHands({ buf: b, gateway: gwQc, key: qcKey, maxVisibleHands: handContract.maxVisibleHands, timeoutMs: 30000 }))
+                  if (qcReviewer) results.push(await qcReviewer({ buf: b, gateway: gwQc, key: qcKey, timeoutMs: 45000 }))
+                  if (handContract) results.push(await reviewHands({ buf: b, gateway: gwQc, key: qcKey, maxVisibleHands: handContract.maxVisibleHands, timeoutMs: 45000 }))
                   return combineCaptureResults(results)
                 }
               : null

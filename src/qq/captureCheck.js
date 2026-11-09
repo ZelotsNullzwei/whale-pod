@@ -44,7 +44,7 @@ async function askVisionJSON({ buf, gateway, key, system, userText, timeoutMs = 
     model: 'auto',
     stream: false,
     whale_pod_search: false,
-    max_tokens: 160,
+    max_tokens: 300,
     messages: [
       { role: 'system', content: system },
       {
@@ -62,12 +62,14 @@ async function askVisionJSON({ buf, gateway, key, system, userText, timeoutMs = 
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(timeoutMs),
   })
-  if (!r.ok) return null
+  if (!r.ok) throw new Error('网关 ' + r.status)
   const j = await r.json().catch(() => null)
   const txt = String(j?.choices?.[0]?.message?.content ?? '').trim()
+  if (!txt) throw new Error('网关返回空内容')
   const m = /\{[\s\S]*\}/.exec(txt)
+  if (!m) throw new Error('无 JSON：' + txt.slice(0, 40))
   if (!m) return null
-  try { return JSON.parse(m[0]) } catch { return null }
+  try { return JSON.parse(m[0]) } catch (e) { throw new Error('JSON 解析失败：' + String(m[0]).slice(0, 60)) }
 }
 
 const NO_PHONE_SYSTEM = [
@@ -108,7 +110,7 @@ export async function reviewNoPhone({ buf, gateway, key, timeoutMs = DEFAULT_TIM
   }
   if (!parsed) {
     log.warn?.(`captureCheck/no_phone：两次识别失败${lastErr ? ' — ' + String(lastErr?.message ?? lastErr).slice(0, 50) : ''}`)
-    return mk({ reviewer: 'no_phone', status: 'uncertain', why: '视觉识别失败（两次）', serviceError: true })
+    return mk({ reviewer: 'no_phone', status: 'uncertain', why: '视觉识别失败（三次）', serviceError: true })
   }
 
   const v = parsed.phone_visible
@@ -184,15 +186,16 @@ export async function reviewHands({ buf, gateway, key, maxVisibleHands = 1, time
   let parsed = null
   let lastErr = null
   const sys = HANDS_SYSTEM + '\n本图最多允许 ' + Number(maxVisibleHands) + ' 只手；超过该数量即属于多余手。'
-  for (let attempt = 0; attempt < 2 && !parsed; attempt++) {
+  for (let attempt = 0; attempt < 3 && !parsed; attempt++) {
     try {
       parsed = await ask({ buf, gateway, key, system: sys, userText: '这张图里的手和手臂是什么情况？', timeoutMs })
     } catch (e) {
       lastErr = e
     }
+    if (!parsed && attempt < 2) await new Promise((r) => setTimeout(r, 400))
   }
   if (!parsed) {
-    log.warn?.(`captureCheck/hands：两次识别失败${lastErr ? ' — ' + String(lastErr?.message ?? lastErr).slice(0, 50) : ''}`)
+    log.warn?.(`captureCheck/hands：三次识别失败${lastErr ? ' — ' + String(lastErr?.message ?? lastErr).slice(0, 90) : ''}`)
     return mk({ reviewer: 'hands', status: 'uncertain', why: '视觉识别失败（两次）', serviceError: true })
   }
 

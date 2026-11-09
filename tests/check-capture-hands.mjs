@@ -87,11 +87,11 @@ await ok('对镜自拍：2 手但左右无法判断（same_side=null）→ uncer
 })
 
 console.log('\n=== 服务错误 vs 模型拿不准（fail-closed 依据）===')
-await ok('两次解析都失败 → uncertain 且 serviceError=true', async () => {
+await ok('三次解析都失败 → uncertain 且 serviceError=true', async () => {
   let calls = 0
   const askNull = async () => { calls++; return null }
   const r = await reviewHands({ buf: BUF, maxVisibleHands: 1, ask: askNull })
-  assert.equal(r.status, 'uncertain'); assert.equal(r.serviceError, true); assert.equal(calls, 2, '应重试一次')
+  assert.equal(r.status, 'uncertain'); assert.equal(r.serviceError, true); assert.equal(calls, 3, '应重试两次')
 })
 await ok('第一次失败、第二次成功 → 用第二次结果（重试生效）', async () => {
   let calls = 0
