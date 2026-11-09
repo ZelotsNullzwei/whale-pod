@@ -87,9 +87,24 @@ await (async () => {
 
 await (async () => {
   const { bridge, calls } = makeBridge({ home: tmpHome() })
-  bridge._qzonePending.set('private:1', { at: Date.now() })
+  bridge._qzonePending.set('private:1', { at: DAY_10AM })   // 刚问完（用注入时钟，别用真实 Date.now）
   await bridge._qzoneProactiveTick()
   ok('★ 已有一条在等他确认 → 不再起草', () => assert.equal(calls.confirm.length, 0))
+})()
+
+await (async () => {
+  /*
+   * 死锁回归（2026-11-10 评审指出）：
+   * 超过 30 分钟的待确认项，bridge 那边只跳过不删 → pending 永远非空 →
+   * 调度器永远不起草。这里要求调度器自己清掉过期的，并继续干活。
+   */
+  const { bridge, calls } = makeBridge({ home: tmpHome() })
+  bridge._qzonePending.set('private:1', { at: DAY_10AM - 40 * 60_000, content: '旧的' })
+  await bridge._qzoneProactiveTick()
+  ok('★ 过期待确认（40 分钟前）→ 自动清掉并继续起草', () => {
+    assert.equal(bridge._qzonePending.size, 0, '过期项必须被删除，否则会永远卡住')
+    assert.equal(calls.confirm.length, 1, '清掉之后应该继续起草')
+  })
 })()
 
 console.log('\n=== 2. 正常路径 ===')
@@ -153,6 +168,12 @@ ok('★ 默认每天 1 条、默认开启（但只出草稿）', () => {
 ok('★ 时段只用「已完成」的（不把未来日程当已发生）', () => {
   const src = fs.readFileSync(new URL('../src/qq/qzoneProactive.js', import.meta.url), 'utf8')
   assert.match(src, /order\.slice\(0,\s*cur\)\.reverse\(\)/, '没有按当前时段截断')
+})
+
+ok('★ bridge 侧也会删过期确认项（不只是跳过）', () => {
+  const src = fs.readFileSync(new URL('../src/qq/bridge.js', import.meta.url), 'utf8')
+  assert.match(src, /说说确认已过期/, '没有清理动作')
+  assert.match(src, /QZONE_CONFIRM_TTL_MS/, 'TTL 没和调度器共用常量（会漂移）')
 })
 
 console.log(`\n${'='.repeat(44)}\n通过 ${pass} / 失败 ${fail}`)

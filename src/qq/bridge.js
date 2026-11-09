@@ -39,7 +39,7 @@ import { fetchAlbum, formatAlbumContext, JmHostCache, JmMemoStore } from '../gat
 import { readJmPages, formatAlbumPagesNote } from '../gateway/jm-read.js'
 import FACE_TABLE from './faces.json' with { type: 'json' }
 /* QQ 空间主动草稿调度器（2026-11-10）：独立模块，避免和正在改动的本文件冲突 */
-import { startQzoneProactive } from './qzoneProactive.js'
+import { startQzoneProactive, QZONE_CONFIRM_TTL_MS } from './qzoneProactive.js'
 import { InteractionTracker, BegState, decideBeg } from './beg.js'
 import { ProactiveScheduler, ProactiveState } from './proactive.js'
 import { extractFindImageMarkers, stripFindImageMarkers, resolveFindImage, findImageKey, isDuplicateFindImage } from './imageFindMarkers.js'
@@ -4792,7 +4792,18 @@ ${drewNote}
     if (String(msg.scope ?? '').startsWith('private:')) {
       try {
         const pq = this._qzonePending?.get?.(String(msg.scope ?? ''))
-        if (pq && Date.now() - pq.at < 30 * 60_000) {
+        /*
+         * ⚠️ **过期的要删掉，不是只跳过**（2026-11-10 修，评审指出）。
+         *
+         * 主动说说调度器看到 `_qzonePending` 非空就暂停起草；
+         * 而这条 30 分钟后本来就**不再接受**（下面那句 if），
+         * 只跳过不删 → 没人回的旧预览会把之后的主动草稿**永远卡住**。
+         */
+        if (pq && Date.now() - Number(pq.at ?? 0) > QZONE_CONFIRM_TTL_MS) {
+          this._qzonePending.delete(String(msg.scope ?? ''))
+          this.log.info?.('bridge：说说确认已过期（超过 30 分钟）→ 清掉')
+        }
+        if (pq && Date.now() - pq.at < QZONE_CONFIRM_TTL_MS) {
           const ans = this._qzoneAnswer(msg.text)
           if (ans === 'yes') {
             this._qzonePending.delete(String(msg.scope ?? ''))

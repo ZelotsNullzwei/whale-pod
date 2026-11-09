@@ -43,6 +43,9 @@ const DEFAULTS = {
   draftCooldownMs: 90 * 60_000,
 }
 
+/** 等他确认的最长时间。与 bridge._handle 里那道闸共用同一个常量，避免两边漂移。 */
+export const QZONE_CONFIRM_TTL_MS = 30 * 60_000
+
 const hash = (s) => crypto.createHash('sha256').update(String(s)).digest('hex').slice(0, 16)
 
 const memOf = (bridge, scope) => {
@@ -178,6 +181,26 @@ export function startQzoneProactive(bridge, opts = {}) {
     bridge._qzoneNowWrapped = true
   }
 
+  /**
+   * 清掉过期的待确认项（2026-11-10 修：评审指出的死锁）。
+   *
+   * `bridge._handle` 里超过 30 分钟只是**跳过不处理**、不删除；
+   * 而调度器看到 `_qzonePending` 非空就不起草 ——
+   * 于是**没人回的那条预览会让之后的主动草稿永远停摆**。
+   * 每轮 tick 先清一次，既解开死锁，也顺手把 map 里的僵尸项收掉。
+   */
+  const pruneExpiredPending = () => {
+    const m = bridge._qzonePending
+    if (!m || typeof m.forEach !== 'function') return 0
+    const now = clock()
+    let n = 0
+    for (const [k, v] of [...m.entries()]) {
+      if (!v || now - Number(v.at ?? 0) > QZONE_CONFIRM_TTL_MS) { m.delete(k); n++ }
+    }
+    if (n > 0) bridge.log?.info?.(`qzone-proactive：清掉 ${n} 条过期待确认`)
+    return n
+  }
+
   const tick = async () => {
     const c = cfg()
     if (!c.enabled) return
@@ -192,6 +215,7 @@ export function startQzoneProactive(bridge, opts = {}) {
     if (postsToday() >= Number(c.dailyMax)) return
     if (state.lastPostedAt && clock() - state.lastPostedAt < Number(c.minGapMs)) return
     if (state.lastDraftAt && clock() - state.lastDraftAt < Number(c.draftCooldownMs)) return
+    pruneExpiredPending()          // 先清过期项，别让没人回的旧预览把调度器卡死
     if (bridge._qzonePending?.size > 0) return
     if (typeof bridge._askQzoneConfirm !== 'function') return
 
