@@ -107,5 +107,11 @@ await ok('字段齐全且 capture 被裁剪为摘要', async () => {
   assert.ok(rec.at)
 })
 
+await ok('buildAuditRecord 保留 retry.skipped（复审跳过原因进日志）', async () => {
+  const rec = buildAuditRecord({ retry: { legacy: null, capture: null, skipped: '复审缩图不可用' } })
+  assert.equal(rec.retry.skipped, '复审缩图不可用')
+  assert.equal(rec.retry.capture, null)
+})
+
 console.log(`\npass ${pass} / fail ${fail}`)
 process.exit(fail === 0 ? 0 : 1)

@@ -85,11 +85,20 @@ export function buildAuditRecord({ scope = '', mode = '', original = null, retri
     mode,
     original: original ? { legacy: original.legacy ?? null, capture: brief(original.capture) } : null,
     retried: Boolean(retried),
-    retry: retry ? { legacy: retry.legacy ?? null, capture: brief(retry.capture) } : null,
+    retry: retry ? { legacy: retry.legacy ?? null, capture: brief(retry.capture), skipped: retry.skipped ?? null } : null,
     finalChoice,
     cacheKey,
     ms,
   }
+}
+
+/**
+ * 缩图结果是否**真的可用**。
+ * imageShrink.shrinkForReview 失败时**不抛异常，而是原样返回入参**（同一引用），
+ * 所以不能只看 length>0 —— 必须排除「同一个 Buffer」「没变小」「空/非 Buffer」。
+ */
+function isUsableShrink(out, src) {
+  return Buffer.isBuffer(out) && Buffer.isBuffer(src) && out !== src && out.length > 1024 && out.length < src.length
 }
 
 /**
@@ -109,14 +118,6 @@ export function buildAuditRecord({ scope = '', mode = '', original = null, retri
  * @returns {Promise<{finalBuf:Buffer, retried:boolean, finalChoice:'original'|'retry',
  *           qcFirst:{legacy:any,capture:any}, qcRetry:{legacy:any,capture:any}|null, decision:object|null}>}
  */
-/**
- * 缩图结果是否**真的可用**。
- * imageShrink.shrinkForReview 失败时**不抛异常，而是原样返回入参**（同一引用），
- * 所以不能只看 length>0 —— 必须排除「同一个 Buffer」「没变小」「空/非 Buffer」。
- */
-function isUsableShrink(out, src) {
-  return Buffer.isBuffer(out) && Buffer.isBuffer(src) && out !== src && out.length > 1024 && out.length < src.length
-}
 
 export async function runCaptureReview({
   buf,
