@@ -11343,10 +11343,25 @@ ${drewNote}
     return (Math.floor(Date.now() / 1000) % 2 === 0) ? '嗯……♡' : '哈啊……♡'
   }
 
+  /** 场景内符号兜底：有身体/声音描写却没有 ♡/🖤 → 句末补 ♡（2026-11-09 强制规则） */
+  _ensureSceneSymbol(text, ctx = '') {
+    const t = String(text ?? '')
+    if (!t.trim()) return t
+    const scene = /(床上|被窝|被子|躺着|趴在|枕|抱着|搂着|亲|吻|贴|蹭|调情|睡觉|脱)/.test(String(ctx ?? ''))
+    if (!scene) return t
+    if (/[♡🖤]/.test(t)) return t
+    if (/(呼吸|喘|声音|哑|软|颤|抖|紧|热|腰|腿|湿|敏感|一下)/.test(t)) return t + '♡'
+    return t
+  }
+
   async _send(msg, text, cover = null, target = null) {
     {
       const _rf = this._stripRefusal(text)
       text = _rf.text
+      {
+        const _ctx = String((this._lastBotText?.get(String(msg.scope ?? '')) ?? '') + ' ' + String(msg.text ?? ''))
+        text = this._ensureSceneSymbol(text, _ctx)
+      }
       if (_rf.refused && !String(text ?? '').trim()) {
         const _ctxForPool = String((this._lastBotText?.get(String(msg.scope ?? '')) ?? '') + ' ' + String(text ?? '') + ' ' + String(msg.text ?? ''))
         this.log?.info?.('bridge：上游拒答 → 用爱心兜一句（不透传拒答原文）')
