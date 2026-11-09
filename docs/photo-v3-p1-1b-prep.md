@@ -75,3 +75,19 @@
 - `config.json` / `canon.json` 未改
 - `photo-prompt.js` / `index.js` / `bridge.js` / 各 Planner 未改
 - 未接入生图、未提交 main
+
+## 六、实现与设计稿的差异（第 1~3 步已实施，2026-11-09）
+
+| 设计稿 | 实际实现 | 原因 |
+|---|---|---|
+| `characterVersion` 默认 `A` | 默认**空串**；归一为 A，并置 `version.assumed=true` | 需要区分"显式 A"与"未声明"，否则无法证明确实没走 B |
+| 未提诊断字段 | 增加 `checks:[{name, ok, detail}]` | 便于接入后追查"为什么没用 canon" |
+| `sameOutfitText` 未定阈值 | 共享主体词 ≥3；或 =2 且双方各 ≥3 个主体词 | 防止"白色/蕾丝"这类通用词被判同套 |
+| 只说"检查身体参考图版本" | 入参 `bodyRef` / `bodyRefVersion`，不匹配记 `body_version_mismatch` | 让调用方显式传版本，不猜 |
+| `canon.json` 补 `outfitText` | 取 `SIGNATURE_OUTFITS` 里「女仆装短款」原文（该套本身含尾巴挂件描述，按 P0 规则保留） | 保证 outfitText 与衣柜同源 |
+
+### 实施范围确认
+
+- 已改：`src/photo/reference-manager.js`、`tests/check-reference-manager.mjs`、`canon.json`（运行时配置，**不在仓库**，已备份 `canon.json.bak-before-p1b`）
+- 未改：`photo-prompt.js` / `bridge.js` / `index.js` / `config.json` / 任何 Planner / `main`
+- 未接入生图。
