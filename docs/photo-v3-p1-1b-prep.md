@@ -95,7 +95,7 @@
 
 | 复核问题 | 修正 |
 |---|---|
-| 版本校验被 `NO_PERSON_MODES` 提前返回绕过 | **版本校验全部前置**：角色版本 / canon 版本 / bodyRef 版本 / 双重身份检查都在模式分支之前完成；`first_person` 仍返回 `none`+`identityRef:null`+`humanPartsAllowed:true`，但跨版本 bodyRef 会得到 `conflict:true`、`reason: no_person_with_version_conflict`、`checks` 含 `body_version_mismatch` |
+| 版本校验被 `NO_PERSON_MODES` 提前返回绕过 | **版本校验全部前置**：角色版本 / canon 版本 / bodyRef 版本 / 双重身份**检测**都在模式分支之前完成（`dual_identity_reference` 的**拒绝分支**在 `NO_PERSON_MODES` 返回之后，因为这些模式本来就不使用身份参考图，不存在参考图泄漏；但检测与冲突记录仍会发生）；`first_person` 仍返回 `none`+`identityRef:null`+`humanPartsAllowed:true`，但跨版本 bodyRef 会得到 `conflict:true`、`reason: no_person_with_version_conflict`、`checks` 含 `body_version_mismatch` |
 | `sameOutfitText` 用服装类别词数量当充分条件 | 改为**规范化完整描述**的字符二元组 Dice：完全相同→同套；任一侧 <12 字符→不同套；否则 **Dice ≥ 0.85** 才算同套。类别词相同**不再**构成同套理由 |
 | 非法版本值被静默当作 A | 新增 `parseVersion()`：未声明→`{A, assumed:true}`；显式 A/B→valid；其他→`{value:null, valid:false}` → 产生 `character_version` 冲突，`version.current=null`，不静默降级 |
 | 测试未逐项断言 | 25 项测试，每项都断言 `strategy` / `reason` / `conflict`；版本类同时断言 `checks` 中的具体项（`body_version_mismatch`、`canon_version_mismatch`、`character_version`、`dual_identity_reference`） |

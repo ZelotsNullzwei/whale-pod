@@ -114,17 +114,31 @@ export function resolveReference({
   if (canon && canon.file) {
     const pc = parseVersion(canon.version)
     canonV = pc.value
+    /*
+     * canon 版本诊断三态（评审要求）：
+     *   非法              → canon_version_invalid(ok:false) + 冲突
+     *   合法但当前版本非法 → canon_version_unchecked(ok:false)，**不记成功**
+     *   合法且一致        → canon_version(ok:true)
+     *   合法但不一致      → canon_version_mismatch(ok:false) + 冲突
+     *   未声明            → canon_version_missing(ok:false, 按 A 推定)，不与成功项并存
+     */
     if (!pc.valid) {
       versionConflict = true
       checks.push({ name: 'canon_version_invalid', ok: false, detail: String(canon.version) })
+    } else if (!cur) {
+      checks.push({ name: 'canon_version_unchecked', ok: false, detail: 'character_version_invalid' })
     } else if (pc.assumed) {
-      checks.push({ name: 'canon_version_missing', ok: false, detail: '按 A 处理' })
-    }
-    if (pc.value && cur && pc.value !== cur) {
+      if (cur !== 'A') {
+        versionConflict = true
+        checks.push({ name: 'canon_version_mismatch', ok: false, detail: `canon=未声明(推定A) current=${cur}` })
+      } else {
+        checks.push({ name: 'canon_version_missing', ok: false, detail: '未声明 → 按 A 推定，与当前 A 一致' })
+      }
+    } else if (pc.value !== cur) {
       versionConflict = true
       checks.push({ name: 'canon_version_mismatch', ok: false, detail: `canon=${pc.value} current=${cur}` })
-    } else if (pc.valid) {
-      checks.push({ name: 'canon_version', ok: true, detail: String(pc.value ?? 'A') })
+    } else {
+      checks.push({ name: 'canon_version', ok: true, detail: String(pc.value) })
     }
   }
 

@@ -129,6 +129,28 @@ ok('canon 版本 A、当前 B → conflict 且不用 canon', () => {
   assert.match(r.reason, /version_conflict/)
 })
 
+console.log('\n=== E2. canon 版本诊断三态 ===')
+ok('characterVersion=C + canon.version=A → canon_version_unchecked，且无成功项', () => {
+  const r = resolveReference({ mode: 'front_selfie', characterVersion: 'C', canon: canonA(), faceRef: HEAD, faceRefKind: 'head' })
+  assert.equal(r.conflict, true)
+  assert.ok(has(r, 'canon_version_unchecked'), '应记 canon_version_unchecked')
+  assert.equal(r.checks.find((c) => c.name === 'canon_version'), undefined, '不得同时记成功')
+})
+ok('characterVersion=A + canon 未声明 → 记录按 A 推定，且无矛盾的成功项', () => {
+  const c = canonA({ version: undefined, outfitId: 'maid-short-v3' })
+  const r = resolveReference({ mode: 'front_selfie', characterVersion: 'A', outfitText: MAID, outfitId: 'maid-short-v3', canon: c, faceRef: HEAD, faceRefKind: 'head' })
+  assert.ok(has(r, 'canon_version_missing'), '应记 canon_version_missing')
+  assert.equal(r.checks.find((x) => x.name === 'canon_version'), undefined, '未声明时不得记成功')
+  assert.equal(r.conflict, false, "A 一致，不应冲突")
+  assert.equal(r.strategy, 'canon')
+})
+ok('canon 未声明 + 当前 B → canon_version_mismatch', () => {
+  const c = canonA({ version: undefined, outfitId: 'maid-short-v3' })
+  const r = resolveReference({ mode: 'front_selfie', characterVersion: 'B', outfitText: MAID, outfitId: 'maid-short-v3', canon: c, faceRef: HEAD, faceRefKind: 'head' })
+  assert.equal(r.conflict, true)
+  assert.ok(has(r, 'canon_version_mismatch'))
+})
+
 console.log('\n=== F. 双重身份参考图 ===')
 ok('faceRef 与 bodyRef 同一张 → 强制 fallback，绝不返回该图', () => {
   const same = 'refs/x.png'
