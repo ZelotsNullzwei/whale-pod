@@ -11354,8 +11354,20 @@ ${drewNote}
     return t
   }
 
+  /**
+   * 去上游内部标记（2026-11-10 实锤泄漏）：<ds_safety>…</ds_safety> 以及残留的 Safe。
+   */
+  _stripSystemTags(t) {
+    let x = String(t ?? '')
+    x = x.replace(/<ds_[a-z_]+\b[^>]*>[\s\S]*?<\/ds_[a-z_]+>/gi, '')
+    x = x.replace(/<\/?ds_[a-z_]+\b[^>]*>/gi, '')
+    x = x.replace(/^\s*Safe\s*/i, '').replace(/\s*Safe\s*$/i, '')
+    return x.trim()
+  }
+
   async _send(msg, text, cover = null, target = null) {
     {
+      text = this._stripSystemTags(text)
       const _rf = this._stripRefusal(text)
       text = _rf.text
       {
