@@ -3,7 +3,7 @@
 > 状态：**P1-1b 第 1～3 步已实施并完成审计复核**（`reference-manager.js` 已按本方案改造，测试 30/0）。
 > 模块**仍未接入正式生图入口**；第 4 步（配置 A 版 `faceRef`）、第 5 步（接 `photo-prompt.js`）、第 6 步（真实生图验证）**待单独授权、未执行**。
 
-## 一、必须修正的两处语义（你指出的）
+## 一、两处语义修正（**已实施**；下方保留当时的问题说明）
 
 ### 1. `canon.match` 是正则，不是服装描述 —— 不能拿它比 `outfitText`
 
@@ -11,7 +11,7 @@
 但 `canon.json` 里 `match: "女仆装短款"` 是**正则**，用来在 `canonFor()` 里挑选条目；它不代表"这套衣服长什么样"。
 一旦 `outfitText` 是「浅灰吊带+米色短裤」，拿它跟正则串比，必然判"不同套"，逻辑上只是碰巧正确，遇到相近词就会误判。
 
-**修正方案（待授权实施）**
+**已实施规则**（原为"待授权方案"，第 1~3 步已落地）
 
 ```js
 // canon 条目扩展（canon.json）
@@ -33,7 +33,7 @@
 
 **现状风险**：`strategy:'none'` 可能被上层误读成"这张不能有手/手臂/腿"，与 POV 摄影逻辑冲突。
 
-**修正方案**：输出增加一个独立字段，明确"仅指身份参考图"：
+**已实施**：输出增加独立字段，明确"仅指身份参考图"（原为待定方案）：
 
 ```js
 { strategy: 'none',
@@ -44,7 +44,7 @@
 
 并在文档/注释里写死：**none 只约束"参考图"，不约束画面内容**。
 
-## 二、`faceRefKind: 'head'` 的处理逻辑（确认）
+## 二、`faceRefKind` 处理逻辑（**已实施**）
 
 | 输入 | 行为 |
 |---|---|
@@ -61,14 +61,17 @@
 - body 参考图同理：A 用 `version-a-original-body/body-3view.png`，B 用 `version-b-new-design/body-3view.png`。
 - **B 版不得进入默认链路**：默认调用不传 `characterVersion` 时按 A 处理；B 只能由显式参数进入（如未来做"新版形象"试拍）。
 
-## 四、接线顺序（全部待授权）
+## 四、接线顺序（第 1~3 步 **已完成**；第 4~6 步 **待授权**）
 
-1. `canon.json` 增加 `outfitText`/`outfitId`/`version`（配置，非代码）
-2. 修 `reference-manager.js`：改用 `outfitId/outfitText` 比较；加 `identityRef` / `humanPartsAllowed` / `version` 校验
-3. 单元测试补：正则不得参与比较、版本不匹配即冲突、first_person 的 none 不限制人体局部
-4. 配 `qq.image.faceRef = .../version-a-original-body/face-front.png`，`faceRefKind: 'head'`，`characterVersion: 'A'`
-5. 接 `resolveReference()` 进 `photo-prompt.js` 参考图分支（**需单独授权**）
-6. 实拍 2~3 张验证：日程「浅灰吊带」时不再出女仆装
+**已完成（第 1~3 步）**
+1. ✅ `canon.json` 增加 `outfitText`/`outfitId`/`version`（运行时配置，已备份）
+2. ✅ `reference-manager.js`：`outfitId/outfitText` 比较 + `identityRef`/`humanPartsAllowed`/版本校验
+3. ✅ 单元测试 30 项（正则不参与比较、版本冲突、POV 的 none 不限制人体局部、dual_identity 拒绝等）
+
+**待授权（第 4~6 步）**
+4. ⏳ 配 `qq.image.faceRef = .../version-a-original-body/face-front.png`，`faceRefKind: 'head'`，`characterVersion: 'A'`
+5. ⏳ 接 `resolveReference()` 进 `photo-prompt.js` 参考图分支（**需单独授权**）
+6. ⏳ 实拍 2~3 张验证：日程「浅灰吊带」时不再出女仆装
 
 ## 五、当前边界（第 1~3 步实施后）
 
@@ -81,7 +84,7 @@
 **仍未修改**
 - `photo-prompt.js` / `bridge.js` / `index.js` / `config.json`
 - 任何 Planner（Intent/Camera/Framing/Pose/Visibility）
-- `main` 分支（审计分支 ahead 10 / behind 0，未合并）
+- `main` 分支（审计分支**未合并**；具体 ahead 数随提交变化，勿以本文为准）
 
 **未接入**：正式生图链路；`resolveReference()` 尚未被任何生产代码调用。
 
