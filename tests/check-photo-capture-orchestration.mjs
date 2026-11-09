@@ -141,7 +141,7 @@ await ok('第一人称 → first_person 且不启用专项 reviewer', async () =
 console.log('\n=== 编排：审核缩图共用（缩放回归） ===')
 await ok('旧审核与 Capture 收到同一份缩图（引用相同，且不是原图）', async () => {
   const orig = B(8192)
-  const small = B(640)
+  const small = B(2048)
   let shrinkCalls = 0
   const seen = []
   const r = await runCaptureReview({
@@ -160,8 +160,8 @@ await ok('旧审核与 Capture 收到同一份缩图（引用相同，且不是�
 })
 await ok('重拍复审同样使用缩图（缩图被调用两次）', async () => {
   const retryBuf = B(8192)
-  const small1 = B(640)
-  const small2 = B(641)
+  const small1 = B(2048)
+  const small2 = B(3072)
   const seq = [small1, small2]
   let i = 0
   const seen = []
@@ -192,6 +192,57 @@ await ok('缩图失败 → 放行、不重拍、保留原图', async () => {
   assert.equal(r.qcFirst.legacy.ok, true)
   assert.match(r.qcFirst.legacy.why, /缩图失败放行/)
   assert.equal(r.finalBuf, orig)
+})
+
+console.log('\n=== 编排：缩图“返回原图”失败形态（生产真实情况） ===')
+await ok('shrink 返回原 Buffer（同一引用）→ 放行、不调审核器、不重拍', async () => {
+  const orig = B(8192)
+  let leg = 0, cap = 0, retry = 0
+  const r = await runCaptureReview({ buf: orig, shrink: async (b) => b,
+    legacyCheck: async () => { leg++; return { ok: false, why: 'x' } },
+    captureReviewer: async () => { cap++; return { status: 'violation' } },
+    retry: async () => { retry++; return B(4096) },
+  })
+  assert.equal(leg, 0, "不应调用旧审核")
+  assert.equal(cap, 0, "不应调用 Capture")
+  assert.equal(retry, 0, "不应重拍")
+  assert.match(r.qcFirst.legacy.why, /缩图失败放行/)
+  assert.equal(r.finalBuf, orig)
+})
+await ok('shrink 返回空 Buffer → 放行、不调审核器', async () => {
+  let leg = 0
+  const r = await runCaptureReview({ buf: B(8192), shrink: async () => Buffer.alloc(0), legacyCheck: async () => { leg++; return { ok: false } }, retry: async () => B(4096) })
+  assert.equal(leg, 0)
+  assert.match(r.qcFirst.legacy.why, /缩图失败放行/)
+})
+await ok('shrink 返回非 Buffer（undefined）→ 放行', async () => {
+  let leg = 0
+  const r = await runCaptureReview({ buf: B(8192), shrink: async () => undefined, legacyCheck: async () => { leg++; return { ok: false } } })
+  assert.equal(leg, 0)
+  assert.match(r.qcFirst.legacy.why, /缩图失败放行/)
+})
+await ok('shrink 返回更大的 Buffer（未变小）→ 视为不可用', async () => {
+  let leg = 0
+  const r = await runCaptureReview({ buf: B(2048), shrink: async () => B(4096), legacyCheck: async () => { leg++; return { ok: false } } })
+  assert.equal(leg, 0)
+  assert.match(r.qcFirst.legacy.why, /缩图失败放行/)
+})
+await ok('重拍缩图返回原图 → 不把全分辨率交给审核器，仍用重拍图、不二次重拍', async () => {
+  const retryBuf = B(8192)
+  let i = 0
+  let capCalls = 0
+  const r = await runCaptureReview({
+    buf: B(8192),
+    shrink: async (b) => { i++; return i === 1 ? B(2048) : b }, /* 第二次（重拍复审）返回原图 */
+    legacyCheck: async () => ({ ok: true, why: '' }),
+    captureReviewer: async () => { capCalls++; return { status: i === 1 ? 'violation' : 'pass', ok: null, violation: 'phone_visible' } },
+    retry: async () => retryBuf,
+  })
+  assert.equal(capCalls, 1, "复审不应调用 Capture")
+  assert.equal(r.retried, true)
+  assert.equal(r.finalChoice, "retry")
+  assert.equal(r.finalBuf, retryBuf)
+  assert.equal(r.qcRetry.skipped, '复审缩图不可用')
 })
 
 console.log(`\npass ${pass} / fail ${fail}`)

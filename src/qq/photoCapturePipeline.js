@@ -109,6 +109,15 @@ export function buildAuditRecord({ scope = '', mode = '', original = null, retri
  * @returns {Promise<{finalBuf:Buffer, retried:boolean, finalChoice:'original'|'retry',
  *           qcFirst:{legacy:any,capture:any}, qcRetry:{legacy:any,capture:any}|null, decision:object|null}>}
  */
+/**
+ * 缩图结果是否**真的可用**。
+ * imageShrink.shrinkForReview 失败时**不抛异常，而是原样返回入参**（同一引用），
+ * 所以不能只看 length>0 —— 必须排除「同一个 Buffer」「没变小」「空/非 Buffer」。
+ */
+function isUsableShrink(out, src) {
+  return Buffer.isBuffer(out) && Buffer.isBuffer(src) && out !== src && out.length > 1024 && out.length < src.length
+}
+
 export async function runCaptureReview({
   buf,
   mode = '',
@@ -132,13 +141,19 @@ export async function runCaptureReview({
   /* ① 统一缩图（旧审核与 Capture Check 共用同一份）——缩图失败按"审核异常放行" */
   let reviewBuf = buf
   if (typeof shrink === 'function') {
+    let small = null
     try {
-      const small = await shrink(buf)
-      if (small && small.length > 0) reviewBuf = small
+      small = await shrink(buf)
     } catch (e) {
-      log.warn?.(`capture-review：审核缩图失败，按放行处理 — ${String(e?.message ?? e).slice(0, 60)}`)
+      log.warn?.(`capture-review：审核缩图抛异常，按放行处理 — ${String(e?.message ?? e).slice(0, 60)}`)
       return { finalBuf, retried, finalChoice, qcFirst: { legacy: { ok: true, why: '缩图失败放行' }, capture: null }, qcRetry, decision: null }
     }
+    if (!isUsableShrink(small, buf)) {
+      /* 生产环境真实的失败形态：shrinkForReview 返回原图同一引用 */
+      log.warn?.('capture-review：缩图结果不可用（返回原图/为空/未变小）→ 按放行处理')
+      return { finalBuf, retried, finalChoice, qcFirst: { legacy: { ok: true, why: '缩图失败放行' }, capture: null }, qcRetry, decision: null }
+    }
+    reviewBuf = small
   }
 
   /* ② 旧审核：独立捕获 */
@@ -178,13 +193,16 @@ export async function runCaptureReview({
     if (buf2 && buf2.length > 1024) {
       let rImg = buf2
       if (typeof shrink === 'function') {
-        try { const s2 = await shrink(buf2); if (s2 && s2.length > 0) rImg = s2 } catch { /* 复审缩图失败：只记录，不影响发送 */ }
+        let s2 = null
+        try { s2 = await shrink(buf2) } catch { /* 复审缩图异常：下面统一按不可用处理 */ }
+        rImg = isUsableShrink(s2, buf2) ? s2 : null
       }
-      const r = { legacy: null, capture: null }
-      if (typeof legacyCheck === 'function') {
+      /* 复审缩图不可用：不把全分辨率重拍图交给审核器（只记录，不阻断、不二次重拍） */
+      const r = rImg ? { legacy: null, capture: null } : { legacy: null, capture: null, skipped: '复审缩图不可用' }
+      if (rImg && typeof legacyCheck === 'function') {
         try { r.legacy = await legacyCheck(rImg) } catch { r.legacy = null }
       }
-      if (typeof captureReviewer === 'function') {
+      if (rImg && typeof captureReviewer === 'function') {
         try { r.capture = await captureReviewer({ buf: rImg }) } catch {
           r.capture = { status: 'uncertain', ok: null, reviewer: 'unknown', violation: null, why: '审核异常', confidence: null }
         }
