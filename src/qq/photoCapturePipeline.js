@@ -78,10 +78,10 @@ export function decideRetry({ legacyViolation = false, legacyWhy = '', capture =
  * 发送门禁：只拦"结构性致命错误 / 审核不可用"，**不**把普通旧审核失败当严重。
  *   · fatal：extra_hands / limb_count / hand_mismatch / hand_anatomy（手部专项）
  *   · 任何 reviewSkipped（审核不可用）→ 阻断（fail closed，需 requireReview）
- *   · phone_visible / body_subject 属于既有"重拍后放行"策略，不在此阻断
+ *   · body_subject / phone_visible 由各自 mode reviewer 的 severity 决定
  */
 export function shouldBlockSend({ legacy = null, capture = null, retryCapture = null, reviewSkipped = false } = {}) {
-  const FATAL = new Set(['extra_hands', 'limb_count', 'hand_mismatch', 'hand_anatomy'])
+  const FATAL = new Set(['extra_hands', 'limb_count', 'hand_mismatch', 'hand_anatomy', 'body_subject'])
   if (reviewSkipped) return { block: true, reason: '审核不可用' }
   /* 有重拍图时以重拍图为准（重拍修好了就不该被初审拖住）；否则看初审 */
   const finalC = retryCapture ?? capture

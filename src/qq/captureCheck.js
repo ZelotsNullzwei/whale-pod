@@ -136,7 +136,7 @@ export async function reviewNoBodySubject({ buf, gateway, key, timeoutMs = DEFAU
   const v = parsed.body_subject
   const why = String(parsed.why ?? '').slice(0, 60)
   const conf = typeof parsed.confidence === 'number' ? parsed.confidence : null
-  if (v === true) return mk({ reviewer: 'no_body_subject', status: 'violation', violation: 'body_subject', why: why || '画面里出现拍摄者身体', confidence: conf })
+  if (v === true) return mk({ reviewer: 'no_body_subject', status: 'violation', violation: 'body_subject', severity: 'fatal', why: why || '画面里出现拍摄者身体', confidence: conf })
   if (v === false) return mk({ reviewer: 'no_body_subject', status: 'pass', why: why || '只出现手/前臂或无人', confidence: conf })
   return mk({ reviewer: 'no_body_subject', status: 'uncertain', why: why || '无法区分手臂与躯干', confidence: conf })
 }

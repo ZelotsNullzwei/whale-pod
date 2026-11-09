@@ -18,8 +18,13 @@ ok('复审致命违规 → block', () => {
 ok('legacy 不合格不算严重（不再一律阻断）', () => {
   assert.equal(shouldBlockSend({ legacy: { ok: false, why: '多手' } }).block, false)
 })
-ok('phone_visible / body_subject 保持原放行策略（不在此阻断）', () => {
-  assert.equal(shouldBlockSend({ capture: { status: 'violation', violation: 'body_subject' } }).block, false)
+ok('rear_selfie body_subject fatal → 阻断', () => {
+  const r = shouldBlockSend({ capture: { status: 'violation', violation: 'body_subject', severity: 'fatal' } })
+  assert.equal(r.block, true)
+  assert.match(r.reason, /body_subject/)
+})
+ok('phone_visible 仍按原策略不在结构门禁阻断', () => {
+  assert.equal(shouldBlockSend({ capture: { status: 'violation', violation: 'phone_visible' } }).block, false)
 })
 ok('审核不可用（reviewSkipped）→ block', () => {
   assert.equal(shouldBlockSend({ reviewSkipped: true }).block, true)
@@ -52,6 +57,21 @@ await ok('初审 fatal + 复审仍 fatal → block，缓存/发送均不发生',
   const { sel, store } = await pipeline({ capture: async () => ({ status: 'violation', violation: 'hand_anatomy', severity: 'fatal', why: '结构异常' }) })
   assert.equal(sel.block, true)
   assert.match(String(sel.reason), /hand_anatomy/)
+  assert.deepEqual(store, { cache: 0, send: 0 })
+})
+await ok('rear_selfie body_subject 初审违规、复审通过 → 放行复审图', async () => {
+  let n = 0
+  const { sel, store } = await pipeline({ capture: async () => n++ === 0
+    ? { status: 'violation', violation: 'body_subject', severity: 'fatal', why: '出现肩膀' }
+    : { status: 'pass', why: '只见手和物品' } })
+  assert.equal(sel.block, false)
+  assert.equal(sel.finalChoice, 'retry')
+  assert.deepEqual(store, { cache: 1, send: 1 })
+})
+await ok('rear_selfie body_subject 复审仍违规 → 阻断缓存与发送', async () => {
+  const { sel, store } = await pipeline({ capture: async () => ({ status: 'violation', violation: 'body_subject', severity: 'fatal', why: '出现躯干' }) })
+  assert.equal(sel.block, true)
+  assert.match(sel.reason, /body_subject/)
   assert.deepEqual(store, { cache: 0, send: 0 })
 })
 await ok('初审 fatal + 重拍失败 → block（无更优图）', async () => {
