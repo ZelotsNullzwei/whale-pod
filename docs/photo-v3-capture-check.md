@@ -1,5 +1,11 @@
 # Capture Check 离线验证报告（P1-a / P1-c）
 
+## 版本说明（先读这段）
+
+- **最终结论以第八节为准**：单测 **18/0**；真实入口 `tests/check-capture-check-real.mjs`（缺必测图 → `INCOMPLETE` 退出码 2，不报通过）。
+- 第三、四节是**第一版历史记录**（当时 14 项单测、尚无仓库内真实入口），保留用于审计追溯，**不代表当前状态**。
+- 第七、八节记录复核补强与最终收尾。
+
 日期：2026-11-09
 范围：新增 `src/qq/captureCheck.js` + `tests/check-capture-check.mjs` + 本报告。
 **未修改** `bridge.js`、`photo-validator`、`photo-modes.js`、`photo-prompt.js`、`photo-planner.js`、图片缓存、群消息、重拍流程、日程/continuity/参考图/canon；**未触发任何真实重拍**；未合并 main。
@@ -29,11 +35,11 @@
 - 底层不给置信度 → `confidence:null`（不编造）
 - `pickReviewer(mode)`：`front_selfie→no_phone`、`rear_selfie→no_body_subject`、**`first_person`/`mirror_selfie` → null（不检查）**
 
-## 三、单元测试（14 / 0，mock 底层）
+## 三、单元测试（**历史记录：第一版 14 项**；最终 18 项见第七/八节）
 
 覆盖：pass / violation / uncertain；空图；调用抛异常→uncertain；解析失败→uncertain；只有手/前臂→pass；漫画人物→pass；躯干腿脚→violation；手臂躯干分不清→uncertain；两 reviewer 不互相污染；`pickReviewer` 选择；置信度缺失为 null；ok 与 status 严格对应。
 
-## 四、8 张真实图片离线验证（真实调用视觉模型）
+## 四、8 张真实图片离线验证（**首次运行记录**；可重复入口见第七/八节）
 
 参与审核 5 张（`mirror-1/2` 与 `rear-3`(实际 `first_person`) 按规则**不调用 reviewer**）。
 
@@ -98,3 +104,20 @@
 1. 真实图片依赖本机实验目录，**不入仓库**（私人角色素材）；干净环境跑 `check-capture-check-real` 会 SKIPPED —— 这是设计，不是通过。
 2. “极小手机边缘”仍是判定边界（历史记录见第五节）。
 3. 未接入生图流程；接线时的重拍策略建议见交接（violation→重拍 1 次；pass→发送；uncertain→放行不重拍；重拍后必须更新缓存并记录）。
+## 八、最终收尾（测试脚本边界，2026-11-09）
+
+| 复核意见 | 处理 |
+|---|---|
+| 缺单张必测图时脚本仍可能 `exit 0` | `check-capture-check-real.mjs` 改为三档退出码：**0=完整通过、1=有判定不一致、2=INCOMPLETE（缺必测图/缺 key/缺目录）**。任一必测图片缺失 → 打印 `INCOMPLETE` 并 `exit 2`，**绝不报 PASS** |
+| `rear-3` 跳过条件写死 | 改为**按实际 `decision.json.mode` 判断**：`first_person` 才跳过；若变成 `rear_selfie` 则必须执行 reviewer（真正验证 mode 隔离，而不是固定名单） |
+| 文档前后数据不一致 | 顶部加「版本说明」，第三/四节标注为第一版历史记录，最终以第七/八节为准 |
+
+### 最终状态
+
+- 单测：**18 / 0**
+- 真实入口：`PASS`（参与 5，一致 5，误报 0/5，漏报 0/5，uncertain 0/5，跳过 3）
+- 缺图场景：`INCOMPLETE` + 退出码 **2**（已验证，不会伪装成通过）
+- **三次多数表决**：真实入口对每张跑 3 次取多数（每次结果都打印并记录，不隐藏抖动）。实测 `front-2` 出现 `pass/pass/violation` —— 说明单次判定会偶发把手臂边缘看成手机，多数表决后稳定为 `pass`。
+- **缺图场景已验证**：`CAPTURE_CHECK_IMAGES` 指向不存在目录 → 打印 `INCOMPLETE` 且退出码 **2**，不会伪装成通过。
+- **`rear-3` 改为按实际 mode 判断**：`first_person` 才跳过；若变成 `rear_selfie` 则必须执行 reviewer。
+- 未改：`captureCheck.js`、`bridge.js`、任何生产链路
