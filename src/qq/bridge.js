@@ -6412,6 +6412,7 @@ ${drewNote}
                 legacyCheck,
                 captureReviewer,
                 requireReview,
+                failClosed: this.cfg.actions?.handGateFailClosed === true,
                 retry: retryOnce,
                 log: this.log,
               })
@@ -6440,6 +6441,7 @@ ${drewNote}
               })))
             } catch { /* 记录失败不影响发送 */ }
 
+            if (qcSel.degraded) this.log.warn?.('bridge：审核不可用 → 降级放行（图片照发，已记录）')
             if (qcSel.block) {
               this.log.warn?.(`bridge：图片门禁阻断（${qcSel.reason || '未知'}）→ 不写缓存、不发送这张`)
               drawSkipReason = `审核阻断：${String(qcSel.reason ?? '').slice(0, 40)}`

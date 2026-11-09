@@ -61,7 +61,8 @@ export function handRuleLine(contract) {
 export function handDutyLine(contract, pose) {
   if (!contract || !pose || !pose.hands) return ''
   const h = pose.hands
-  const req = Number(h.requiredCount ?? 0)
+  const reqRaw = Number(h.requiredCount ?? 0)
+  const req = Number.isFinite(Number(h.actionHands)) ? Number(h.actionHands) + (contract.holderHand === 'visible' ? Math.min(Number(h.cameraHands ?? 0), 1) : 0) : reqRaw
   const camRaw = Number(h.cameraHands ?? 0)
   const action = Number.isFinite(Number(h.actionHands)) ? Number(h.actionHands) : Math.max(0, req - camRaw)
   const camVisible = contract.holderHand === 'visible' ? camRaw : 0

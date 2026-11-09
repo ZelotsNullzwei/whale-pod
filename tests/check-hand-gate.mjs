@@ -34,7 +34,7 @@ console.log('\n=== runCaptureReview.block + 缓存/发送不发生 ===')
 async function pipeline(opts) {
   const store = { cache: 0, send: 0 }
   const sel = await runCaptureReview({
-    buf: B(8192), mode: 'rear_selfie', requireReview: true,
+    buf: B(8192), mode: 'rear_selfie', requireReview: true, failClosed: opts.failClosed === true,
     shrink: async () => B(4096),
     legacyCheck: opts.legacy ?? (async () => ({ ok: true, why: '' })),
     captureReviewer: opts.capture,
@@ -86,12 +86,18 @@ await ok('普通 uncertain（信息不足、非服务错误）→ 不阻断，�
   assert.equal(sel.block, false); assert.deepEqual(store, { cache: 1, send: 1 })
 })
 await ok('审核服务异常（requireReview）→ fail closed，block', async () => {
-  const { sel, store } = await pipeline({ capture: async () => ({ status: 'uncertain', why: '视觉服务异常', serviceError: true }) })
+  const { sel, store } = await pipeline({ capture: async () => ({ status: 'uncertain', why: '视觉服务异常', serviceError: true }), failClosed: true })
   assert.equal(sel.block, true); assert.deepEqual(store, { cache: 0, send: 0 })
 })
 await ok('无审核器 + requireReview → reviewSkipped 阻断', async () => {
-  const { sel, store } = await pipeline({ capture: null })
+  const { sel, store } = await pipeline({ capture: null, failClosed: true })
   assert.equal(sel.block, true); assert.deepEqual(store, { cache: 0, send: 0 })
+})
+await ok('审核服务异常 + 默认（failClosed=false）→ 降级放行：照发、记录 degraded', async () => {
+  const { sel, store } = await pipeline({ capture: async () => ({ status: 'uncertain', why: '视觉识别失败（两次）', serviceError: true }) })
+  assert.equal(sel.block, false)
+  assert.equal(sel.degraded, true)
+  assert.deepEqual(store, { cache: 1, send: 1 })
 })
 await ok('requireReview=false（手部门禁关闭）→ fatal 也不阻断', async () => {
   const sel = await runCaptureReview({

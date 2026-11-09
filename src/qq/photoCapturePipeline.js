@@ -145,6 +145,7 @@ export async function runCaptureReview({
   captureReviewer = null, // async ({ buf: reviewBuf }) => captureResult
   retry = null,           // async () => Buffer|null（已生成并处理好的重拍图，全分辨率）
   requireReview = false,
+  failClosed = false,   // 审核服务不可用时是否阻断（默认 false=降级放行，避免静默丢图）
   log = {},
 } = {}) {
   const qcFirst = { legacy: null, capture: null }
@@ -154,7 +155,7 @@ export async function runCaptureReview({
   let finalBuf = buf
 
   if (!reviewEnabled || !buf) {
-    return { finalBuf, retried, finalChoice, qcFirst, qcRetry, decision: null, block: Boolean(requireReview) }
+    return { finalBuf, retried, finalChoice, qcFirst, qcRetry, decision: null, block: Boolean(requireReview) && failClosed, degraded: Boolean(requireReview) && !failClosed }
   }
 
   /* ① 统一缩图（旧审核与 Capture Check 共用同一份）——缩图失败按"审核异常放行" */
@@ -239,6 +240,8 @@ export async function runCaptureReview({
     (!captureReviewer)
     || (finalCapture && finalCapture.status === 'uncertain' && finalCapture.serviceError === true)
   )
-  const gate = shouldBlockSend({ legacy: qcRetry?.legacy?.ok === false ? qcRetry.legacy : qcFirst.legacy, capture: qcFirst.capture, retryCapture: qcRetry?.capture, reviewSkipped: reviewUnavailable })
-  return { finalBuf, retried, finalChoice, qcFirst, qcRetry, decision, ...gate, block: Boolean(requireReview) && gate.block }
+  const gate = shouldBlockSend({ legacy: qcRetry?.legacy?.ok === false ? qcRetry.legacy : qcFirst.legacy, capture: qcFirst.capture, retryCapture: qcRetry?.capture, reviewSkipped: Boolean(reviewUnavailable && failClosed) })
+  const degraded = Boolean(reviewUnavailable && !failClosed)
+  if (degraded) log.warn?.('capture-review：审核不可用 → 降级放行（不阻断，仅记录）')
+  return { finalBuf, retried, finalChoice, qcFirst, qcRetry, decision, ...gate, block: Boolean(requireReview) && gate.block, degraded }
 }
