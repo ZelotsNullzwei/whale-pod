@@ -5798,6 +5798,21 @@ ${drewNote}
          *   像完全没拍过。5 分钟内不再问。
          */
         const lastDrewAt = this._lastDrewAt?.[askKey] ?? 0
+        /* ★ 私密/调情语境不主动拍照（2026-11-09 用户：调情时触发拍照，撞上游限制） */
+        const _intimateCtx = (() => {
+          try {
+            const last = this._lastBotText?.get(String(msg.scope ?? '')) ?? ''
+            return /(床上|被窝|被子|躺着|趴在|枕|抱着|搂着|亲|吻|贴|蹭|调情|睡觉|脱)/.test(String(msg.text ?? '') + ' ' + last)
+          } catch { return false }
+        })()
+        const _explicitPhoto = /(拍|照片|自拍|图|相片|镜头)/.test(String(msg.text ?? ''))
+        if (_intimateCtx && !_explicitPhoto) {
+          this.log.info?.('bridge：调情/私密语境 → 不拍照（避免上游内容限制）')
+          allowDraw = false
+          drawSkipReason = '私密语境不拍'
+          /* 把她话里"举手机/拍照"这类出戏的句子删掉 */
+          text = String(text).replace(/[（(]?[^。！？\n]{0,24}(手机|拍|照片|镜头)[^。！？\n]{0,24}[。！？]?/g, '').trim() || text
+        }
         const drewRecently = lastDrewAt > 0 && Date.now() - lastDrewAt < 5 * 60_000
         if (this.cfg.actions?.askBeforeDraw !== false && !allowDraw && !drewRecently) {
           this.log.info?.('bridge：画图跳过 —— 他没说要拍（先问"拍什么、怎么拍"）')
@@ -7379,6 +7394,10 @@ ${drewNote}
         this._photoOfferAt.set(String(msg.scope ?? ''), Date.now())
       }
     } catch { /* 记不上不影响发送 */ }
+    try {
+      if (!this._lastBotText) this._lastBotText = new Map()
+      this._lastBotText.set(String(msg.scope ?? ''), String(msg.__sentText ?? text ?? '').slice(0, 200))
+    } catch { /* ignore */ }
     this.log.info?.(`bridge：[我] ${msg.scope}「${String(text).slice(0, 400)}」`)
       /*
        * ★ **长视频：回复已经发出去了，现在等后台听完再补一句**（2026-11-01）。
@@ -11287,7 +11306,27 @@ ${drewNote}
     } catch { return text }
   }
 
+  /**
+   * 去掉上游拒答句（2026-11-09 截图：她嘴里蹦出 "Sorry, I can't respond to this question."）。
+   * 返回 { text, refused }；整条都被拒时由 _send 用爱心兜一句（Grok 版做法）。
+   */
+  _stripRefusal(t) {
+    const raw = String(t ?? '')
+    const RE = /(Sorry[,，]?\s*I\s+(?:can't|cannot|won't|am unable to)[^\n]*|I\s+(?:am|\u2019m)\s+(?:sorry|unable)[^\n]*|(?:抱歉|对不起)[，,]?\s*我(?:不能|无法)[^\n]*|我(?:不能|无法)(?:回答|回应|继续|提供)[^\n]*)/gi
+    if (!RE.test(raw)) return { text: raw, refused: false }
+    const cleaned = raw.replace(RE, '').replace(/[ \t]{2,}/g, ' ').trim()
+    return { text: cleaned, refused: true }
+  }
+
   async _send(msg, text, cover = null, target = null) {
+    {
+      const _rf = this._stripRefusal(text)
+      text = _rf.text
+      if (_rf.refused && !String(text ?? '').trim()) {
+        text = '❤️'
+        this.log?.info?.('bridge：上游拒答 → 用爱心兜一句（不透传拒答原文）')
+      }
+    }
     /* 空内容不发：剥完标记后正文空、又没图时，别留一条空消息 */
     if (!String(text ?? '').trim() && !cover) {
       this.log?.warn?.('bridge：空内容 → 不发（__emptyGuard）')
