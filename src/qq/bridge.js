@@ -5702,7 +5702,17 @@ ${drewNote}
          * 再加词只会更糟（加「快」就命中「快递到了」）。
          * 现在两张短语表 + 一个导出的纯函数，能直接写回归测试。
          */
-        const { saidNo, wantsPic } = classifyDrawIntent(msg.text ?? '')
+        const _ci = classifyDrawIntent(msg.text ?? '')
+        const saidNo = _ci.saidNo
+        let wantsPic = _ci.wantsPic
+        const _shortYes = /^(嗯+|嗯嗯|好|好的|好呀|行|行啊|要|要啊|可以|来吧|拍吧|成|对|是啊|是的|OK|ok)[，。！!~…\s]*$/.test(String(msg.text ?? '').trim())
+        const _offerFresh = (() => {
+          try {
+            const at = this._photoOfferAt?.get(String(msg.scope ?? '')) ?? 0
+            return at > 0 && Date.now() - at < 10 * 60_000
+          } catch { return false }
+        })()
+        if (_shortYes && _offerFresh) wantsPic = true
 
         let allowDraw = false
         /*
@@ -6482,6 +6492,7 @@ ${drewNote}
             this._lastDrewAt = this._lastDrewAt ?? {}
             this._lastDrewAt[String(msg.scope ?? '')] = Date.now()
             drewAny = true   // 兼容旧名：真的画出来了
+            try { this._photoOfferAt?.delete(String(msg.scope ?? '')) } catch { /* ignore */ }
             this.log.info?.(`bridge：画好了（${Math.round(r.ms / 1000)}s）`)
             }
           } else {
@@ -7360,6 +7371,14 @@ ${drewNote}
       // ⚠️ 截断长度从 120 提到 400（2026-10-29）：
     //    查「思考内容外泄」时被 120 卡住 —— 超过 120 字的回复，日志只剩
     //    干净的前半段，泄漏的后半段根本看不到，白白浪费好几轮排查。
+    /* 记住「自己刚承诺/描述过要拍」——他下一句只回「嗯」也算确认 */
+    try {
+      const sentNow = String(msg.__sentText ?? text ?? '')
+      if (/就这一张|给你拍|拍给你|拍一张|要不要|想拍|来一张|行吧.{0,6}拍/.test(sentNow)) {
+        if (!this._photoOfferAt) this._photoOfferAt = new Map()
+        this._photoOfferAt.set(String(msg.scope ?? ''), Date.now())
+      }
+    } catch { /* 记不上不影响发送 */ }
     this.log.info?.(`bridge：[我] ${msg.scope}「${String(text).slice(0, 400)}」`)
       /*
        * ★ **长视频：回复已经发出去了，现在等后台听完再补一句**（2026-11-01）。
