@@ -11377,12 +11377,31 @@ ${drewNote}
     return x.trim()
   }
 
+  /** 通用英文杂句清除（2026-11-10）：只删 3 词以上英文短语，保中文/emoji/括号 */
+  _stripForeignPhrases(t) {
+    const raw = String(t ?? '')
+    const re = /[A-Za-z][A-Za-z0-9'’,.\-]*(?:\s+[A-Za-z0-9'’,.\-!?]+){2,}[?.!]?\s*/g
+    const cleaned = raw.replace(re, '').trim()
+    return { text: cleaned, dropped: cleaned !== raw.trim() }
+  }
+
   async _send(msg, text, cover = null, target = null) {
     {
       text = this._stripSystemTags(text)
       const _rf = this._stripRefusal(text)
       text = _rf.text
       if (_rf.refused) this.log?.warn?.('bridge：上游拒答已清洗（不发送原文）')
+      {
+        const _fp = this._stripForeignPhrases(text)
+        if (_fp.dropped) {
+          text = _fp.text
+          this.log?.warn?.('bridge：英文杂句/软拒已清除')
+          if (!String(text ?? '').trim()) {
+            const _ctx0 = String((this._lastBotText?.get(String(msg.scope ?? '')) ?? '') + ' ' + String(msg.text ?? ''))
+            text = this._refusalFallback(_ctx0)
+          }
+        }
+      }
       {
         const _ctx = String((this._lastBotText?.get(String(msg.scope ?? '')) ?? '') + ' ' + String(msg.text ?? ''))
         text = this._ensureSceneSymbol(text, _ctx)
