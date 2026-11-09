@@ -14,6 +14,7 @@ const expect = {
   rear_object: [1, 'hidden'],
   rear_selfie: [1, 'hidden'],
   front_selfie: [1, 'hidden'],
+  face_closeup: [1, 'hidden'],
   mirror_selfie: [2, 'visible'],
   back_view: [0, 'hidden'],
 }

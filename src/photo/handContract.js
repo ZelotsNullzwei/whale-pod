@@ -21,6 +21,7 @@ export const HAND_CONTRACTS = {
   rear_object: { maxVisibleHands: 1, baselineHands: 0, holderHand: 'hidden', allowTwoHandsWhenAction: false, note: '持机手不入画，最多 1 只操作手' },
   rear_selfie: { maxVisibleHands: 1, baselineHands: 0, holderHand: 'hidden', allowTwoHandsWhenAction: false, note: '可只露手/手臂，最多 1 只；确需双手须显式声明' },
   front_selfie: { maxVisibleHands: 1, baselineHands: 0, holderHand: 'hidden', allowTwoHandsWhenAction: false, note: '持机手/手机在画外，可见手最多 1 只' },
+  face_closeup: { maxVisibleHands: 1, baselineHands: 0, holderHand: 'hidden', allowTwoHandsWhenAction: false, note: '怼脸特写：默认不出手；托腮/挡脸等最多 1 只' },
   mirror_selfie: { maxVisibleHands: 2, baselineHands: 1, holderHand: 'visible', allowTwoHandsWhenAction: false, note: '镜中可见持机手+手机；另一只手可自然下垂或摆姿势，不得出现第三只手' },
   back_view: { maxVisibleHands: 0, baselineHands: 0, holderHand: 'hidden', allowTwoHandsWhenAction: false, note: '背影，手不入画' },
 }
