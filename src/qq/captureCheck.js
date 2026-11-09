@@ -35,9 +35,30 @@ function mk({ reviewer, status, violation = null, why = '', confidence = null, s
  * 调视觉网关（与 imageReview 同一条本地通道）。
  * @returns {Promise<object|null>} 解析出的 JSON；失败返回 null（由调用方判 uncertain）
  */
+function cnNum(t) {
+  const m = { '一': 1, '两': 2, '二': 2, '三': 3, '四': 4, '五': 5 }
+  const v = String(t ?? '').trim()
+  if (/^\d+$/.test(v)) return Number(v)
+  return m[v] ?? null
+}
+
+/** 从散文回答里尽力解析手部信息（模型不返回 JSON 时兜底） */
+function parseHandsLoose(txt) {
+  const t = String(txt ?? '')
+  const hm = /([0-9一二两三四五])\s*(?:只)?\s*(?:完整的?)?手(?:掌)?/.exec(t)
+  const am = /([0-9一二两三四五])\s*(?:条|只)?\s*手臂/.exec(t)
+  const hands = hm ? cnNum(hm[1]) : null
+  const arms = am ? cnNum(am[1]) : null
+  if (!Number.isFinite(hands) && !Number.isFinite(arms)) return null
+  const sameSide = /同侧|都是左手|都是右手|均为左手|均为右手/.test(t) ? true : (/左右各一|一左一右|左右手各一/.test(t) ? false : null)
+  const anatomyBad = /畸形|结构异常|多指|缺手|多出一只手|重复的手/.test(t)
+  const anatomyOk = anatomyBad ? false : (/结构正常|正常|自然/.test(t) ? true : null)
+  return { hands: hands ?? null, arms: arms ?? null, same_side: sameSide, anatomy_ok: anatomyOk, why: t.slice(0, 40), confidence: 0.5 }
+}
+
 async function askVisionJSON({ buf, gateway, key, system, userText, timeoutMs = DEFAULT_TIMEOUT }) {
   if (!buf || buf.length < 1024) return null
-  if (!gateway || !key) return null
+  if (!gateway || !key) throw new Error('缺少 gateway/key')
   const mime = buf[0] === 0xff ? 'image/jpeg' : 'image/png'
   const dataUrl = `data:${mime};base64,${buf.toString('base64')}`
   const body = {
@@ -68,7 +89,11 @@ async function askVisionJSON({ buf, gateway, key, system, userText, timeoutMs = 
   if (!txt) throw new Error('网关返回空内容')
   const m = /\{[\s\S]*\}/.exec(txt)
   if (!m) throw new Error('无 JSON：' + txt.slice(0, 40))
-  if (!m) return null
+  if (!m) {
+    const loose = parseHandsLoose(txt)
+    if (loose) return loose
+    throw new Error('无 JSON：' + txt.slice(0, 50))
+  }
   try { return JSON.parse(m[0]) } catch (e) { throw new Error('JSON 解析失败：' + String(m[0]).slice(0, 60)) }
 }
 
