@@ -74,7 +74,7 @@
 
 ## 五、项目回归
 
-`node --check` 通过；`check-draw-pipeline 32/0`、`check-photo-v3-append 13/0`、`check-reference-wiring 16/0`、`check-reference-manager 30/0`、`check-close-persona 20/0`、`check-photo-v3-shadow 24/0`、`check-pipeline-v3 11/0`、`check-capture-check 14/0`。
+`node --check` 通过；`check-draw-pipeline 32/0`、`check-photo-v3-append 13/0`、`check-reference-wiring 16/0`、`check-reference-manager 30/0`、`check-close-persona 20/0`、`check-photo-v3-shadow 24/0`、`check-pipeline-v3 11/0`、`check-capture-check 18/0`（最终值；本节其余为当轮数据）。
 
 ## 六、结论与限制
 
@@ -85,11 +85,11 @@
    - `rear_selfie` 的"手 / 前臂 vs 躯干"边界依赖模型判断；若出现"手臂紧贴躯干"的构图，可能给 `uncertain`（保守，不误报）。
    - 本模块**未接入**生图流程；重拍、缓存一致性、原图落盘均未做（下一轮单独授权）。
 
-## 七、复核补强（第二轮，2026-11-09）
+## 七、复核补强（第二轮，2026-11-09）【历史记录：当轮规则已被第八、九节替代】
 
 | 复核意见 | 处理 |
 |---|---|
-| 缺可重复执行的真实图片测试入口 | 新增 `tests/check-capture-check-real.mjs`：内置期望表（front-1/2=pass、front-3=violation、rear-1/2=violation、mirror-1/2 与 rear-3 跳过），图片目录由 `CAPTURE_CHECK_IMAGES` 指定（默认本机 `_scratch/photo-v3/step9`）。**缺目录或缺网关 key → 打印 SKIPPED 并 exit 0（不算通过）**；有图则真实调模型并逐张比对，不一致 exit 1。 |
+| 缺可重复执行的真实图片测试入口 | 新增 `tests/check-capture-check-real.mjs`：内置期望表（front-1/2=pass、front-3=violation、rear-1/2=violation、mirror-1/2 与 rear-3 跳过），图片目录由 `CAPTURE_CHECK_IMAGES` 指定（默认本机 `_scratch/photo-v3/step9`）。~~缺目录或缺网关 key → 打印 SKIPPED 并 exit 0~~ **【已废弃，见第八/九节：现在为 INCOMPLETE + exit 2】**；有图则真实调模型并逐张比对，不一致 exit 1。 |
 | 超时路径未被真正覆盖 | 单元测试新增两条：抛 `AbortError`、抛 `TimeoutError`（DOMException 形态）→ 均必须 `uncertain`、`ok=null`，不得 pass。 |
 | confidence 未限定范围 | 新增 `normConf()`：仅接受 `Number.isFinite` 且 `0 ≤ v ≤ 1`，否则 `null`；测试覆盖 `-0.1 / 1.01 / 2 / NaN / Infinity / "0.9" / undefined` 全部→null，`0/0.5/1` 透传。 |
 
@@ -121,3 +121,22 @@
 - **缺图场景已验证**：`CAPTURE_CHECK_IMAGES` 指向不存在目录 → 打印 `INCOMPLETE` 且退出码 **2**，不会伪装成通过。
 - **`rear-3` 改为按实际 mode 判断**：`first_person` 才跳过；若变成 `rear_selfie` 则必须执行 reviewer。
 - 未改：`captureCheck.js`、`bridge.js`、任何生产链路
+## 九、脚本边界封严（第三轮，2026-11-09）
+
+| 复核意见 | 处理 |
+|---|---|
+| `rear-3` 只要“没有 reviewer”就跳过（未知 mode 也被豁免） | 改为**显式 mode 分支**：`first_person`→跳过（设计）；`rear_selfie`→必须有图并执行 `reviewNoBodySubject`；**其他/未知 mode → `INCOMPLETE`(exit 2)** |
+| `rear-3` 缺 `decision.json` / 损坏 / `rear_selfie` 缺图被静默跳过 | 先 `readDecision()` 校验：文件缺失、JSON 解析失败、缺 `mode` 字段，一律 `INCOMPLETE`(exit 2)；`rear_selfie` 缺 `photo.jpg` 同样 `exit 2` |
+| 第七节旧规则与第五节旧数字残留 | 第七节标题标注为历史、旧规则标注“已废弃”；第五节 `check-capture-check 14/0` 同步为 **18/0** |
+
+### 边界实测（本机，真实网关）
+
+| 场景 | 结果 |
+|---|---|
+| 正常（5 张必测齐全） | `PASS`，exit **0**（参与 5，一致 5，误报 0/5，漏报 0/5，uncertain 0/5，跳过 3）|
+| `rear-3/decision.json` 缺失 | `INCOMPLETE：rear-3 decision.json 缺失`，exit **2** |
+| `rear-3` mode 改为 `mirror_selfie`（未登记） | `INCOMPLETE：rear-3 出现未登记 mode=mirror_selfie`，exit **2** |
+| `rear-3` mode=`rear_selfie` 但缺 `photo.jpg` | `INCOMPLETE：rear-3 mode=rear_selfie 但缺 photo.jpg`，exit **2** |
+| `front-3` 缺 `photo.jpg` | `INCOMPLETE：front-3 缺 photo.jpg`，exit **2** |
+
+未改：`captureCheck.js`、`bridge.js`、任何生产链路；未触发真实重拍。
