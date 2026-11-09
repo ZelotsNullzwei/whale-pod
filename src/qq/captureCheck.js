@@ -163,9 +163,11 @@ const HANDS_SYSTEM = [
   '你是人体结构质检员。只判断画面里的手和手臂，不看美观、不看构图。',
   '按顺序检查并如实回答：',
   '1) 画面里能看到几只完整的手掌？几只手臂（从肩膀连下来的肢体，只露小臂也算）？',
-  '2) 如果能看到两只手：它们是否分别是左右手（拇指朝向相反、掌背结构相反）？若两只手都是左手或都是右手 → same_side=true。',
-  '3) 手部结构是否正常：拇指是否从正确一侧伸出、手腕与前臂是否自然连接、手指数量是否合理、有没有多余或重复的手？',
-  '⚠️ 拿不准的字段给 null，不要猜。',
+  '2) 计数口径：把画面**分成左半边和右半边分别看**；每只看得见的手都要计入（哪怕只露出手指、手背或半个手掌）；手臂=从肩到手的肢体。',
+  '3) 如果能看到两只手：它们是否分别是左右手（拇指朝向相反、掌背结构相反）？两只都是左手或都是右手 → same_side=true；左右各一（正常）→ same_side=false。',
+  '4) 手部结构是否正常：拇指方向、手腕连接、手指数量、有没有多余或重复的手？正常 → anatomy_ok=true；明显异常 → false。',
+  '⚠️ same_side / anatomy_ok 必须尽量给 true/false；**只有确实被完全遮挡、看不出结构时才给 null**。',
+  '⚠️ 两只手看起来都正常、方向自然时，不要因为它们并列或一持机一垂放就判 true（同侧）或 null。',
   '回答严格 JSON：{"hands": 数字, "arms": 数字, "same_side": true|false|null, "anatomy_ok": true|false|null, "why": "不超过24字", "confidence": 0~1}',
 ].join('\n')
 
@@ -175,7 +177,8 @@ export async function reviewHands({ buf, gateway, key, maxVisibleHands = 1, time
   }
   let parsed = null
   try {
-    parsed = await ask({ buf, gateway, key, system: HANDS_SYSTEM, userText: '这张图里的手和手臂是什么情况？', timeoutMs })
+    const sys = HANDS_SYSTEM + '\n本图最多允许 ' + Number(maxVisibleHands) + ' 只手；超过该数量即属于多余手。'
+    parsed = await ask({ buf, gateway, key, system: sys, userText: '这张图里的手和手臂是什么情况？', timeoutMs })
   } catch (e) {
     log.warn?.(`captureCheck/hands：视觉调用异常 — ${String(e?.message ?? e).slice(0, 60)}`)
     return mk({ reviewer: 'hands', status: 'uncertain', why: '视觉服务异常' })
@@ -223,11 +226,11 @@ export function combineCaptureResults(results = []) {
   if (violation) {
     const fatal = list.find((r) => r.status === 'violation' && r.severity === 'fatal')
     const pick = fatal || violation
-    return { status: 'violation', ok: false, reviewer: pick.reviewer, violation: pick.violation, severity: pick.severity ?? 'normal', why: pick.why, confidence: pick.confidence ?? null, details: list }
+    return { status: 'violation', ok: false, reviewer: pick.reviewer, violation: pick.violation, severity: pick.severity ?? 'normal', why: pick.why, confidence: pick.confidence ?? null, hands: pick.hands ?? null, arms: pick.arms ?? null, details: list }
   }
   if (list.some((r) => r.status === 'uncertain')) {
     const u = list.find((r) => r.status === 'uncertain')
     return { status: 'uncertain', ok: null, reviewer: u.reviewer, violation: null, severity: null, why: u.why, confidence: u.confidence ?? null, details: list }
   }
-  return { status: 'pass', ok: true, reviewer: list[0].reviewer, violation: null, severity: null, why: list[0].why, confidence: list[0].confidence ?? null, details: list }
+  return { status: 'pass', ok: true, reviewer: list[0].reviewer, violation: null, severity: null, why: list[0].why, confidence: list[0].confidence ?? null, hands: list[0].hands ?? null, arms: list[0].arms ?? null, details: list }
 }

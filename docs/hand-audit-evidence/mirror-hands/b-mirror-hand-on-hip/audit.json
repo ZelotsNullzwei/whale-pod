@@ -1,0 +1,73 @@
+{
+  "mode": "mirror_selfie",
+  "contract": {
+    "mode": "mirror_selfie",
+    "maxVisibleHands": 2,
+    "baselineHands": 1,
+    "holderHand": "visible",
+    "note": "镜中可见持机手+手机；另一只手可自然下垂或摆姿势，不得出现第三只手",
+    "actionRequiresBothHands": false
+  },
+  "qcFirst": {
+    "legacy": {
+      "ok": true,
+      "why": ""
+    },
+    "capture": {
+      "status": "pass",
+      "ok": true,
+      "reviewer": "hands",
+      "violation": null,
+      "severity": null,
+      "why": "镜面自拍，一持机一叉腰，结构正常",
+      "confidence": 0.95,
+      "details": [
+        {
+          "status": "pass",
+          "ok": true,
+          "reviewer": "hands",
+          "violation": null,
+          "severity": null,
+          "why": "镜面自拍，一持机一叉腰，结构正常",
+          "confidence": 0.95,
+          "hands": 2,
+          "arms": 2
+        }
+      ]
+    }
+  },
+  "qcRetry": null,
+  "retried": false,
+  "finalChoice": "original",
+  "block": false,
+  "reason": null,
+  "cached": true,
+  "sent": true,
+  "hashes": {
+    "original": "90167e511444f359",
+    "retry": null,
+    "final": "90167e511444f359"
+  },
+  "record": {
+    "at": "2026-11-09T10:58:56.396Z",
+    "scope": "h11d:b-mirror-hand-on-hip",
+    "mode": "mirror_selfie",
+    "original": {
+      "legacy": {
+        "ok": true,
+        "why": ""
+      },
+      "capture": {
+        "status": "pass",
+        "violation": null,
+        "why": "镜面自拍，一持机一叉腰，结构正常",
+        "confidence": 0.95
+      }
+    },
+    "retried": false,
+    "retry": null,
+    "finalChoice": "original",
+    "cacheKey": "drawPrompt",
+    "ms": 0
+  }
+}

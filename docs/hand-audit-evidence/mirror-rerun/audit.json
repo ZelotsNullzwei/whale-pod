@@ -1,0 +1,73 @@
+{
+  "mode": "mirror_selfie",
+  "contract": {
+    "mode": "mirror_selfie",
+    "maxVisibleHands": 2,
+    "baselineHands": 1,
+    "holderHand": "visible",
+    "note": "镜中可见持机手+手机；另一只手可自然下垂或摆姿势，不得出现第三只手",
+    "actionRequiresBothHands": false
+  },
+  "qcFirst": {
+    "legacy": {
+      "ok": true,
+      "why": ""
+    },
+    "capture": {
+      "status": "uncertain",
+      "ok": null,
+      "reviewer": "hands",
+      "violation": null,
+      "severity": null,
+      "why": "只看到一只拿手机的手，结构正常",
+      "confidence": 0.85,
+      "details": [
+        {
+          "status": "uncertain",
+          "ok": null,
+          "reviewer": "hands",
+          "violation": null,
+          "severity": null,
+          "why": "只看到一只拿手机的手，结构正常",
+          "confidence": 0.85,
+          "hands": 1,
+          "arms": 2
+        }
+      ]
+    }
+  },
+  "qcRetry": null,
+  "retried": false,
+  "finalChoice": "original",
+  "block": false,
+  "reason": null,
+  "cached": true,
+  "sent": true,
+  "hashes": {
+    "original": "097fc7afc173e549",
+    "retry": null,
+    "final": "097fc7afc173e549"
+  },
+  "record": {
+    "at": "2026-11-09T10:50:24.836Z",
+    "scope": "h11c:3-mirror",
+    "mode": "mirror_selfie",
+    "original": {
+      "legacy": {
+        "ok": true,
+        "why": ""
+      },
+      "capture": {
+        "status": "uncertain",
+        "violation": null,
+        "why": "只看到一只拿手机的手，结构正常",
+        "confidence": 0.85
+      }
+    },
+    "retried": false,
+    "retry": null,
+    "finalChoice": "original",
+    "cacheKey": "drawPrompt",
+    "ms": 0
+  }
+}

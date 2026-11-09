@@ -68,5 +68,23 @@ await ok('全 pass → pass', async () => {
 })
 await ok('空列表 → null', async () => { assert.equal(combineCaptureResults([]), null) })
 
+console.log('\n=== 对镜自拍：持机手 + 一只自然手 ===')
+await ok('对镜自拍：2 手在 max=2 下通过（左右各一、结构正常）', async () => {
+  const r = await reviewHands({ buf: BUF, maxVisibleHands: 2, ask: ask({ hands: 2, arms: 2, same_side: false, anatomy_ok: true, why: '一手持机一手垂放', confidence: 0.95 }) })
+  assert.equal(r.status, 'pass'); assert.equal(r.ok, true); assert.equal(r.violation, null)
+})
+await ok('对镜自拍：3 手在 max=2 下 → violation/extra_hands/fatal', async () => {
+  const r = await reviewHands({ buf: BUF, maxVisibleHands: 2, ask: ask({ hands: 3, arms: 2, same_side: false, anatomy_ok: true }) })
+  assert.equal(r.status, 'violation'); assert.equal(r.violation, 'extra_hands'); assert.equal(r.severity, 'fatal')
+})
+await ok('对镜自拍：2 手同侧 → violation/hand_mismatch', async () => {
+  const r = await reviewHands({ buf: BUF, maxVisibleHands: 2, ask: ask({ hands: 2, arms: 2, same_side: true, anatomy_ok: true }) })
+  assert.equal(r.violation, 'hand_mismatch')
+})
+await ok('对镜自拍：2 手但左右无法判断（same_side=null）→ uncertain（不冒充通过）', async () => {
+  const r = await reviewHands({ buf: BUF, maxVisibleHands: 2, ask: ask({ hands: 2, arms: 2, same_side: null, anatomy_ok: true }) })
+  assert.equal(r.status, 'uncertain'); assert.equal(r.ok, null)
+})
+
 console.log(`\npass ${pass} / fail ${fail}`)
 process.exit(fail === 0 ? 0 : 1)

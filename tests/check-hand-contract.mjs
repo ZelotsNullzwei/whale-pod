@@ -2,7 +2,7 @@
  * 手部契约矩阵 + Prompt 注入验证
  */
 import assert from 'node:assert/strict'
-import { HAND_CONTRACTS, handContractFor, requiresHandGate, handRuleLine } from '../src/photo/handContract.js'
+import { HAND_CONTRACTS, handContractFor, requiresHandGate, handRuleLine, handDutyLine } from '../src/photo/handContract.js'
 import { planShot } from '../src/photo/index.js'
 
 let pass = 0, fail = 0
@@ -14,7 +14,7 @@ const expect = {
   rear_object: [1, 'hidden'],
   rear_selfie: [1, 'hidden'],
   front_selfie: [1, 'hidden'],
-  mirror_selfie: [1, 'visible'],
+  mirror_selfie: [2, 'visible'],
   back_view: [0, 'hidden'],
 }
 for (const [mode, [max, holder]] of Object.entries(expect)) {
@@ -50,7 +50,7 @@ for (const [scene, mode, max] of [
   ['第一人称 端着杯子喝水', 'first_person', 1],
   ['把漫画拍给你看', 'rear_selfie', 1],
   ['前置自拍', 'front_selfie', 1],
-  ['对镜全身自拍，站在衣柜前', 'mirror_selfie', 1],
+  ['对镜全身自拍，站在衣柜前', 'mirror_selfie', 2],
 ]) {
   ok(`${scene} → ${mode} 的 Prompt 恰有 1 条手部契约且含 ${max}`, () => {
     const s = mkShot(scene)
@@ -62,6 +62,28 @@ for (const [scene, mode, max] of [
 }
 ok('第一人称 Prompt 不再出现旧的"最多两只手"', () => {
   assert.ok(!String(mkShot('第一人称 端着杯子喝水').prompt).includes('最多两只手'))
+})
+
+console.log('\n=== Pose Planner 手部职责 → Prompt ===')
+ok('第一人称（动作手1+持机手1）→ 只写动作手，不写持机手', () => {
+  const d = handDutyLine(handContractFor('first_person'), { hands: { requiredCount: 1, actionHands: 1, cameraHands: 1 } })
+  assert.match(d, /动作手 1 只/)
+  assert.ok(!d.includes('持机手'))
+})
+ok('对镜自拍 → 写明持机手（镜中可见）', () => {
+  const d = handDutyLine(handContractFor('mirror_selfie'), { hands: { requiredCount: 1, actionHands: 0, cameraHands: 1 } })
+  assert.match(d, /持机手 1 只（镜中可见）/)
+})
+ok('动作需求超上限 → 带 ⚠️ 拆分动作提示', () => {
+  const d = handDutyLine(handContractFor('first_person'), { hands: { requiredCount: 3, actionHands: 3, cameraHands: 0 } })
+  assert.match(d, /超过本模式上限 1/)
+})
+ok('真实 planShot 返回 posePlan.hands.requiredCount 为数字（4 模式）', () => {
+  for (const sc of ['第一人称 端着杯子喝水', '把漫画拍给你看', '对镜全身自拍，站在衣柜前', '前置自拍']) {
+    const s2 = mkShot(sc)
+    assert.ok(s2.posePlan && s2.posePlan.hands, sc + ' 缺 posePlan.hands')
+    assert.equal(typeof s2.posePlan.hands.requiredCount, 'number', sc + ' requiredCount 非数字')
+  }
 })
 
 console.log(`\npass ${pass} / fail ${fail}`)

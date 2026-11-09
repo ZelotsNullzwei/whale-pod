@@ -6347,6 +6347,14 @@ ${drewNote}
             const qcReviewer = pickReviewer(qcMode)
             const handContract = handContractFor(qcMode)          // 手部契约（唯一真源，未登记模式为 null）
             const requireReview = Boolean(handContract) && (this.cfg.actions?.handGate !== false)
+            /* Pose Planner 的手部职责（只读，供日志/告警；上限仍按模式契约） */
+            const poseHands = shot?.posePlan?.hands ?? null
+            if (poseHands) {
+              this.log.info?.('photo-qc poseHands ' + JSON.stringify({ required: poseHands.requiredCount, camera: poseHands.cameraHands, left: poseHands.left, right: poseHands.right }))
+              if (handContract && Number(poseHands.requiredCount ?? 0) > handContract.maxVisibleHands) {
+                this.log.warn?.(`bridge：动作需要 ${poseHands.requiredCount} 只手，超过模式上限 ${handContract.maxVisibleHands}（将按上限约束）`)
+              }
+            }
             const gwQc = `http://127.0.0.1:${this.cfg.gateway?.port ?? 18899}/v1`
             const qcKey = this.cfg.gateway?.key ?? null
             const reviewEnabled = this.cfg.actions?.imageReview !== false

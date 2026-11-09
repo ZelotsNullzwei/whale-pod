@@ -1,0 +1,38 @@
+[
+  {
+    "name": "1-pov-manga",
+    "mode": "first_person",
+    "block": false,
+    "reason": null,
+    "retried": false,
+    "finalChoice": "original",
+    "cached": true,
+    "sent": true,
+    "qcFirst": null,
+    "qcRetry": null
+  },
+  {
+    "name": "2-rear-manga",
+    "mode": "rear_selfie",
+    "block": false,
+    "reason": null,
+    "retried": true,
+    "finalChoice": "retry",
+    "cached": true,
+    "sent": true,
+    "qcFirst": "body_subject",
+    "qcRetry": "body_subject"
+  },
+  {
+    "name": "3-mirror",
+    "mode": "mirror_selfie",
+    "block": true,
+    "reason": "复审:extra_hands",
+    "retried": true,
+    "finalChoice": "retry",
+    "cached": false,
+    "sent": false,
+    "qcFirst": "extra_hands",
+    "qcRetry": "extra_hands"
+  }
+]

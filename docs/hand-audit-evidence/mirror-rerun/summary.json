@@ -1,0 +1,14 @@
+[
+  {
+    "name": "3-mirror",
+    "mode": "mirror_selfie",
+    "block": false,
+    "reason": null,
+    "retried": false,
+    "finalChoice": "original",
+    "cached": true,
+    "sent": true,
+    "qcFirst": null,
+    "qcRetry": null
+  }
+]

@@ -20,6 +20,7 @@ import { PhotoContinuity, detectLocation } from './photo-continuity.js'
 import { fallbackText } from './character-profile.js'
 import { pickEmotion, renderExpression, ExpressionHistory } from './photo-expression.js'
 import { canonFor } from './canon.js'
+import { buildShotPlan } from './plan-photo-v3.js'
 import { resolveReference } from './reference-manager.js'
 import fs from 'node:fs'
 import crypto from 'node:crypto'
@@ -223,11 +224,20 @@ export function planShot(o = {}) {
   /* ⑥ 连续性说明（只继承状态，不继承构图） */
   const note = continuity.continuityNote(scope, { outfit, hair, slot })
 
+  /* ⑥.5 旁路计算 Pose Planner 的手部职责（纯函数，无副作用；失败不影响生成） */
+  let posePlan = null
+  try {
+    posePlan = buildShotPlan({ scene, slot, raw: null }).pose
+  } catch (e) {
+    this?.log?.warn?.('planShot：pose 规划旁路失败 — ' + String(e?.message ?? e).slice(0, 60))
+  }
+
   /* ⑦ 组装提示词 */
   const prompt = composePhotoPrompt({
     plan, framing, scene: sceneFixed, outfit, hair, weather, mood,
     continuity: note, hasRef: Boolean(refImage), anime, bodyOverride, sceneOnly,
     expression,
+    pose: posePlan,
     canonRef: refDecision ? refDecision.strategy === 'canon' : Boolean(canon),
     mode,
     character: {
@@ -253,6 +263,7 @@ export function planShot(o = {}) {
     prompt,
     refImage,
     refDecision,
+    posePlan,
     canonRef: refDecision ? refDecision.strategy === 'canon' : Boolean(canon),
     size,
     issues: check.issues,

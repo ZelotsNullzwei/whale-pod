@@ -1,0 +1,112 @@
+{
+  "mode": "mirror_selfie",
+  "contract": {
+    "mode": "mirror_selfie",
+    "maxVisibleHands": 1,
+    "baselineHands": 1,
+    "holderHand": "visible",
+    "note": "镜中可见持机手+手机，不得增加另一只手",
+    "actionRequiresBothHands": false
+  },
+  "qcFirst": {
+    "legacy": {
+      "ok": true,
+      "why": ""
+    },
+    "capture": {
+      "status": "violation",
+      "ok": false,
+      "reviewer": "hands",
+      "violation": "extra_hands",
+      "severity": "fatal",
+      "why": "双手结构正常，左右手各一",
+      "confidence": 0.95,
+      "details": [
+        {
+          "status": "violation",
+          "ok": false,
+          "reviewer": "hands",
+          "violation": "extra_hands",
+          "severity": "fatal",
+          "why": "双手结构正常，左右手各一",
+          "confidence": 0.95,
+          "hands": 2,
+          "arms": 2
+        }
+      ]
+    }
+  },
+  "qcRetry": {
+    "legacy": {
+      "ok": true,
+      "why": ""
+    },
+    "capture": {
+      "status": "violation",
+      "ok": false,
+      "reviewer": "hands",
+      "violation": "extra_hands",
+      "severity": "fatal",
+      "why": "一手持机一手垂，结构自然",
+      "confidence": 0.95,
+      "details": [
+        {
+          "status": "violation",
+          "ok": false,
+          "reviewer": "hands",
+          "violation": "extra_hands",
+          "severity": "fatal",
+          "why": "一手持机一手垂，结构自然",
+          "confidence": 0.95,
+          "hands": 2,
+          "arms": 2
+        }
+      ]
+    }
+  },
+  "retried": true,
+  "finalChoice": "retry",
+  "block": true,
+  "reason": "复审:extra_hands",
+  "cached": false,
+  "sent": false,
+  "hashes": {
+    "original": "acd1530b60d9b7a8",
+    "retry": "b65b2776a3fa0bbc",
+    "final": "b65b2776a3fa0bbc"
+  },
+  "record": {
+    "at": "2026-11-09T10:30:03.742Z",
+    "scope": "h11b:3-mirror",
+    "mode": "mirror_selfie",
+    "original": {
+      "legacy": {
+        "ok": true,
+        "why": ""
+      },
+      "capture": {
+        "status": "violation",
+        "violation": "extra_hands",
+        "why": "双手结构正常，左右手各一",
+        "confidence": 0.95
+      }
+    },
+    "retried": true,
+    "retry": {
+      "legacy": {
+        "ok": true,
+        "why": ""
+      },
+      "capture": {
+        "status": "violation",
+        "violation": "extra_hands",
+        "why": "一手持机一手垂，结构自然",
+        "confidence": 0.95
+      },
+      "skipped": null
+    },
+    "finalChoice": "retry",
+    "cacheKey": "drawPrompt",
+    "ms": 0
+  }
+}

@@ -1,0 +1,38 @@
+[
+  {
+    "name": "a-mirror-basic",
+    "mode": "mirror_selfie",
+    "block": false,
+    "reason": null,
+    "retried": false,
+    "finalChoice": "original",
+    "cached": true,
+    "sent": true,
+    "qcFirst": null,
+    "qcRetry": null
+  },
+  {
+    "name": "b-mirror-hand-on-hip",
+    "mode": "mirror_selfie",
+    "block": false,
+    "reason": null,
+    "retried": false,
+    "finalChoice": "original",
+    "cached": true,
+    "sent": true,
+    "qcFirst": null,
+    "qcRetry": null
+  },
+  {
+    "name": "c-mirror-phone-covers-face",
+    "mode": "mirror_selfie",
+    "block": false,
+    "reason": null,
+    "retried": false,
+    "finalChoice": "original",
+    "cached": true,
+    "sent": true,
+    "qcFirst": null,
+    "qcRetry": null
+  }
+]

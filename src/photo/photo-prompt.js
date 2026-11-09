@@ -77,12 +77,13 @@ function pickSelfiePose(mode) {
   return pool[bucket % pool.length]
 }
 
-import { handContractFor, handRuleLine } from './handContract.js'
+import { handContractFor, handRuleLine, handDutyLine } from './handContract.js'
 
 export function composePhotoPrompt(o = {}) {
   const {
     plan = {}, framing = {}, scene = '', outfit = '', hair = '', weather = '', mood = '',
-    continuity = '', hasRef = false, anime = false, character = {}, expression = null, bodyOverride = '', sceneOnly = false,
+    continuity = '', hasRef = false, anime = false, character = {}, expression = null,
+    pose = null, bodyOverride = '', sceneOnly = false,
     canonRef = false,
     /**
      * V3 第三层：风格模式。'daily'（默认）| 'close'。
@@ -721,6 +722,8 @@ ${plan.mode === 'front_selfie' ? '前置自拍：手机本体、手机屏幕、�
     const hc = handContractFor(plan?.mode)
     const line = handRuleLine(hc)
     if (line) parts.push(line)
+    const duty = handDutyLine(hc, pose)
+    if (duty) parts.push(duty)
   } catch { /* 契约失败不阻塞生成 */ }
 
   parts.push(`【输出】竖版 9:16，单张。`)

@@ -1,0 +1,134 @@
+{
+  "mode": "rear_selfie",
+  "contract": {
+    "mode": "rear_selfie",
+    "maxVisibleHands": 1,
+    "baselineHands": 0,
+    "holderHand": "hidden",
+    "note": "可只露手/手臂，最多 1 只；确需双手须显式声明",
+    "actionRequiresBothHands": false
+  },
+  "qcFirst": {
+    "legacy": {
+      "ok": true,
+      "why": ""
+    },
+    "capture": {
+      "status": "violation",
+      "ok": false,
+      "reviewer": "no_body_subject",
+      "violation": "body_subject",
+      "severity": "normal",
+      "why": "画面右侧露出躯干、手臂和腿",
+      "confidence": 0.95,
+      "details": [
+        {
+          "status": "violation",
+          "ok": false,
+          "reviewer": "no_body_subject",
+          "violation": "body_subject",
+          "severity": null,
+          "why": "画面右侧露出躯干、手臂和腿",
+          "confidence": 0.95,
+          "hands": null,
+          "arms": null
+        },
+        {
+          "status": "pass",
+          "ok": true,
+          "reviewer": "hands",
+          "violation": null,
+          "severity": null,
+          "why": "仅见一只右手及手臂，结构正常",
+          "confidence": 0.9,
+          "hands": 1,
+          "arms": 1
+        }
+      ]
+    }
+  },
+  "qcRetry": {
+    "legacy": {
+      "ok": true,
+      "why": ""
+    },
+    "capture": {
+      "status": "violation",
+      "ok": false,
+      "reviewer": "no_body_subject",
+      "violation": "body_subject",
+      "severity": "normal",
+      "why": "画面左上角可见拍摄者肩膀、躯干及腿部",
+      "confidence": 0.95,
+      "details": [
+        {
+          "status": "violation",
+          "ok": false,
+          "reviewer": "no_body_subject",
+          "violation": "body_subject",
+          "severity": null,
+          "why": "画面左上角可见拍摄者肩膀、躯干及腿部",
+          "confidence": 0.95,
+          "hands": null,
+          "arms": null
+        },
+        {
+          "status": "pass",
+          "ok": true,
+          "reviewer": "hands",
+          "violation": null,
+          "severity": null,
+          "why": "仅见一只左手，结构正常",
+          "confidence": 0.9,
+          "hands": 1,
+          "arms": 1
+        }
+      ]
+    }
+  },
+  "retried": true,
+  "finalChoice": "retry",
+  "block": false,
+  "reason": null,
+  "cached": true,
+  "sent": true,
+  "hashes": {
+    "original": "4a334a98fec1a734",
+    "retry": "344a947d01ce655a",
+    "final": "344a947d01ce655a"
+  },
+  "record": {
+    "at": "2026-11-09T10:29:17.879Z",
+    "scope": "h11b:2-rear-manga",
+    "mode": "rear_selfie",
+    "original": {
+      "legacy": {
+        "ok": true,
+        "why": ""
+      },
+      "capture": {
+        "status": "violation",
+        "violation": "body_subject",
+        "why": "画面右侧露出躯干、手臂和腿",
+        "confidence": 0.95
+      }
+    },
+    "retried": true,
+    "retry": {
+      "legacy": {
+        "ok": true,
+        "why": ""
+      },
+      "capture": {
+        "status": "violation",
+        "violation": "body_subject",
+        "why": "画面左上角可见拍摄者肩膀、躯干及腿部",
+        "confidence": 0.95
+      },
+      "skipped": null
+    },
+    "finalChoice": "retry",
+    "cacheKey": "drawPrompt",
+    "ms": 0
+  }
+}
