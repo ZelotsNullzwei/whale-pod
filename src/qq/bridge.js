@@ -11323,7 +11323,7 @@ ${drewNote}
       const _rf = this._stripRefusal(text)
       text = _rf.text
       if (_rf.refused && !String(text ?? '').trim()) {
-        text = '❤️'
+        text = '♡'
         this.log?.info?.('bridge：上游拒答 → 用爱心兜一句（不透传拒答原文）')
       }
     }
