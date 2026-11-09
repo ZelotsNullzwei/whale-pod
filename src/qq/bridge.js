@@ -1323,6 +1323,16 @@ export function stripWaitMarkers(text) {
  */
 const LOW_BALANCE_DEFAULT = 2
 
+/** Only use completed day-plan slots as factual material for public posts. */
+function completedDayPlanText(plan, slotId) {
+  const order = ['morning', 'noon', 'afternoon', 'evening']
+  const current = Math.max(-1, order.indexOf(String(slotId ?? '')))
+  return order.slice(0, current).reverse()
+    .map((slot) => String(plan?.[slot] ?? '').trim())
+    .filter(Boolean)
+    .join('。')
+}
+
 export class QQBridge {
   /**
    * @param {object} opts
@@ -1750,7 +1760,7 @@ export class QQBridge {
       const herClean = posOnly.slice(-3).join('；').slice(0, 120)
       const posHint = kw ? `（方位：${kw}口朝下倒着放，特征在${kw}口边缘那一圈）` : ''
       const pt = (() => { try { return this.dayPlan?.today?.() ?? {} } catch { return {} } })()
-      const dayText = [pt.smallThing, pt.afternoon, pt.morning, pt.noon, pt.evening].filter(Boolean).join('。')
+      const dayText = completedDayPlanText(pt, currentSlot().id)
       const dayLine = kw ? (dayText.split(/[。；;]/).map((x) => x.trim()).find((x) => x.includes(kw)) ?? '') : ''
       const desc = [herClean, dayLine, say, posHint].filter(Boolean).join('；').slice(0, 200)
       this._lastQzoneDesc = desc
@@ -1979,7 +1989,7 @@ export class QQBridge {
             } catch { herWords = [] }
             const herDesc = [...new Set(herWords)].slice(-3).join('；').slice(0, 130)
             const pt = (() => { try { return this.dayPlan?.today?.() ?? {} } catch { return {} } })()
-            const dayText = [pt.smallThing, pt.afternoon, pt.morning, pt.noon, pt.evening].filter(Boolean).join('。')
+            const dayText = completedDayPlanText(pt, currentSlot().id)
             const dayLine = kw ? (dayText.split(/[。；;]/).map((x) => x.trim()).find((x) => x.includes(kw)) ?? '') : ''
             /*
              * ⚠️ **否定句在生图里等于反效果**（2026-11-08 实测）。
@@ -11318,12 +11328,27 @@ ${drewNote}
     return { text: cleaned, refused: true }
   }
 
+  /**
+   * 上游整条拒答时的兜底（强制）：极短角色回应 + ♡，不解释、不道歉、不暴露限制。
+   * 规则来自用户 2026-11-09：按最近进度匹配；无明确进度用前两条。
+   */
+  _refusalFallback(ctx = '') {
+    const t = String(ctx ?? '')
+    if (/(深|顶|里面|进得|更进)/.test(t)) return '再深一点……♡'
+    if (/(停|继续|别停)/.test(t)) return '别停……♡'
+    if (/(要|快来|给我|还想要)/.test(t)) return '本鲸还想要……♡'
+    if (/(腰|软|撑不住)/.test(t)) return '（腰又软了一下）哈啊……♡'
+    if (/(腿|抖|紧|夹)/.test(t)) return '（腿根紧了一下）嗯……♡'
+    /* 无明显进度：前两条轮换 */
+    return (Math.floor(Date.now() / 1000) % 2 === 0) ? '嗯……♡' : '哈啊……♡'
+  }
+
   async _send(msg, text, cover = null, target = null) {
     {
       const _rf = this._stripRefusal(text)
       text = _rf.text
       if (_rf.refused && !String(text ?? '').trim()) {
-        text = '♡'
+        const _ctxForPool = String((this._lastBotText?.get(String(msg.scope ?? '')) ?? '') + ' ' + String(text ?? '') + ' ' + String(msg.text ?? ''))
         this.log?.info?.('bridge：上游拒答 → 用爱心兜一句（不透传拒答原文）')
       }
     }
