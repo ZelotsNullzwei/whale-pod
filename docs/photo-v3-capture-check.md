@@ -78,3 +78,23 @@
    - `front_selfie` 对"极小手机边缘"偶有边界抖动（已在上一节如实记录）。
    - `rear_selfie` 的"手 / 前臂 vs 躯干"边界依赖模型判断；若出现"手臂紧贴躯干"的构图，可能给 `uncertain`（保守，不误报）。
    - 本模块**未接入**生图流程；重拍、缓存一致性、原图落盘均未做（下一轮单独授权）。
+
+## 七、复核补强（第二轮，2026-11-09）
+
+| 复核意见 | 处理 |
+|---|---|
+| 缺可重复执行的真实图片测试入口 | 新增 `tests/check-capture-check-real.mjs`：内置期望表（front-1/2=pass、front-3=violation、rear-1/2=violation、mirror-1/2 与 rear-3 跳过），图片目录由 `CAPTURE_CHECK_IMAGES` 指定（默认本机 `_scratch/photo-v3/step9`）。**缺目录或缺网关 key → 打印 SKIPPED 并 exit 0（不算通过）**；有图则真实调模型并逐张比对，不一致 exit 1。 |
+| 超时路径未被真正覆盖 | 单元测试新增两条：抛 `AbortError`、抛 `TimeoutError`（DOMException 形态）→ 均必须 `uncertain`、`ok=null`，不得 pass。 |
+| confidence 未限定范围 | 新增 `normConf()`：仅接受 `Number.isFinite` 且 `0 ≤ v ≤ 1`，否则 `null`；测试覆盖 `-0.1 / 1.01 / 2 / NaN / Infinity / "0.9" / undefined` 全部→null，`0/0.5/1` 透传。 |
+
+### 本轮结果
+
+- 单元测试：**18 / 0**（原 14 项 + 超时 2 项 + 置信度 2 项）
+- 真实入口（`node tests/check-capture-check-real.mjs`）：**参与 5 / 一致 5 / 误报 0/5 / 漏报 0/5 / uncertain 0/5 / 跳过 3**
+- 跳过的 3 张：`mirror-1/2`（按设计不审）、`rear-3`（实际 mode=first_person，不审）
+
+### 仍然存在的限制（未改）
+
+1. 真实图片依赖本机实验目录，**不入仓库**（私人角色素材）；干净环境跑 `check-capture-check-real` 会 SKIPPED —— 这是设计，不是通过。
+2. “极小手机边缘”仍是判定边界（历史记录见第五节）。
+3. 未接入生图流程；接线时的重拍策略建议见交接（violation→重拍 1 次；pass→发送；uncertain→放行不重拍；重拍后必须更新缓存并记录）。

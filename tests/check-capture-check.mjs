@@ -85,5 +85,33 @@ await ok('ok 与 status 严格对应', async () => {
   }
 })
 
+console.log('\n=== 超时路径（AbortError） ===')
+await ok('AbortError（超时）→ uncertain，不得 pass', async () => {
+  const abortAsk = async () => { const e = new Error('The operation was aborted'); e.name = 'AbortError'; throw e }
+  const r = await reviewNoPhone({ buf: BUF, ask: abortAsk })
+  assert.equal(r.status, 'uncertain'); assert.equal(r.ok, null)
+  const r2 = await reviewNoBodySubject({ buf: BUF, ask: abortAsk })
+  assert.equal(r2.status, 'uncertain'); assert.equal(r2.ok, null)
+})
+await ok('DOMException 形态的 TimeoutError → uncertain', async () => {
+  const tAsk = async () => { const e = new Error('TimeoutError'); e.name = 'TimeoutError'; throw e }
+  const r = await reviewNoBodySubject({ buf: BUF, ask: tAsk })
+  assert.equal(r.status, 'uncertain'); assert.equal(r.ok, null)
+})
+
+console.log('\n=== confidence 取值范围 ===')
+await ok('合法 0~1 → 透传', async () => {
+  for (const v of [0, 0.5, 1]) {
+    const r = await reviewNoPhone({ buf: BUF, ask: mkAsk({ phone_visible: false, confidence: v }) })
+    assert.equal(r.confidence, v)
+  }
+})
+await ok('越界/非有限 → null', async () => {
+  for (const v of [-0.1, 1.01, 2, NaN, Infinity, '0.9', undefined]) {
+    const r = await reviewNoPhone({ buf: BUF, ask: mkAsk({ phone_visible: false, confidence: v }) })
+    assert.equal(r.confidence, null, '非法值 ' + String(v) + ' 应为 null')
+  }
+})
+
 console.log(`\npass ${pass} / fail ${fail}`)
 process.exit(fail === 0 ? 0 : 1)

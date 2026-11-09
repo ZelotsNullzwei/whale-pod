@@ -21,9 +21,14 @@
 const DEFAULT_TIMEOUT = 20_000
 
 /** 统一的结果构造，保证 ok 与 status 一致 */
+/** 置信度归一：只接受有限数值且落在 0~1，否则一律 null（不编造） */
+function normConf(v) {
+  return (typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= 1) ? v : null
+}
+
 function mk({ reviewer, status, violation = null, why = '', confidence = null }) {
   const ok = status === 'pass' ? true : (status === 'violation' ? false : null)
-  return { status, ok, reviewer, violation, why: String(why ?? '').slice(0, 120), confidence: typeof confidence === 'number' ? confidence : null }
+  return { status, ok, reviewer, violation, why: String(why ?? '').slice(0, 120), confidence: normConf(confidence) }
 }
 
 /**
@@ -105,7 +110,7 @@ export async function reviewNoPhone({ buf, gateway, key, timeoutMs = DEFAULT_TIM
 
   const v = parsed.phone_visible
   const why = String(parsed.why ?? '').slice(0, 60)
-  const conf = typeof parsed.confidence === 'number' ? parsed.confidence : null
+  const conf = parsed.confidence
   if (v === true) return mk({ reviewer: 'no_phone', status: 'violation', violation: 'phone_visible', why: why || '画面里出现手机', confidence: conf })
   if (v === false) return mk({ reviewer: 'no_phone', status: 'pass', why: why || '画面里没有手机', confidence: conf })
   return mk({ reviewer: 'no_phone', status: 'uncertain', why: why || '模型无法确认是否有手机', confidence: conf })
