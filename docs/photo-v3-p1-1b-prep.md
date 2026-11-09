@@ -1,6 +1,7 @@
-# P1-1b 准备（设计稿，未改代码）
+# P1-1b：参考图选择规则（第 1~3 步已实施，待最终结项）
 
-> 状态：**只出设计**。本文件提交后不改 `reference-manager.js`、不改配置、不接正式入口、未授权不动 `photo-prompt.js`。
+> 状态：**P1-1b 第 1～3 步已实施并完成审计复核**（`reference-manager.js` 已按本方案改造，测试 30/0）。
+> 模块**仍未接入正式生图入口**；第 4 步（配置 A 版 `faceRef`）、第 5 步（接 `photo-prompt.js`）、第 6 步（真实生图验证）**待单独授权、未执行**。
 
 ## 一、必须修正的两处语义（你指出的）
 
@@ -69,12 +70,20 @@
 5. 接 `resolveReference()` 进 `photo-prompt.js` 参考图分支（**需单独授权**）
 6. 实拍 2~3 张验证：日程「浅灰吊带」时不再出女仆装
 
-## 五、当前未做（遵守边界）
+## 五、当前边界（第 1~3 步实施后）
 
-- `reference-manager.js` 未改
-- `config.json` / `canon.json` 未改
-- `photo-prompt.js` / `index.js` / `bridge.js` / 各 Planner 未改
-- 未接入生图、未提交 main
+**已修改**
+- `src/photo/reference-manager.js` —— 版本校验前置、dual_identity 拒绝、outfitId/文本严格比较、canon 五态诊断
+- `tests/check-reference-manager.mjs` —— 30 项测试
+- `docs/photo-v3-p1-1b-prep.md` —— 本文件
+- `canon.json`（**运行时配置，不在仓库**）—— 已加 `outfitText/outfitId/version`，备份 `canon.json.bak-before-p1b`
+
+**仍未修改**
+- `photo-prompt.js` / `bridge.js` / `index.js` / `config.json`
+- 任何 Planner（Intent/Camera/Framing/Pose/Visibility）
+- `main` 分支（审计分支 ahead 10 / behind 0，未合并）
+
+**未接入**：正式生图链路；`resolveReference()` 尚未被任何生产代码调用。
 
 ## 六、实现与设计稿的差异（第 1~3 步已实施，2026-11-09）
 
