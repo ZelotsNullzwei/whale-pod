@@ -113,9 +113,10 @@ export async function runCaptureReview({
   buf,
   mode = '',
   reviewEnabled = true,
-  legacyCheck = null,
-  captureReviewer = null,
-  retry = null,
+  shrink = null,          // async (buf) => Buffer，审核专用缩图（如 640）
+  legacyCheck = null,     // async (reviewBuf) => { ok, why }
+  captureReviewer = null, // async ({ buf: reviewBuf }) => captureResult
+  retry = null,           // async () => Buffer|null（已生成并处理好的重拍图，全分辨率）
   log = {},
 } = {}) {
   const qcFirst = { legacy: null, capture: null }
@@ -128,20 +129,32 @@ export async function runCaptureReview({
     return { finalBuf, retried, finalChoice, qcFirst, qcRetry, decision: null }
   }
 
-  /* ① 旧审核：独立捕获 */
+  /* ① 统一缩图（旧审核与 Capture Check 共用同一份）——缩图失败按"审核异常放行" */
+  let reviewBuf = buf
+  if (typeof shrink === 'function') {
+    try {
+      const small = await shrink(buf)
+      if (small && small.length > 0) reviewBuf = small
+    } catch (e) {
+      log.warn?.(`capture-review：审核缩图失败，按放行处理 — ${String(e?.message ?? e).slice(0, 60)}`)
+      return { finalBuf, retried, finalChoice, qcFirst: { legacy: { ok: true, why: '缩图失败放行' }, capture: null }, qcRetry, decision: null }
+    }
+  }
+
+  /* ② 旧审核：独立捕获 */
   if (typeof legacyCheck === 'function') {
     try {
-      qcFirst.legacy = await legacyCheck(buf)
+      qcFirst.legacy = await legacyCheck(reviewBuf)
     } catch (e) {
       log.warn?.(`capture-review：旧审核异常，按放行 — ${String(e?.message ?? e).slice(0, 60)}`)
       qcFirst.legacy = { ok: true, why: '审核异常放行' }
     }
   }
 
-  /* ② Capture Check：独立捕获 → uncertain，绝不影响 legacy 结果 */
+  /* ③ Capture Check：独立捕获 → uncertain，绝不覆盖 legacy */
   if (typeof captureReviewer === 'function') {
     try {
-      qcFirst.capture = await captureReviewer({ buf })
+      qcFirst.capture = await captureReviewer({ buf: reviewBuf })
     } catch (e) {
       qcFirst.capture = { status: 'uncertain', ok: null, reviewer: 'unknown', violation: null, why: '审核异常:' + String(e?.message ?? e).slice(0, 40), confidence: null }
     }
@@ -154,7 +167,7 @@ export async function runCaptureReview({
     alreadyRetried: false,
   })
 
-  /* ③ 唯一一次重拍 */
+  /* ④ 唯一一次重拍；重拍后复审同样用**缩图** */
   if (decision.retry && typeof retry === 'function') {
     let buf2 = null
     try {
@@ -163,12 +176,16 @@ export async function runCaptureReview({
       log.warn?.(`capture-review：重拍异常，保留原图 — ${String(e?.message ?? e).slice(0, 60)}`)
     }
     if (buf2 && buf2.length > 1024) {
+      let rImg = buf2
+      if (typeof shrink === 'function') {
+        try { const s2 = await shrink(buf2); if (s2 && s2.length > 0) rImg = s2 } catch { /* 复审缩图失败：只记录，不影响发送 */ }
+      }
       const r = { legacy: null, capture: null }
       if (typeof legacyCheck === 'function') {
-        try { r.legacy = await legacyCheck(buf2) } catch { r.legacy = null }
+        try { r.legacy = await legacyCheck(rImg) } catch { r.legacy = null }
       }
       if (typeof captureReviewer === 'function') {
-        try { r.capture = await captureReviewer({ buf: buf2 }) } catch {
+        try { r.capture = await captureReviewer({ buf: rImg }) } catch {
           r.capture = { status: 'uncertain', ok: null, reviewer: 'unknown', violation: null, why: '审核异常', confidence: null }
         }
       }

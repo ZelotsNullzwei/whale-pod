@@ -6349,8 +6349,8 @@ ${drewNote}
             const reviewEnabled = this.cfg.actions?.imageReview !== false
 
             /* 旧审核（多手/脸崩）：异常由 runCaptureReview 内部单独捕获→放行 */
-            const legacyCheck = async (b) => {
-              const small = await shrinkForReview(b, 640, this.log)
+            /* 收到的已是编排层统一缩好的审核图（640）——两个审核器共用 */
+            const legacyCheck = async (small) => {
               const limbs = await countLimbs({ buf: small, gateway: gwQc, key: qcKey, log: this.log })
               const rv = await reviewImage({ buf: small, gateway: gwQc, key: qcKey, log: this.log })
               const why = [limbs.ok ? '' : '手脚数量:' + (limbs.why || ''), rv.ok ? '' : (rv.why || '脸崩/多手')].filter(Boolean).join('; ')
@@ -6392,6 +6392,7 @@ ${drewNote}
                 buf: finalBuf,
                 mode: qcMode,
                 reviewEnabled,
+                shrink: (b) => shrinkForReview(b, 640, this.log),
                 legacyCheck,
                 captureReviewer,
                 retry: retryOnce,
