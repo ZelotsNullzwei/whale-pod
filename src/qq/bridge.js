@@ -22,7 +22,7 @@ import fs from 'node:fs'
 import { ImageCache } from './imageCache.js'
 import { reviewImage, countLimbs , reviewMatches } from './imageReview.js'
 import { reviewNoPhone, reviewNoBodySubject, pickReviewer } from './captureCheck.js'
-import { processImage, decideRetry, buildAuditRecord } from './photoCapturePipeline.js'
+import { processImage, decideRetry, buildAuditRecord, runCaptureReview } from './photoCapturePipeline.js'
 import { shrinkForReview } from './imageShrink.js'
 import os from 'node:os'
 import path from 'node:path'
@@ -6348,77 +6348,66 @@ ${drewNote}
             const qcKey = this.cfg.gateway?.key ?? null
             const reviewEnabled = this.cfg.actions?.imageReview !== false
 
-            const runChecks = async (buf, label) => {
-              const out = { legacy: null, capture: null }
-              if (!reviewEnabled || !buf) return out
-              try {
-                const small = await shrinkForReview(buf, 640, this.log)
-                const limbs = await countLimbs({ buf: small, gateway: gwQc, key: qcKey, log: this.log })
-                const rv = await reviewImage({ buf: small, gateway: gwQc, key: qcKey, log: this.log })
-                const why = [limbs.ok ? '' : '手脚数量:' + (limbs.why || ''), rv.ok ? '' : (rv.why || '脸崩/多手')].filter(Boolean).join('; ')
-                out.legacy = { ok: limbs.ok && rv.ok, why }
-                if (qcReviewer) out.capture = await qcReviewer({ buf: small, gateway: gwQc, key: qcKey, timeoutMs: 30000 })
-              } catch (e) {
-                this.log.warn?.(`bridge：审核出错（${label}，按放行处理）— ${String(e?.message ?? e).slice(0, 60)}`)
-                out.legacy = { ok: true, why: '审核异常放行' }
-              }
-              return out
+            /* 旧审核（多手/脸崩）：异常由 runCaptureReview 内部单独捕获→放行 */
+            const legacyCheck = async (b) => {
+              const small = await shrinkForReview(b, 640, this.log)
+              const limbs = await countLimbs({ buf: small, gateway: gwQc, key: qcKey, log: this.log })
+              const rv = await reviewImage({ buf: small, gateway: gwQc, key: qcKey, log: this.log })
+              const why = [limbs.ok ? '' : '手脚数量:' + (limbs.why || ''), rv.ok ? '' : (rv.why || '脸崩/多手')].filter(Boolean).join('; ')
+              return { ok: limbs.ok && rv.ok, why }
             }
-
-            let qcFirst = { legacy: null, capture: null }
-            let qcRetry = null
-            let retried = false
-            let finalChoice = 'original'
-            try {
-              qcFirst = await runChecks(finalBuf, '原图')
-              const decision = decideRetry({
-                legacyViolation: qcFirst.legacy ? !qcFirst.legacy.ok : false,
-                legacyWhy: qcFirst.legacy?.why ?? '',
-                capture: qcFirst.capture,
-                alreadyRetried: false,
+            const captureReviewer = qcReviewer
+              ? async ({ buf: b }) => qcReviewer({ buf: b, gateway: gwQc, key: qcKey, timeoutMs: 30000 })
+              : null
+            /* 重拍：复用原 shot / 提示词；处理与发送图同走 processImage */
+            const retryOnce = async () => {
+              const retry = await generateImage({
+                prompt: drawPrompt,
+                url: imgCfg.url,
+                provider: imgCfg.provider ?? 'magpie-mcp',
+                baseUrl: imgCfg.baseUrl,
+                apiKeyEnv: imgCfg.keyEnv,
+                model: imgCfg.model,
+                size: shot.framingInfo?.feet ? (imgCfg.size || '1024x2048') : imgCfg.size,
+                refImage: useRefPath,
+                aspect: imgCfg.aspect ?? '9:16',
+                resolution: imgCfg.resolution ?? '2K',
+                log: this.log,
               })
-              if (decision.retry && finalBuf) {
-                this.log.warn?.(`bridge：审核不合格（${decision.reasons.join('、')}）→ 重拍一张（不额外发消息）`)
-                const retry = await generateImage({
-                  prompt: drawPrompt,
-                  url: imgCfg.url,
-                  provider: imgCfg.provider ?? 'magpie-mcp',
-                  baseUrl: imgCfg.baseUrl,
-                  apiKeyEnv: imgCfg.keyEnv,
-                  model: imgCfg.model,
-                  size: shot.framingInfo?.feet ? (imgCfg.size || '1024x2048') : imgCfg.size,
-                  refImage: useRefPath,
-                  aspect: imgCfg.aspect ?? '9:16',
-                  resolution: imgCfg.resolution ?? '2K',
-                  log: this.log,
-                })
-                if (retry?.ok && retry.url) {
-                  const resp2 = await fetch(retry.url, { signal: AbortSignal.timeout(25000) })
-                  if (resp2.ok) {
-                    const buf2raw = Buffer.from(await resp2.arrayBuffer())
-                    const pr2 = await processImage(buf2raw, {
-                      shot,
-                      imgCfg,
-                      ops: { cropRegion, cropBottom, eraseCornerWatermark, log: this.log },
-                    })
-                    if (pr2.ok) {
-                      qcRetry = await runChecks(pr2.buf, '重拍')
-                      finalBuf = pr2.buf
-                      file = `base64://${pr2.buf.toString('base64')}`
-                      retried = true
-                      finalChoice = 'retry'
-                      this.log.info?.('bridge：重拍完成，用新的这张')
-                    } else {
-                      this.log.warn?.(`bridge：重拍图处理异常，保留原图 — ${pr2.reason || 'unknown'}`)
-                    }
-                  }
-                }
-              }
-            } catch (e) {
-              this.log.warn?.(`bridge：审核/重拍出错（用原图）— ${String(e?.message ?? e).slice(0, 60)}`)
+              if (!retry?.ok || !retry.url) return null
+              const resp2 = await fetch(retry.url, { signal: AbortSignal.timeout(25000) })
+              if (!resp2.ok) return null
+              const raw2 = Buffer.from(await resp2.arrayBuffer())
+              const pr2 = await processImage(raw2, {
+                shot,
+                imgCfg,
+                ops: { cropRegion, cropBottom, eraseCornerWatermark, log: this.log },
+              })
+              return pr2.ok ? pr2.buf : null
             }
 
-            /* 缓存：只在最终选图确定后写一次（重拍图覆盖原图，缓存与实发一致） */
+            let qcSel
+            try {
+              qcSel = await runCaptureReview({
+                buf: finalBuf,
+                mode: qcMode,
+                reviewEnabled,
+                legacyCheck,
+                captureReviewer,
+                retry: retryOnce,
+                log: this.log,
+              })
+            } catch (e) {
+              this.log.warn?.(`bridge：审核编排异常（保留原图）— ${String(e?.message ?? e).slice(0, 60)}`)
+              qcSel = { finalBuf, retried: false, finalChoice: 'original', qcFirst: { legacy: null, capture: null }, qcRetry: null, decision: null }
+            }
+            if (qcSel.finalBuf && qcSel.finalBuf !== finalBuf) {
+              finalBuf = qcSel.finalBuf
+              file = `base64://${finalBuf.toString('base64')}`
+              this.log.info?.('bridge：重拍完成，用新的这张')
+            }
+
+            /* 缓存：只在最终选图确定后写一次（与实发图一致） */
             try {
               if (finalBuf) this._imageCache().put(drawPrompt, finalBuf, { scope: String(msg.scope ?? ''), ms: r.ms })
             } catch (e) {
@@ -6430,10 +6419,10 @@ ${drewNote}
               this.log.info?.('photo-qc ' + JSON.stringify(buildAuditRecord({
                 scope: String(msg.scope ?? ''),
                 mode: qcMode,
-                original: qcFirst,
-                retried,
-                retry: qcRetry,
-                finalChoice,
+                original: qcSel.qcFirst,
+                retried: qcSel.retried,
+                retry: qcSel.qcRetry,
+                finalChoice: qcSel.finalChoice,
                 cacheKey: 'drawPrompt',
                 ms: r.ms,
               })))

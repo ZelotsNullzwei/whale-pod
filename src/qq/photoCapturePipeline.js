@@ -91,3 +91,93 @@ export function buildAuditRecord({ scope = '', mode = '', original = null, retri
     ms,
   }
 }
+
+/**
+ * 审核编排（接线可测版）：串起「旧审核 + Capture Check → 唯一重拍 → 复审只记录」
+ *
+ * 关键纪律（评审要求）：
+ *   · 旧审核与 Capture Check **各自 try/catch**，任一异常不得覆盖另一个已得结果
+ *   · 旧审核异常 → 放行（ok:true，沿用既有原则）
+ *   · Capture Check 异常 → uncertain（不触发重拍）
+ *   · 重拍最多一次；重拍失败（返回 null）→ 保留原图
+ *   · 重拍后复审只记录，不阻断、不再重拍
+ *
+ * @param {{buf:Buffer, mode?:string, reviewEnabled?:boolean,
+ *          legacyCheck?:(buf:Buffer)=>Promise<{ok:boolean,why?:string}>,
+ *          captureReviewer?:(o:{buf:Buffer})=>Promise<object>,
+ *          retry?:()=>Promise<Buffer|null>, log?:object}} o
+ * @returns {Promise<{finalBuf:Buffer, retried:boolean, finalChoice:'original'|'retry',
+ *           qcFirst:{legacy:any,capture:any}, qcRetry:{legacy:any,capture:any}|null, decision:object|null}>}
+ */
+export async function runCaptureReview({
+  buf,
+  mode = '',
+  reviewEnabled = true,
+  legacyCheck = null,
+  captureReviewer = null,
+  retry = null,
+  log = {},
+} = {}) {
+  const qcFirst = { legacy: null, capture: null }
+  let qcRetry = null
+  let retried = false
+  let finalChoice = 'original'
+  let finalBuf = buf
+
+  if (!reviewEnabled || !buf) {
+    return { finalBuf, retried, finalChoice, qcFirst, qcRetry, decision: null }
+  }
+
+  /* ① 旧审核：独立捕获 */
+  if (typeof legacyCheck === 'function') {
+    try {
+      qcFirst.legacy = await legacyCheck(buf)
+    } catch (e) {
+      log.warn?.(`capture-review：旧审核异常，按放行 — ${String(e?.message ?? e).slice(0, 60)}`)
+      qcFirst.legacy = { ok: true, why: '审核异常放行' }
+    }
+  }
+
+  /* ② Capture Check：独立捕获 → uncertain，绝不影响 legacy 结果 */
+  if (typeof captureReviewer === 'function') {
+    try {
+      qcFirst.capture = await captureReviewer({ buf })
+    } catch (e) {
+      qcFirst.capture = { status: 'uncertain', ok: null, reviewer: 'unknown', violation: null, why: '审核异常:' + String(e?.message ?? e).slice(0, 40), confidence: null }
+    }
+  }
+
+  const decision = decideRetry({
+    legacyViolation: qcFirst.legacy ? !qcFirst.legacy.ok : false,
+    legacyWhy: qcFirst.legacy?.why ?? '',
+    capture: qcFirst.capture,
+    alreadyRetried: false,
+  })
+
+  /* ③ 唯一一次重拍 */
+  if (decision.retry && typeof retry === 'function') {
+    let buf2 = null
+    try {
+      buf2 = await retry()
+    } catch (e) {
+      log.warn?.(`capture-review：重拍异常，保留原图 — ${String(e?.message ?? e).slice(0, 60)}`)
+    }
+    if (buf2 && buf2.length > 1024) {
+      const r = { legacy: null, capture: null }
+      if (typeof legacyCheck === 'function') {
+        try { r.legacy = await legacyCheck(buf2) } catch { r.legacy = null }
+      }
+      if (typeof captureReviewer === 'function') {
+        try { r.capture = await captureReviewer({ buf: buf2 }) } catch {
+          r.capture = { status: 'uncertain', ok: null, reviewer: 'unknown', violation: null, why: '审核异常', confidence: null }
+        }
+      }
+      qcRetry = r
+      finalBuf = buf2
+      retried = true
+      finalChoice = 'retry'
+    }
+  }
+
+  return { finalBuf, retried, finalChoice, qcFirst, qcRetry, decision }
+}
