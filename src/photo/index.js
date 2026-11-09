@@ -24,6 +24,22 @@ import { resolveReference } from './reference-manager.js'
 import fs from 'node:fs'
 import crypto from 'node:crypto'
 
+/** A 版身体基准的完整 SHA256（version-a-original-body/body-3view.png） */
+export const A_BODY_SHA256 = 'f75c7d779c173f738e18e11fe236b637c272626de4627e32f34c372c21279d69'
+
+/**
+ * 由**文件内容**判定 body 参考图版本（不读配置、不猜）。
+ * @param {string} p 文件路径
+ * @returns {''|A'|'UNKNOWN'} 空路径 → ''；匹配 A 基准 → 'A'；其余 → 'UNKNOWN'
+ */
+export function bodyRefVersionOf(p) {
+  if (!p) return ''
+  try {
+    const h = crypto.createHash('sha256').update(fs.readFileSync(p)).digest('hex')
+    return h === A_BODY_SHA256 ? 'A' : 'UNKNOWN'
+  } catch { return 'UNKNOWN' }
+}
+
 /** 全局唯一的连续性记录器（进程内有效） */
 export const continuity = new PhotoContinuity()
 /** 表情防重复记录 */
@@ -178,20 +194,11 @@ export function planShot(o = {}) {
    *   · bodyRef 用真实配置字段 bodyRefImage；其版本经 sha256 校验等于 A 版 body
    */
   /*
-   * body 参考图的版本**不猜**：运行时核验 sha256。
-   * 只有与 A 版 body 基准（sha256 前 16 位 f75c7d779c173f73）一致才记 A；
-   * 否则记 UNKNOWN → resolver 判 body_version_invalid 并产生冲突（拒绝使用）。
-   * 这样即使有人把 bodyRefImage 换成别的图，也不会被静默当成 A。
+   * body 参考图版本：**只由文件内容决定**，不允许配置覆盖。
+   *   · 完整 SHA256 与 A 版基准一致 → A
+   *   · 其他/读不到 → UNKNOWN（resolver 判 body_version_invalid 并拒绝，绝不猜）
    */
-  const A_BODY_SHA16 = 'f75c7d779c173f73'
-  const bodyRefVersionOf = (p) => {
-    if (!p) return ''
-    try {
-      const h = crypto.createHash('sha256').update(fs.readFileSync(p)).digest('hex').slice(0, 16)
-      return h === A_BODY_SHA16 ? 'A' : 'UNKNOWN'
-    } catch { return 'UNKNOWN' }
-  }
-  const BODY_REF_VERSION = String(imageCfg.bodyRefVersion ?? bodyRefVersionOf(String(imageCfg.bodyRefImage ?? '')))
+  const BODY_REF_VERSION = bodyRefVersionOf(String(imageCfg.bodyRefImage ?? ''))
   const resolverMode = (sceneOnly || plan.needsCharacterRef === false)
     ? 'scene_only'
     : (plan.mode === 'rear_selfie' ? 'rear_object' : plan.mode)
