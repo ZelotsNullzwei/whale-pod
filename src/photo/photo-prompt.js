@@ -77,6 +77,8 @@ function pickSelfiePose(mode) {
   return pool[bucket % pool.length]
 }
 
+import { handContractFor, handRuleLine } from './handContract.js'
+
 export function composePhotoPrompt(o = {}) {
   const {
     plan = {}, framing = {}, scene = '', outfit = '', hair = '', weather = '', mood = '',
@@ -538,7 +540,7 @@ ${lightByHour()}
   这一张**没有镜子**：不要出现镜子边框、不要出现"镜子里映出她"、不要把手机举在她面前。
   镜头就在她眼睛上，她**看不见自己**，所以画面里也不该出现"某个人的手机屏幕对着她"。
 - 场景里写「她坐着/她在吃」→ 理解成**她的手在做什么**，不要把人画进画面。
-- **最多两只手**：画面里出现的手/手臂加起来不超过 2 只，不许从画面边缘伸进来第三只。
+- **手数上限**：第一人称默认最多一只手，不许出现第二只/第三只手（以文末手部契约为准）。
 ${lowerBodyRule}
 ⚠️ 场景里如果出现描写她**外貌**的词，一律作废、不要照画。`)
   } else {
@@ -713,6 +715,13 @@ ${plan.mode === 'front_selfie' ? '前置自拍：手机本体、手机屏幕、�
 - 场景描述中的“她在洗碗/做饭/整理”等动作只用于确定被拍物品及环境；除非用户明确要求拍人物，否则不得把她本人生成成画面主体。
 - 不得出现第二个人、摄影师或旁观者视角。`)
   }
+
+  /* 手部契约（唯一真源，放在最后压过前面的散落表述） */
+  try {
+    const hc = handContractFor(plan?.mode)
+    const line = handRuleLine(hc)
+    if (line) parts.push(line)
+  } catch { /* 契约失败不阻塞生成 */ }
 
   parts.push(`【输出】竖版 9:16，单张。`)
 

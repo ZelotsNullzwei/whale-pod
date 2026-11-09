@@ -21,8 +21,9 @@
 import fs from 'node:fs'
 import { ImageCache } from './imageCache.js'
 import { reviewImage, countLimbs , reviewMatches } from './imageReview.js'
-import { reviewNoPhone, reviewNoBodySubject, pickReviewer } from './captureCheck.js'
+import { reviewNoPhone, reviewNoBodySubject, pickReviewer, reviewHands, combineCaptureResults } from './captureCheck.js'
 import { processImage, decideRetry, buildAuditRecord, runCaptureReview } from './photoCapturePipeline.js'
+import { handContractFor, requiresHandGate, handRuleLine } from '../photo/handContract.js'
 import { shrinkForReview } from './imageShrink.js'
 import os from 'node:os'
 import path from 'node:path'
@@ -6344,6 +6345,8 @@ ${drewNote}
              */
             const qcMode = String(shot?.plan?.mode ?? '')
             const qcReviewer = pickReviewer(qcMode)
+            const handContract = handContractFor(qcMode)          // 手部契约（唯一真源，未登记模式为 null）
+            const requireReview = Boolean(handContract) && (this.cfg.actions?.handGate !== false)
             const gwQc = `http://127.0.0.1:${this.cfg.gateway?.port ?? 18899}/v1`
             const qcKey = this.cfg.gateway?.key ?? null
             const reviewEnabled = this.cfg.actions?.imageReview !== false
@@ -6356,8 +6359,13 @@ ${drewNote}
               const why = [limbs.ok ? '' : '手脚数量:' + (limbs.why || ''), rv.ok ? '' : (rv.why || '脸崩/多手')].filter(Boolean).join('; ')
               return { ok: limbs.ok && rv.ok, why }
             }
-            const captureReviewer = qcReviewer
-              ? async ({ buf: b }) => qcReviewer({ buf: b, gateway: gwQc, key: qcKey, timeoutMs: 30000 })
+            const captureReviewer = (qcReviewer || handContract)
+              ? async ({ buf: b }) => {
+                  const results = []
+                  if (qcReviewer) results.push(await qcReviewer({ buf: b, gateway: gwQc, key: qcKey, timeoutMs: 30000 }))
+                  if (handContract) results.push(await reviewHands({ buf: b, gateway: gwQc, key: qcKey, maxVisibleHands: handContract.maxVisibleHands, timeoutMs: 30000 }))
+                  return combineCaptureResults(results)
+                }
               : null
             /* 重拍：复用原 shot / 提示词；处理与发送图同走 processImage */
             const retryOnce = async () => {
@@ -6395,6 +6403,7 @@ ${drewNote}
                 shrink: (b) => shrinkForReview(b, 640, this.log),
                 legacyCheck,
                 captureReviewer,
+                requireReview,
                 retry: retryOnce,
                 log: this.log,
               })
@@ -6408,12 +6417,6 @@ ${drewNote}
               this.log.info?.('bridge：重拍完成，用新的这张')
             }
 
-            /* 缓存：只在最终选图确定后写一次（与实发图一致） */
-            try {
-              if (finalBuf) this._imageCache().put(drawPrompt, finalBuf, { scope: String(msg.scope ?? ''), ms: r.ms })
-            } catch (e) {
-              this.log.warn?.(`bridge：写图片缓存失败 — ${String(e?.message ?? e).slice(0, 60)}`)
-            }
 
             /* 审核记录（结构化日志；不落两份大图） */
             try {
@@ -6428,6 +6431,17 @@ ${drewNote}
                 ms: r.ms,
               })))
             } catch { /* 记录失败不影响发送 */ }
+
+            if (qcSel.block) {
+              this.log.warn?.(`bridge：图片门禁阻断（${qcSel.reason || '未知'}）→ 不写缓存、不发送这张`)
+              drawSkipReason = `审核阻断：${String(qcSel.reason ?? '').slice(0, 40)}`
+            } else {
+            /* 缓存：只在最终选图确定后写一次（与实发图一致） */
+            try {
+              if (finalBuf) this._imageCache().put(drawPrompt, finalBuf, { scope: String(msg.scope ?? ''), ms: r.ms })
+            } catch (e) {
+              this.log.warn?.(`bridge：写图片缓存失败 — ${String(e?.message ?? e).slice(0, 60)}`)
+            }
 
             drawnImage = { url: file }
             /*
@@ -6459,6 +6473,7 @@ ${drewNote}
             this._lastDrewAt[String(msg.scope ?? '')] = Date.now()
             drewAny = true   // 兼容旧名：真的画出来了
             this.log.info?.(`bridge：画好了（${Math.round(r.ms / 1000)}s）`)
+            }
           } else {
             this.log.warn?.(`bridge：画图失败 — ${r.error}`)
             drawSkipReason = `生成失败：${String(r.error ?? '未知').slice(0, 40)}`

@@ -75,6 +75,23 @@ export function decideRetry({ legacyViolation = false, legacyWhy = '', capture =
 }
 
 /**
+ * 发送门禁：只拦"结构性致命错误 / 审核不可用"，**不**把普通旧审核失败当严重。
+ *   · fatal：extra_hands / limb_count / hand_mismatch / hand_anatomy（手部专项）
+ *   · 任何 reviewSkipped（审核不可用）→ 阻断（fail closed，需 requireReview）
+ *   · phone_visible / body_subject 属于既有"重拍后放行"策略，不在此阻断
+ */
+export function shouldBlockSend({ legacy = null, capture = null, retryCapture = null, reviewSkipped = false } = {}) {
+  const FATAL = new Set(['extra_hands', 'limb_count', 'hand_mismatch', 'hand_anatomy'])
+  if (reviewSkipped) return { block: true, reason: '审核不可用' }
+  /* 有重拍图时以重拍图为准（重拍修好了就不该被初审拖住）；否则看初审 */
+  const finalC = retryCapture ?? capture
+  if (finalC) {
+    const fatal = finalC.severity === 'fatal' || FATAL.has(String(finalC.violation ?? ''))
+    if (finalC.status === 'violation' && fatal) return { block: true, reason: `${retryCapture ? '复审' : '初审'}:${finalC.violation}` }
+  }
+  return { block: false, reason: null }
+}
+/**
  * 结构化审核记录（用于日志；默认不落两份大图，避免缓存膨胀）。
  */
 export function buildAuditRecord({ scope = '', mode = '', original = null, retried = false, retry = null, finalChoice = 'original', cacheKey = '', ms = 0 } = {}) {
@@ -127,6 +144,7 @@ export async function runCaptureReview({
   legacyCheck = null,     // async (reviewBuf) => { ok, why }
   captureReviewer = null, // async ({ buf: reviewBuf }) => captureResult
   retry = null,           // async () => Buffer|null（已生成并处理好的重拍图，全分辨率）
+  requireReview = false,
   log = {},
 } = {}) {
   const qcFirst = { legacy: null, capture: null }
@@ -136,7 +154,7 @@ export async function runCaptureReview({
   let finalBuf = buf
 
   if (!reviewEnabled || !buf) {
-    return { finalBuf, retried, finalChoice, qcFirst, qcRetry, decision: null }
+    return { finalBuf, retried, finalChoice, qcFirst, qcRetry, decision: null, block: Boolean(requireReview) }
   }
 
   /* ① 统一缩图（旧审核与 Capture Check 共用同一份）——缩图失败按"审核异常放行" */
@@ -147,12 +165,12 @@ export async function runCaptureReview({
       small = await shrink(buf)
     } catch (e) {
       log.warn?.(`capture-review：审核缩图抛异常，按放行处理 — ${String(e?.message ?? e).slice(0, 60)}`)
-      return { finalBuf, retried, finalChoice, qcFirst: { legacy: { ok: true, why: '缩图失败放行' }, capture: null }, qcRetry, decision: null }
+      return { finalBuf, retried, finalChoice, qcFirst: { legacy: { ok: true, why: '缩图失败放行' }, capture: null }, qcRetry, decision: null, block: Boolean(requireReview) }
     }
     if (!isUsableShrink(small, buf)) {
       /* 生产环境真实的失败形态：shrinkForReview 返回原图同一引用 */
       log.warn?.('capture-review：缩图结果不可用（返回原图/为空/未变小）→ 按放行处理')
-      return { finalBuf, retried, finalChoice, qcFirst: { legacy: { ok: true, why: '缩图失败放行' }, capture: null }, qcRetry, decision: null }
+      return { finalBuf, retried, finalChoice, qcFirst: { legacy: { ok: true, why: '缩图失败放行' }, capture: null }, qcRetry, decision: null, block: Boolean(requireReview) }
     }
     reviewBuf = small
   }
@@ -215,5 +233,12 @@ export async function runCaptureReview({
     }
   }
 
-  return { finalBuf, retried, finalChoice, qcFirst, qcRetry, decision }
+  /* 审核不可用：requireReview 且（无审核器 或 视觉服务异常导致 uncertain）→ fail closed */
+  const finalCapture = qcRetry?.capture ?? qcFirst.capture
+  const reviewUnavailable = Boolean(requireReview) && (
+    (!captureReviewer)
+    || (finalCapture && finalCapture.status === 'uncertain' && /异常|失败|网关|超时/.test(String(finalCapture.why ?? '')))
+  )
+  const gate = shouldBlockSend({ legacy: qcRetry?.legacy?.ok === false ? qcRetry.legacy : qcFirst.legacy, capture: qcFirst.capture, retryCapture: qcRetry?.capture, reviewSkipped: reviewUnavailable })
+  return { finalBuf, retried, finalChoice, qcFirst, qcRetry, decision, ...gate, block: Boolean(requireReview) && gate.block }
 }
