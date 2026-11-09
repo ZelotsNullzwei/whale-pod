@@ -105,6 +105,7 @@ export function resolveReference({
   const pv = parseVersion(characterVersion)
   checks.push({ name: 'character_version', ok: pv.valid, detail: pv.assumed ? '未声明 → 按 A' : String(pv.value) })
   let versionConflict = false
+  let dualReject = false
   if (!pv.valid) versionConflict = true
 
   const cur = pv.value
@@ -134,7 +135,10 @@ export function resolveReference({
     if (!pb.valid) {
       versionConflict = true
       checks.push({ name: 'body_version_invalid', ok: false, detail: String(bodyRefVersion) })
-    } else if (cur && pb.value !== cur) {
+    } else if (!cur) {
+      /* 角色版本非法 → 无法比较，不能记为成功 */
+      checks.push({ name: 'body_version_unchecked', ok: false, detail: 'character_version_invalid' })
+    } else if (pb.value !== cur) {
       versionConflict = true
       checks.push({ name: 'body_version_mismatch', ok: false, detail: `body=${pb.value} current=${cur}` })
     } else {
@@ -143,6 +147,7 @@ export function resolveReference({
     /* faceRef 与 bodyRef 同一张图 → 双重身份，拒绝 */
     if (faceRef && String(faceRef) === String(bodyRef)) {
       versionConflict = true
+      dualReject = true
       checks.push({ name: 'dual_identity_reference', ok: false, detail: 'faceRef === bodyRef' })
     }
   }
@@ -196,6 +201,20 @@ export function resolveReference({
   }
 
   /* ---------- ⑤ 冲突 / 无 canon → 只用"只锁脸"的图，否则兜底 ---------- */
+  /* dual_identity_reference 是**独立拒绝条件**：检测到就不得再通过 face fallback 用同一张图 */
+  if (dualReject) {
+    return {
+      strategy: 'fallback',
+      refImage: null,
+      identityRef: null,
+      humanPartsAllowed: true,
+      conflict: true,
+      reason: 'dual_identity_reference_rejected',
+      version,
+      checks,
+    }
+  }
+
   const headOk = Boolean(faceRef) && faceRefKind === 'head'
   if (headOk) {
     return {

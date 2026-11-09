@@ -130,11 +130,23 @@ ok('canon 版本 A、当前 B → conflict 且不用 canon', () => {
 })
 
 console.log('\n=== F. 双重身份参考图 ===')
-ok('faceRef 与 bodyRef 同一张 → conflict + dual_identity_reference', () => {
+ok('faceRef 与 bodyRef 同一张 → 强制 fallback，绝不返回该图', () => {
   const same = 'refs/x.png'
   const r = resolveReference({ mode: 'front_selfie', characterVersion: 'A', faceRef: same, faceRefKind: 'head', bodyRef: same, bodyRefVersion: 'A' })
+  assert.equal(r.strategy, 'fallback', '不能走 face fallback')
+  assert.equal(r.refImage, null)
+  assert.equal(r.identityRef, null)
   assert.equal(r.conflict, true)
+  assert.equal(r.reason, 'dual_identity_reference_rejected')
   assert.ok(has(r, 'dual_identity_reference'))
+})
+
+console.log('\n=== F2. 版本诊断不得伪造 ===')
+ok('characterVersion 非法 → body_version_unchecked（不记成功）', () => {
+  const r = resolveReference({ mode: 'front_selfie', characterVersion: 'C', bodyRef: 'b.png', bodyRefVersion: 'A', faceRef: 'f.png', faceRefKind: 'head' })
+  assert.equal(r.conflict, true)
+  assert.ok(has(r, 'body_version_unchecked'))
+  assert.equal(r.checks.find((c) => c.name === 'body_version'), undefined, '不得出现成功的 body_version')
 })
 
 console.log('\n=== G. first_person 语义 & faceRefKind ===')

@@ -82,7 +82,7 @@
 |---|---|---|
 | `characterVersion` 默认 `A` | 默认**空串**；归一为 A，并置 `version.assumed=true` | 需要区分"显式 A"与"未声明"，否则无法证明确实没走 B |
 | 未提诊断字段 | 增加 `checks:[{name, ok, detail}]` | 便于接入后追查"为什么没用 canon" |
-| `sameOutfitText` 未定阈值 | 共享主体词 ≥3；或 =2 且双方各 ≥3 个主体词 | 防止"白色/蕾丝"这类通用词被判同套 |
+| `sameOutfitText` 未定阈值 | ~~共享主体词 ≥3~~ **【已废弃，勿参考】** → 现行规则见第七节：规范化完整文本 + 二元组 Dice ≥ 0.85 | 旧方案会被"同类别不同款"误判 |
 | 只说"检查身体参考图版本" | 入参 `bodyRef` / `bodyRefVersion`，不匹配记 `body_version_mismatch` | 让调用方显式传版本，不猜 |
 | `canon.json` 补 `outfitText` | 取 `SIGNATURE_OUTFITS` 里「女仆装短款」原文（该套本身含尾巴挂件描述，按 P0 规则保留） | 保证 outfitText 与衣柜同源 |
 
@@ -112,3 +112,13 @@
 1. **同款不同色的近似描述**：若两段文本字面高度相似（Dice ≥0.85）但颜色不同，仍可能被判同套 —— 文本相似度无法理解颜色语义。可靠做法是给衣柜每套加稳定 `outfitId`（已在 canon 侧引入），日常服装也应逐步补 ID。
 2. **canon 条目缺 `outfitText`/`outfitId`** 时只能保守判冲突；当前 `canon.json` 已补齐。
 3. 本模块只能保证"选参考图的规则正确"，**不能保证出图效果**；必须实拍验证。
+### 第三轮修正（双重身份闭环 + 诊断准确 + 文档清理）
+
+| 问题 | 修正 |
+|---|---|
+| 检测到 `dual_identity_reference` 后仍可能通过 head fallback 使用同一张图 | 设为**独立拒绝条件**：直接 `strategy:"fallback"`、`refImage:null`、`identityRef:null`、`conflict:true`、`reason:"dual_identity_reference_rejected"`，不再进入 face 分支 |
+| 角色版本非法（current=null）时 body 版本仍被记为成功 | 改为 `body_version_unchecked`（ok:false，detail:`character_version_invalid`），不伪造 `body_version` |
+| 文档第六节残留旧阈值说明 | 已标注"已废弃，勿参考"，现行规则以第七节 Dice 为准 |
+
+**当前服装比较的最终规则（唯一有效）**：`outfitId` 优先 → 否则规范化完整文本；完全相同=同套；任一侧 <12 字符=不同套；否则二元组 Dice ≥ 0.85 才算同套。
+**已知语义限制**：文本相似度不理解颜色，同款不同色的近似描述仍可能被判同套；彻底解决需要衣柜每套都有稳定 `outfitId`。
