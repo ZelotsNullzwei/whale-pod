@@ -4,7 +4,7 @@
 
 - **最终结论以第八、九节为准**：单测 **18/0**；真实入口 `tests/check-capture-check-real.mjs`（缺必测图/决策文件缺失或损坏/未登记 mode → `INCOMPLETE` 退出码 2，不报通过）。
 - 第三、四节是**第一版历史记录**（当时 14 项单测、尚无仓库内真实入口），保留用于审计追溯，**不代表当前状态**。
-- 第七、八节记录复核补强与最终收尾。
+- 第七节为第二轮历史记录；**第八、九节为复核补强与最终收尾（当前有效）**。
 
 日期：2026-11-09
 范围：新增 `src/qq/captureCheck.js` + `tests/check-capture-check.mjs` + 本报告。
@@ -101,7 +101,7 @@
 
 ### 仍然存在的限制（未改）
 
-1. 真实图片依赖本机实验目录，**不入仓库**（私人角色素材）；干净环境跑 `check-capture-check-real` 会 SKIPPED —— 这是设计，不是通过。
+1. 真实图片依赖本机实验目录，**不入仓库**（私人角色素材）；干净环境跑 `check-capture-check-real` 现在返回 **INCOMPLETE + exit 2**（旧规则“SKIPPED / exit 0”已废弃，见第八、九节）—— 未执行不等于通过。
 2. “极小手机边缘”仍是判定边界（历史记录见第五节）。
 3. 未接入生图流程；接线时的重拍策略建议见交接（violation→重拍 1 次；pass→发送；uncertain→放行不重拍；重拍后必须更新缓存并记录）。
 ## 八、最终收尾（测试脚本边界，2026-11-09）
@@ -140,3 +140,22 @@
 | `front-3` 缺 `photo.jpg` | `INCOMPLETE：front-3 缺 photo.jpg`，exit **2** |
 
 未改：`captureCheck.js`、`bridge.js`、任何生产链路；未触发真实重拍。
+## 十、expectedMode 校验（第四轮，2026-11-09）
+
+**问题**：此前仅按 `decision.json.mode` 选 reviewer。若测试数据的 mode 被误改（如 front-1 变成 rear_selfie），脚本会调用 `reviewNoBodySubject`，恰好返回 pass 时就可能与 `expect: pass` 凑成"通过"，但**根本没检查手机**。
+
+**处理**：期望表增加 `expectedMode`，执行前强校验：
+
+| 图片 | expectedMode | reviewer |
+|---|---|---|
+| front-1/2/3 | front_selfie | no_phone |
+| rear-1/2 | rear_selfie | no_body_subject |
+| rear-3 | 动态（first_person 跳过 / rear_selfie 执行 / 其他 INCOMPLETE）| 按实际 mode |
+
+不一致即 `INCOMPLETE`(exit 2)，不允许换用别的 reviewer 后判通过。
+
+### 负向实测
+
+把 `front-1/decision.json` 的 mode 改成 `rear_selfie` 后运行 → `INCOMPLETE：front-1 mode 不符：期望 front_selfie，实际 rear_selfie`，exit **2**。
+
+未改：`captureCheck.js`、`bridge.js`、生产链路；未触发真实重拍。

@@ -18,13 +18,13 @@ const ROOT = path.resolve(HERE, '..')
 const { reviewNoPhone, reviewNoBodySubject, pickReviewer } = await import(pathToFileURL(path.join(ROOT, 'src/qq/captureCheck.js')).href)
 
 const CASES = [
-  { name: 'front-1', expect: 'pass', required: true },
-  { name: 'front-2', expect: 'pass', required: true },
-  { name: 'front-3', expect: 'violation', required: true },
+  { name: 'front-1', expect: 'pass', expectedMode: 'front_selfie', required: true },
+  { name: 'front-2', expect: 'pass', expectedMode: 'front_selfie', required: true },
+  { name: 'front-3', expect: 'violation', expectedMode: 'front_selfie', required: true },
   { name: 'mirror-1', fixedSkip: 'mirror 不参与（设计）' },
   { name: 'mirror-2', fixedSkip: 'mirror 不参与（设计）' },
-  { name: 'rear-1', expect: 'violation', required: true },
-  { name: 'rear-2', expect: 'violation', required: true },
+  { name: 'rear-1', expect: 'violation', expectedMode: 'rear_selfie', required: true },
+  { name: 'rear-2', expect: 'violation', expectedMode: 'rear_selfie', required: true },
   { name: 'rear-3', expect: 'violation', byMode: true },   // 按实际 mode 决定
 ]
 
@@ -95,6 +95,12 @@ for (const c of CASES) {
   }
 
   const mode = dec.mode
+  /* ★ 先验证预期 mode 与实际一致：防止数据被改后调用了不对应的 reviewer 却仍判通过 */
+  if (c.expectedMode && mode !== c.expectedMode) {
+    markIncomplete(`${c.name} mode 不符：期望 ${c.expectedMode}，实际 ${mode}`)
+    skip++; rows.push({ name: c.name, skipped: true, reason: `mode 不符：期望 ${c.expectedMode}，实际 ${mode}` })
+    continue
+  }
   const rev = pickReviewer(mode)
   if (!rev) {
     /* 走到这里说明期望表与 mode 不符（未登记组合）→ INCOMPLETE，而不是静默跳过 */
