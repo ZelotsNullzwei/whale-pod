@@ -100,13 +100,16 @@ export async function reviewNoPhone({ buf, gateway, key, timeoutMs = DEFAULT_TIM
     return mk({ reviewer: 'no_phone', status: 'uncertain', why: '图片为空或过小' })
   }
   let parsed = null
-  try {
-    parsed = await ask({ buf, gateway, key, system: NO_PHONE_SYSTEM, userText: '这张图里有没有手机？', timeoutMs })
-  } catch (e) {
-    log.warn?.(`captureCheck/no_phone：视觉调用异常 — ${String(e?.message ?? e).slice(0, 60)}`)
-    return mk({ reviewer: 'no_phone', status: 'uncertain', why: '视觉服务异常' })
+  let lastErr = null
+  for (let attempt = 0; attempt < 2 && !parsed; attempt++) {
+    try {
+      parsed = await ask({ buf, gateway, key, system: NO_PHONE_SYSTEM, userText: '这张图里有没有手机？', timeoutMs })
+    } catch (e) { lastErr = e }
   }
-  if (!parsed) return mk({ reviewer: 'no_phone', status: 'uncertain', why: '识别失败或无法判断' })
+  if (!parsed) {
+    log.warn?.(`captureCheck/no_phone：两次识别失败${lastErr ? ' — ' + String(lastErr?.message ?? lastErr).slice(0, 50) : ''}`)
+    return mk({ reviewer: 'no_phone', status: 'uncertain', why: '视觉识别失败（两次）', serviceError: true })
+  }
 
   const v = parsed.phone_visible
   const why = String(parsed.why ?? '').slice(0, 60)
@@ -125,13 +128,16 @@ export async function reviewNoBodySubject({ buf, gateway, key, timeoutMs = DEFAU
     return mk({ reviewer: 'no_body_subject', status: 'uncertain', why: '图片为空或过小' })
   }
   let parsed = null
-  try {
-    parsed = await ask({ buf, gateway, key, system: NO_BODY_SYSTEM, userText: '这张图里有没有拍摄者本人的身体主体（头脸/肩/躯干/腿脚）？只有手或前臂不算。', timeoutMs })
-  } catch (e) {
-    log.warn?.(`captureCheck/no_body：视觉调用异常 — ${String(e?.message ?? e).slice(0, 60)}`)
-    return mk({ reviewer: 'no_body_subject', status: 'uncertain', why: '视觉服务异常' })
+  let lastErr = null
+  for (let attempt = 0; attempt < 2 && !parsed; attempt++) {
+    try {
+      parsed = await ask({ buf, gateway, key, system: NO_BODY_SYSTEM, userText: '这张图里有没有拍摄者本人的身体主体（头脸/肩/躯干/腿脚）？只有手或前臂不算。', timeoutMs })
+    } catch (e) { lastErr = e }
   }
-  if (!parsed) return mk({ reviewer: 'no_body_subject', status: 'uncertain', why: '识别失败或无法判断' })
+  if (!parsed) {
+    log.warn?.(`captureCheck/no_body：两次识别失败${lastErr ? ' — ' + String(lastErr?.message ?? lastErr).slice(0, 50) : ''}`)
+    return mk({ reviewer: 'no_body_subject', status: 'uncertain', why: '视觉识别失败（两次）', serviceError: true })
+  }
 
   const v = parsed.body_subject
   const why = String(parsed.why ?? '').slice(0, 60)
@@ -235,7 +241,7 @@ export function combineCaptureResults(results = []) {
   }
   if (list.some((r) => r.status === 'uncertain')) {
     const u = list.find((r) => r.status === 'uncertain')
-    return { status: 'uncertain', ok: null, reviewer: u.reviewer, violation: null, severity: null, why: u.why, confidence: u.confidence ?? null, details: list }
+    return { status: 'uncertain', ok: null, reviewer: u.reviewer, violation: null, severity: null, why: u.why, confidence: u.confidence ?? null, serviceError: list.some((x) => x.serviceError === true), details: list }
   }
   return { status: 'pass', ok: true, reviewer: list[0].reviewer, violation: null, severity: null, why: list[0].why, confidence: list[0].confidence ?? null, hands: list[0].hands ?? null, arms: list[0].arms ?? null, details: list }
 }
