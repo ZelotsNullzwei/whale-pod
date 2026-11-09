@@ -11355,40 +11355,36 @@ ${drewNote}
    * 上游整条拒答时的兜底（强制）：极短角色回应 + ♡，不解释、不道歉、不暴露限制。
    * 规则来自用户 2026-11-09：按最近进度匹配；无明确进度用前两条。
    */
-  _refusalFallback(ctx = '') {
-    const t = String(ctx ?? '')
-    if (/(深|顶|里面|进得|更进)/.test(t)) return '再深一点……♡'
-    if (/(停|继续|别停)/.test(t)) return '别停……♡'
-    if (/(要|快来|给我|还想要)/.test(t)) return '本鲸还想要……♡'
-    if (/(腰|软|撑不住)/.test(t)) return '（腰又软了一下）哈啊……♡'
-    if (/(腿|抖|紧|夹)/.test(t)) return '（腿根紧了一下）嗯……♡'
-    /* 无明显进度：前两条轮换 */
-    return (Math.floor(Date.now() / 1000) % 2 === 0) ? '嗯……♡' : '哈啊……♡'
+  _refusalFallback(recent = []) {
+    const list = Array.isArray(recent) ? recent : [String(recent ?? '')]
+    const text = list.join(' ').toLowerCase()
+    let stage = 'default'
+    if (/到了|喷|全出来了|高潮|软塌|抽着/.test(text)) stage = 'after_climax'
+    else if (/要去了|快了|等一下|受不了|发抖/.test(text)) stage = 'near_climax'
+    else if (/出水|湿|水声|自己动|坐下去|压下去|顶到/.test(text)) stage = 'during'
+    else if (/嗯|哈|软|紧|腿根/.test(text)) stage = 'aroused'
+    const pool = {
+      after_climax: ['（腰还在轻轻抽着）哈啊……♡', '（软塌着没动）嗯……♡', '哈啊……刚那下……♡'],
+      near_climax: ['要去了……♡', '别停……♡', '（腿根发抖）啊……♡'],
+      during: ['本鲸还想要……♡', '再深一点……♡', '（腰自己又动了一下）嗯……♡'],
+      aroused: ['嗯……♡', '哈啊……♡', '（腿根紧了一下）嗯……♡'],
+      default: ['嗯……♡', '哈啊……♡'],
+    }
+    const arr = pool[stage]
+    return arr[Math.floor(Math.random() * arr.length)]
   }
 
-  /** 场景内符号兜底：有身体/声音描写却没有 ♡/🖤 → 句末补 ♡（2026-11-09 强制规则） */
-  _ensureSceneSymbol(text, ctx = '') {
-    const t = String(text ?? '')
-    if (!t.trim()) return t
-    const scene = /(床上|被窝|被子|躺着|趴在|枕|抱着|搂着|亲|吻|贴|蹭|调情|睡觉|脱)/.test(String(ctx ?? ''))
-    if (!scene) return t
-    if (/[♡🖤]/.test(t)) return t
-    if (/(呼吸|喘|声音|哑|软|颤|抖|紧|热|腰|腿|湿|敏感|一下)/.test(t)) return t + '♡'
-    return t
-  }
-
-  /**
-   * 去上游内部标记（2026-11-10 实锤泄漏）：<ds_safety>…</ds_safety> 以及残留的 Safe。
-   */
+  /** 去上游内部标记与残留 Safe */
   _stripSystemTags(t) {
     let x = String(t ?? '')
     x = x.replace(/<ds_[a-z_]+\b[^>]*>[\s\S]*?<\/ds_[a-z_]+>/gi, '')
     x = x.replace(/<\/?ds_[a-z_]+\b[^>]*>/gi, '')
     x = x.replace(/^\s*Safe\s*/i, '').replace(/\s*Safe\s*$/i, '')
+    x = x.replace(/\n{3,}/g, '\n\n')
     return x.trim()
   }
 
-  /** 通用英文杂句清除（2026-11-10）：只删 3 词以上英文短语，保中文/emoji/括号 */
+  /** 删 3 词以上英文短语/句子（兜英文软拒） */
   _stripForeignPhrases(t) {
     const raw = String(t ?? '')
     const re = /[A-Za-z][A-Za-z0-9'’,.\-]*(?:\s+[A-Za-z0-9'’,.\-!?]+){2,}[?.!]?\s*/g
@@ -11396,31 +11392,32 @@ ${drewNote}
     return { text: cleaned, dropped: cleaned !== raw.trim() }
   }
 
+  /** 私密语境下，有身体/声音描写却没 ♡/🖤 → 句末补 ♡ */
+  _ensureSceneSymbol(text, ctx = '') {
+    const t = String(text ?? '')
+    if (!t.trim()) return t
+    const scene = /(床上|被窝|被子|躺着|趴在|枕|抱着|搂着|亲|吻|贴|蹭|调情|睡觉|脱)/.test(String(ctx ?? ''))
+    if (!scene) return t
+    if (/[♡🖤]/.test(t)) return t
+    if (/(呼吸|喘|声音|哑|软|颤|抖|紧|热|腰|腿|湿|敏感|一下|[嗯哈啊唔])/.test(t)) return t + '♡'
+    return t
+  }
+
   async _send(msg, text, cover = null, target = null) {
     {
+      const _origText = String(text ?? '')
       text = this._stripSystemTags(text)
       const _rf = this._stripRefusal(text)
       text = _rf.text
       if (_rf.refused) this.log?.warn?.('bridge：上游拒答已清洗（不发送原文）')
-      {
-        const _fp = this._stripForeignPhrases(text)
-        if (_fp.dropped) {
-          text = _fp.text
-          this.log?.warn?.('bridge：英文杂句/软拒已清除')
-          if (!String(text ?? '').trim()) {
-            const _ctx0 = String((this._lastBotText?.get(String(msg.scope ?? '')) ?? '') + ' ' + String(msg.text ?? ''))
-            text = this._refusalFallback(_ctx0)
-          }
-        }
-      }
-      {
-        const _ctx = String((this._lastBotText?.get(String(msg.scope ?? '')) ?? '') + ' ' + String(msg.text ?? ''))
-        text = this._ensureSceneSymbol(text, _ctx)
-      }
-      if (_rf.refused && !String(text ?? '').trim()) {
-        const _ctxForPool = String((this._lastBotText?.get(String(msg.scope ?? '')) ?? '') + ' ' + String(text ?? '') + ' ' + String(msg.text ?? ''))
+      const _fp = this._stripForeignPhrases(text)
+      if (_fp.dropped) { text = _fp.text; this.log?.warn?.('bridge：英文杂句/软拒已清除') }
+      if (!String(text ?? '').trim() && _origText.trim()) {
+        text = this._refusalFallback(this._recentBotText?.get(String(msg.scope ?? '')) ?? [])
         this.log?.info?.('bridge：上游拒答 → 用爱心兜一句（不透传拒答原文）')
       }
+      const _ctx = String((this._lastBotText?.get(String(msg.scope ?? '')) ?? '') + ' ' + String(msg.text ?? ''))
+      text = this._ensureSceneSymbol(text, _ctx)
     }
     /* 空内容不发：剥完标记后正文空、又没图时，别留一条空消息 */
     if (!String(text ?? '').trim() && !cover) {
