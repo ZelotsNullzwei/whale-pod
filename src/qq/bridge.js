@@ -38,6 +38,8 @@ import { detectCode, formatCodeContext } from '../gateway/codes.js'
 import { fetchAlbum, formatAlbumContext, JmHostCache, JmMemoStore } from '../gateway/jm.js'
 import { readJmPages, formatAlbumPagesNote } from '../gateway/jm-read.js'
 import FACE_TABLE from './faces.json' with { type: 'json' }
+/* QQ 空间主动草稿调度器（2026-11-10）：独立模块，避免和正在改动的本文件冲突 */
+import { startQzoneProactive } from './qzoneProactive.js'
 import { InteractionTracker, BegState, decideBeg } from './beg.js'
 import { ProactiveScheduler, ProactiveState } from './proactive.js'
 import { extractFindImageMarkers, stripFindImageMarkers, resolveFindImage, findImageKey, isDuplicateFindImage } from './imageFindMarkers.js'
@@ -2292,6 +2294,16 @@ export class QQBridge {
     if (!this._summaryTimer) {
       this._summaryTimer = setInterval(() => this._summaryClock(), 60_000)
       this._summaryTimer.unref?.()
+    }
+    /*
+     * ★ QQ 空间「主动发说说」（2026-11-10）
+     *
+     * 和主动聊天**分开**：自己的每日上限、冷却、时间窗；
+     * 而且**只出草稿** —— 生成文字+配图先发私聊给他看，他说「发」才发。
+     * 实现全在 `src/qq/qzoneProactive.js`，这里只挂一个启动点。
+     */
+    try { startQzoneProactive(this, { home: opts.home }) } catch (e) {
+      this.log?.warn?.(`qzone-proactive：挂载失败 — ${String(e?.message ?? e).slice(0, 80)}`)
     }
 
     const file = opts.home ? `${opts.home}/proactive.json` : null
