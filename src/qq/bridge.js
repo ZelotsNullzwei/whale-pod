@@ -21,6 +21,8 @@
 import fs from 'node:fs'
 import { ImageCache } from './imageCache.js'
 import { reviewImage, countLimbs , reviewMatches } from './imageReview.js'
+import { reviewNoPhone, reviewNoBodySubject, pickReviewer } from './captureCheck.js'
+import { processImage, decideRetry, buildAuditRecord } from './photoCapturePipeline.js'
 import { shrinkForReview } from './imageShrink.js'
 import os from 'node:os'
 import path from 'node:path'
@@ -6315,140 +6317,128 @@ ${drewNote}
                  * 所以改成**生成后确定性裁切**：和模型的构图偏好较劲不如直接切。
                  * 区间按坐姿俯拍的常见构图定，手部位置不定所以不裁。
                  */
-                const bpCrop = (() => {
-                  const part = shot.framingInfo?.bodyPart
-                  if (!part) return null
-                  const TABLE = {
-                    腿: [0.42, 1.0],
-                    脚: [0.62, 1.0],
-                    小腹: [0.35, 0.78],
-                    腰: [0.30, 0.72],
-                    /*
-                     * ⚠️ **锁骨 / 胸部 / 肩颈 故意不在这里**（2026-11-07 实测）：
-                     *   它们的纵向区间天生靠近脸（0.16~0.58 这种），
-                     *   一旦这张图是"整脸 + 身体"，裁出来就是**半张脸**，比不裁更难看得多。
-                     *   这三个部位交给"局部参考图 + 提示词"去决定构图；
-                     *   参考图也没守住时（模型硬画了人），宁可整图发，也不切半张脸。
-                     */
-                  }
-                  return TABLE[part] ?? null
-                })()
-                if (bpCrop && buf.length > 1024) {
-                  buf = await cropRegion(buf, bpCrop[0], bpCrop[1], this.log)
-                }
-                if (buf.length > 1024 && buf.length < 8 * 1024 * 1024) {
-                  /*
-                   * **全身照：只裁 6% + 擦角落**（2026-11-05 实测最稳的组合）。
-                   *  - 画面生成时用 1024x2048（更长），所以裁 6% 还剩下脚上方的空间；
-                   *  - 剩下一点水印残影用 eraseCornerWatermark 盖掉（补丁只有 14%×3.2%，看不出来）。
-                   * 半身以内仍走原来的 cropBottom（那条 10% 的裁法对全身会把脚切掉）。
-                   */
-                  if (shot.framingInfo?.feet) {
-                    buf = await cropBottom(buf, 0.06, this.log)
-                    buf = await eraseCornerWatermark(buf, this.log)
-                  } else {
-                    buf = await cropBottom(buf, Number(imgCfg.cropBottom ?? 0.1), this.log)
-                    /*
-                     * ★ 非全身也要擦一次角落（2026-11-06 用户：插画档水印没截掉）。
-                     *   插画档底图和写实档不是同一个模型，水印位置偏高/偏右，
-                     *   光裁底部一条盖不住。角落补丁只有 14%×3.2%，看不出来。
-                     */
-                    buf = await eraseCornerWatermark(buf, this.log)
-                  }
-                  finalBuf = buf
-                  file = `base64://${buf.toString('base64')}`
-                  this.log.info?.(`bridge：生成图已下载 ${Math.round(buf.length / 1024)}KB，按 base64 发`)
+                const processed = await processImage(buf, {
+                  shot,
+                  imgCfg,
+                  ops: { cropRegion, cropBottom, eraseCornerWatermark, log: this.log },
+                })
+                if (processed.ok) {
+                  finalBuf = processed.buf
+                  file = `base64://${processed.buf.toString('base64')}`
+                  this.log.info?.(`bridge：生成图已下载 ${Math.round(processed.buf.length / 1024)}KB，按 base64 发`)
                 } else {
-                  this.log.warn?.(`bridge：生成图大小异常（${buf.length} 字节）`)
+                  this.log.warn?.(`bridge：生成图处理异常（${processed.reason || 'unknown'}）`)
                 }
               }
             } catch (e) {
               this.log.warn?.(`bridge：下载生成图失败（仍按 URL 发，**这张没裁水印**）— ${String(e?.message ?? e)}`)
             }
+            /*
+             * ★★ 统一审核决策（2026-11-09 P1-c 接线）：
+             *   旧审核（countLimbs + reviewImage）与 Capture Check 共用**一个**重拍名额。
+             *   · pass      → 不重拍
+             *   · violation → 触发唯一一次重拍（不再额外发"刚才那张不行"的垫场消息）
+             *   · uncertain → 放行、不重拍（沿用"审核失败放行"原则）
+             *   · 重拍后复审只记录、不阻断发送
+             *   · 缓存只在**最终选图确定后**写一次，与实际发送的图一致
+             */
+            const qcMode = String(shot?.plan?.mode ?? '')
+            const qcReviewer = pickReviewer(qcMode)
+            const gwQc = `http://127.0.0.1:${this.cfg.gateway?.port ?? 18899}/v1`
+            const qcKey = this.cfg.gateway?.key ?? null
+            const reviewEnabled = this.cfg.actions?.imageReview !== false
+
+            const runChecks = async (buf, label) => {
+              const out = { legacy: null, capture: null }
+              if (!reviewEnabled || !buf) return out
+              try {
+                const small = await shrinkForReview(buf, 640, this.log)
+                const limbs = await countLimbs({ buf: small, gateway: gwQc, key: qcKey, log: this.log })
+                const rv = await reviewImage({ buf: small, gateway: gwQc, key: qcKey, log: this.log })
+                const why = [limbs.ok ? '' : '手脚数量:' + (limbs.why || ''), rv.ok ? '' : (rv.why || '脸崩/多手')].filter(Boolean).join('; ')
+                out.legacy = { ok: limbs.ok && rv.ok, why }
+                if (qcReviewer) out.capture = await qcReviewer({ buf: small, gateway: gwQc, key: qcKey, timeoutMs: 30000 })
+              } catch (e) {
+                this.log.warn?.(`bridge：审核出错（${label}，按放行处理）— ${String(e?.message ?? e).slice(0, 60)}`)
+                out.legacy = { ok: true, why: '审核异常放行' }
+              }
+              return out
+            }
+
+            let qcFirst = { legacy: null, capture: null }
+            let qcRetry = null
+            let retried = false
+            let finalChoice = 'original'
+            try {
+              qcFirst = await runChecks(finalBuf, '原图')
+              const decision = decideRetry({
+                legacyViolation: qcFirst.legacy ? !qcFirst.legacy.ok : false,
+                legacyWhy: qcFirst.legacy?.why ?? '',
+                capture: qcFirst.capture,
+                alreadyRetried: false,
+              })
+              if (decision.retry && finalBuf) {
+                this.log.warn?.(`bridge：审核不合格（${decision.reasons.join('、')}）→ 重拍一张（不额外发消息）`)
+                const retry = await generateImage({
+                  prompt: drawPrompt,
+                  url: imgCfg.url,
+                  provider: imgCfg.provider ?? 'magpie-mcp',
+                  baseUrl: imgCfg.baseUrl,
+                  apiKeyEnv: imgCfg.keyEnv,
+                  model: imgCfg.model,
+                  size: shot.framingInfo?.feet ? (imgCfg.size || '1024x2048') : imgCfg.size,
+                  refImage: useRefPath,
+                  aspect: imgCfg.aspect ?? '9:16',
+                  resolution: imgCfg.resolution ?? '2K',
+                  log: this.log,
+                })
+                if (retry?.ok && retry.url) {
+                  const resp2 = await fetch(retry.url, { signal: AbortSignal.timeout(25000) })
+                  if (resp2.ok) {
+                    const buf2raw = Buffer.from(await resp2.arrayBuffer())
+                    const pr2 = await processImage(buf2raw, {
+                      shot,
+                      imgCfg,
+                      ops: { cropRegion, cropBottom, eraseCornerWatermark, log: this.log },
+                    })
+                    if (pr2.ok) {
+                      qcRetry = await runChecks(pr2.buf, '重拍')
+                      finalBuf = pr2.buf
+                      file = `base64://${pr2.buf.toString('base64')}`
+                      retried = true
+                      finalChoice = 'retry'
+                      this.log.info?.('bridge：重拍完成，用新的这张')
+                    } else {
+                      this.log.warn?.(`bridge：重拍图处理异常，保留原图 — ${pr2.reason || 'unknown'}`)
+                    }
+                  }
+                }
+              }
+            } catch (e) {
+              this.log.warn?.(`bridge：审核/重拍出错（用原图）— ${String(e?.message ?? e).slice(0, 60)}`)
+            }
+
+            /* 缓存：只在最终选图确定后写一次（重拍图覆盖原图，缓存与实发一致） */
             try {
               if (finalBuf) this._imageCache().put(drawPrompt, finalBuf, { scope: String(msg.scope ?? ''), ms: r.ms })
             } catch (e) {
               this.log.warn?.(`bridge：写图片缓存失败 — ${String(e?.message ?? e).slice(0, 60)}`)
             }
-            /*
-             * ★ 生成后审核（2026-11-05）：多手/多指/脸崩 → 重画一次。
-             *   审核那十几秒也要像在拍照 —— 先垫一句"重来一张"。
-             */
-            if (this.cfg.actions?.imageReview !== false && finalBuf) {
-              try {
-                const small = await shrinkForReview(finalBuf, 640, this.log)
-                const gw = `http://127.0.0.1:${this.cfg.gateway?.port ?? 18899}/v1`
-                /* 先数手臂/手掌：多于两只 = 重拍（2026-11-08 用户：手多了） */
-                const limbs = await countLimbs({ buf: small, gateway: gw, key: this.cfg.gateway?.key ?? null, log: this.log })
-                if (!limbs.ok) this.log.warn?.(`bridge：手脚数量不对（` + limbs.why + `）→ 重拍`)
-                const rv = await reviewImage({
-                  buf: small,
-                  gateway: gw,
-                  key: this.cfg.gateway?.key ?? null,
-                  log: this.log,
-                })
-                if (!rv.ok) {
-                  this.log.warn?.(`bridge：图不合格（${rv.why || '多手/脸崩'}）→ 重拍一张`)
-                  try {
-                    await this._send(msg, '刚才那张不行，重来一张。')
-                  } catch { /* 垫场失败不影响重画 */ }
-                  const retry = await generateImage({
-                    prompt: drawPrompt,
-                    url: imgCfg.url,
-                    provider: imgCfg.provider ?? 'magpie-mcp',
-                    baseUrl: imgCfg.baseUrl,
-                    apiKeyEnv: imgCfg.keyEnv,
-                    model: imgCfg.model,
-                    size: shot.framingInfo?.feet ? (imgCfg.size || '1024x2048') : imgCfg.size,
-                    refImage: useRefPath,
-                    aspect: imgCfg.aspect ?? '9:16',
-                    resolution: imgCfg.resolution ?? '2K',
-                    log: this.log,
-                  })
-                  if (retry?.ok && retry.url) {
-                    const resp2 = await fetch(retry.url, { signal: AbortSignal.timeout(25000) })
-                    if (resp2.ok) {
-                      let buf2 = Buffer.from(await resp2.arrayBuffer())
-                      if (buf2.length > 1024 && buf2.length < 8 * 1024 * 1024) {
-                        buf2 = await cropBottom(buf2, Number(imgCfg.cropBottom ?? 0.1), this.log)
-                        /*
-                         * ★ **重拍完再审一次，但只记录、不阻断**（2026-11-07 修正）。
-                         *
-                         * 我原来写成"部位特写不合格就不发"，实测立刻踩雷：
-                         * 一张**五根手指**的正常手被审核判成"六根手指" →
-                         * 好图被丢掉。这违背项目里写死的原则：
-                         *   「审核失败放行 —— 宁可发一张可能有瑕疵的图，
-                         *     也不能因为审核挂了什么都不发」（见 imageReview.js）。
-                         * 所以这里只把第二张的审核结果记进日志，供以后判断误判率，
-                         * **不改变发送行为**。
-                         */
-                        if (this.cfg.actions?.imageReview !== false) {
-                          try {
-                            const small2 = await shrinkForReview(buf2, 640, this.log)
-                            const rv2 = await reviewImage({
-                              buf: small2,
-                              gateway: gw,
-                              key: this.cfg.gateway?.key ?? null,
-                              log: this.log,
-                            })
-                            if (!rv2.ok) {
-                              this.log.warn?.(`bridge：重拍那张仍被审核挑刺（${rv2.why || '多手/脸崩'}）→ 按"审核失败放行"照发`)
-                            }
-                          } catch { /* 复审失败无所谓 */ }
-                        }
-                        finalBuf = buf2
-                        file = `base64://${buf2.toString('base64')}`
-                        this.log.info?.('bridge：重拍完成，用新的这张')
-                      }
-                    }
-                  }
-                } else {
-                  this.log.info?.('bridge：图审核通过')
-                }
-              } catch (e) {
-                this.log.warn?.(`bridge：审核/重拍出错（用原图）— ${String(e?.message ?? e).slice(0, 60)}`)
-              }
-            }
+
+            /* 审核记录（结构化日志；不落两份大图） */
+            try {
+              this.log.info?.('photo-qc ' + JSON.stringify(buildAuditRecord({
+                scope: String(msg.scope ?? ''),
+                mode: qcMode,
+                original: qcFirst,
+                retried,
+                retry: qcRetry,
+                finalChoice,
+                cacheKey: 'drawPrompt',
+                ms: r.ms,
+              })))
+            } catch { /* 记录失败不影响发送 */ }
+
             drawnImage = { url: file }
             /*
              * ★ **这张能不能发到空间**（2026-11-08 用户：「不是要得是能发空间的素材」）。
