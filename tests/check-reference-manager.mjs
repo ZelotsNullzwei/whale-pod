@@ -129,7 +129,16 @@ ok('canon 版本 A、当前 B → conflict 且不用 canon', () => {
   assert.match(r.reason, /version_conflict/)
 })
 
-console.log('\n=== E2. canon 版本诊断三态 ===')
+console.log('\n=== E2. canon 版本诊断（invalid / unchecked / mismatch / ok / 未声明推定）===')
+ok("canon.version='C' → canon_version_invalid + conflict，且不使用 canon", () => {
+  const c = canonA({ version: 'C', outfitId: 'maid-short-v3' })
+  const r = resolveReference({ mode: 'front_selfie', characterVersion: 'A', outfitText: MAID, outfitId: 'maid-short-v3', canon: c, faceRef: HEAD, faceRefKind: 'head' })
+  assert.equal(r.conflict, true)
+  assert.ok(has(r, 'canon_version_invalid'), '应记 canon_version_invalid')
+  assert.equal(r.checks.find((x) => x.name === 'canon_version_invalid').ok, false)
+  assert.notEqual(r.strategy, 'canon', '非法 canon 版本不得使用 canon')
+  assert.equal(r.strategy, 'face')
+})
 ok('characterVersion=C + canon.version=A → canon_version_unchecked，且无成功项', () => {
   const r = resolveReference({ mode: 'front_selfie', characterVersion: 'C', canon: canonA(), faceRef: HEAD, faceRefKind: 'head' })
   assert.equal(r.conflict, true)

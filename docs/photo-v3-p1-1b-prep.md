@@ -122,3 +122,18 @@
 
 **当前服装比较的最终规则（唯一有效）**：`outfitId` 优先 → 否则规范化完整文本；完全相同=同套；任一侧 <12 字符=不同套；否则二元组 Dice ≥ 0.85 才算同套。
 **已知语义限制**：文本相似度不理解颜色，同款不同色的近似描述仍可能被判同套；彻底解决需要衣柜每套都有稳定 `outfitId`。
+#### 最终版本诊断规则（v3，唯一有效）
+
+| 状态 | checks 项 | ok | 是否冲突 | 是否可用 canon |
+|---|---|---|---|---|
+| `canon.version` 非法（如 `C`） | `canon_version_invalid` | false | 是 | 否 |
+| 当前角色版本非法（无法比较） | `canon_version_unchecked` | false | 是（角色版本本身已冲突） | 否 |
+| 双方合法且一致 | `canon_version` | true | 否 | 是 |
+| 双方合法但不一致 | `canon_version_mismatch` | false | 是 | 否 |
+| canon 未声明、当前为 A | `canon_version_missing` | false | 否（按 A 推定，一致） | 是 |
+| canon 未声明、当前为 B | `canon_version_mismatch` | false | 是 | 否 |
+| bodyRef 跨版本 | `body_version_mismatch` | false | 是 | 否（body 参考图不可用） |
+| bodyRef 存在但当前版本非法 | `body_version_unchecked` | false | — | 否 |
+| faceRef === bodyRef | `dual_identity_reference` + `reason: dual_identity_reference_rejected` | false | 是 | 否（强制 fallback） |
+
+（注：`canon_version_missing` 为 ok:false 但**不产生冲突**——"未声明"是信息缺失而非版本错误；它绝不与成功项同时出现。）
