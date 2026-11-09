@@ -105,3 +105,31 @@
 | 其他 | 0 |
 
 **仍不接真实生图验证（第 6 步单独授权）。**
+
+## 八、实施结果（已按 5B 接入，2026-11-09）
+
+### 与方案的三处修正（评审要求）
+
+| 问题 | 实施 |
+|---|---|
+| canon 元数据不能来自全局 config | `canon.js` 的 `loadEntries()` **保留** `outfitText/outfitId/version`，`canonFor()` 透传；`index.js` 用**命中条目**的元数据。当前日程服装无稳定 ID → 传空 `outfitId`，走完整文本比较 |
+| sceneOnly 不能只看 `plan.mode` | 显式语义映射：`sceneOnly || plan.needsCharacterRef === false → 'scene_only'`；`plan.mode === 'rear_selfie' → 'rear_object'`；其余透传。实测 sceneOnly 的 plan.mode 是 `rear_selfie` |
+| bodyRef 字段与版本 | 用真实字段 `imageCfg.bodyRefImage`；版本**运行时 sha256 核验**（A 版 body = `f75c7d779c173f73`），匹配才记 A，否则 `UNKNOWN` → `body_version_invalid` 冲突，绝不静默当 A |
+
+### 一致性保证
+
+- `planShot().refImage` = `refDecision.refImage`（ resolver 启用时）；**fallback 不回退旧 refImage**
+- `canonRef` = `refDecision.strategy === 'canon'`
+- `character.faceRef` = 仅当 `strategy === 'face'` 时为 `identityRef`，否则空
+- 未配置 `faceRef` 或 `anime` → `refDecision = null`，完整走旧逻辑
+- 新增返回字段 `refDecision`（仅供测试/排查，不改变生成）
+
+### 测试
+
+`tests/check-reference-wiring.mjs` — **15 / 0**，覆盖：日程吊带+女仆 canon、canon 命中但不同套、同套+版本一致、canon 版本 B、元数据缺失、outfitId 不同、sceneOnly、first_person、rear_object、未配 faceRef、anime、fallback 不回退旧图、canonRef/prompt 一致、bodyRef 指向 B 版被拒。
+
+### 已知未解决
+
+1. 日程服装无稳定 `outfitId` → 只能靠文本 Dice；同款不同色仍可能判"不同套"（保守，偏安全）。
+2. `BODY_REF_VERSION` 由代码内哈希常量识别 A 版；若将来新增 C 版身体素材，需要更新该常量或改为配置声明。
+3. 本步未做真实生图验证（第 6 步单独授权）。

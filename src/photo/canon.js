@@ -48,7 +48,19 @@ function loadEntries() {
     const list = Array.isArray(j) ? j : (Array.isArray(j?.entries) ? j.entries : [])
     const entries = list
       .filter((e) => e && typeof e.match === 'string' && typeof e.file === 'string')
-      .map((e) => ({ match: e.match, file: e.file, note: String(e.note ?? '') }))
+      /*
+       * ★ 保留条目自身的服装元数据（2026-11-09，P1-1b 5B）：
+       *   resolveReference() 需要「命中的那一条」的 outfitText/outfitId/version，
+       *   而不是全局 config 里的同名值。缺失就是空串，绝不编造。
+       */
+      .map((e) => ({
+        match: e.match,
+        file: e.file,
+        note: String(e.note ?? ''),
+        outfitText: String(e.outfitText ?? ''),
+        outfitId: String(e.outfitId ?? ''),
+        version: String(e.version ?? ''),
+      }))
     _cache = { mtime: st.mtimeMs, entries }
     return entries
   } catch {
@@ -61,7 +73,7 @@ function loadEntries() {
  * 这套衣服有没有定妆照。
  *
  * @param {string} outfitText 衣柜原文（"今天穿着"那一行）
- * @returns {null|{file:string, note:string, match:string}}
+ * @returns {null|{file:string, note:string, match:string, outfitText:string, outfitId:string, version:string}}
  */
 export function canonFor(outfitText) {
   const s = String(outfitText ?? '')
@@ -71,7 +83,7 @@ export function canonFor(outfitText) {
     try { re = new RegExp(e.match) } catch { continue }
     if (!re.test(s)) continue
     if (!fs.existsSync(e.file)) continue
-    return { file: e.file, note: e.note, match: e.match }
+    return { file: e.file, note: e.note, match: e.match, outfitText: e.outfitText, outfitId: e.outfitId, version: e.version }
   }
   return null
 }

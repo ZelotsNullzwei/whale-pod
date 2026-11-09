@@ -20,6 +20,9 @@ import { PhotoContinuity, detectLocation } from './photo-continuity.js'
 import { fallbackText } from './character-profile.js'
 import { pickEmotion, renderExpression, ExpressionHistory } from './photo-expression.js'
 import { canonFor } from './canon.js'
+import { resolveReference } from './reference-manager.js'
+import fs from 'node:fs'
+import crypto from 'node:crypto'
 
 /** 全局唯一的连续性记录器（进程内有效） */
 export const continuity = new PhotoContinuity()
@@ -166,7 +169,49 @@ export function planShot(o = {}) {
    */
   const baseRef = pickRefImage(plan, framing, imageCfg, anime)
   const canon = sceneOnly ? null : canonFor(String(outfit ?? ''))
-  const refImage = canon ? canon.file : baseRef
+  /*
+   * ★★ P1-1b 第 5 步（5B）：参考图选择的唯一决策走 reference-manager。
+   *   · 开关：只有配置了 `qq.image.faceRef` 才启用；anime 档一律走旧逻辑
+   *   · sceneOnly / needsCharacterRef===false → 明确映射为"无人物"，不只看 plan.mode
+   *     （实测：sceneOnly 的 plan.mode 是 rear_selfie，直接透传会被当成拍物模式）
+   *   · canon 元数据来自**命中条目自身**（canonFor 透传），不用全局 imageCfg 伪造
+   *   · bodyRef 用真实配置字段 bodyRefImage；其版本经 sha256 校验等于 A 版 body
+   */
+  /*
+   * body 参考图的版本**不猜**：运行时核验 sha256。
+   * 只有与 A 版 body 基准（sha256 前 16 位 f75c7d779c173f73）一致才记 A；
+   * 否则记 UNKNOWN → resolver 判 body_version_invalid 并产生冲突（拒绝使用）。
+   * 这样即使有人把 bodyRefImage 换成别的图，也不会被静默当成 A。
+   */
+  const A_BODY_SHA16 = 'f75c7d779c173f73'
+  const bodyRefVersionOf = (p) => {
+    if (!p) return ''
+    try {
+      const h = crypto.createHash('sha256').update(fs.readFileSync(p)).digest('hex').slice(0, 16)
+      return h === A_BODY_SHA16 ? 'A' : 'UNKNOWN'
+    } catch { return 'UNKNOWN' }
+  }
+  const BODY_REF_VERSION = String(imageCfg.bodyRefVersion ?? bodyRefVersionOf(String(imageCfg.bodyRefImage ?? '')))
+  const resolverMode = (sceneOnly || plan.needsCharacterRef === false)
+    ? 'scene_only'
+    : (plan.mode === 'rear_selfie' ? 'rear_object' : plan.mode)
+  const refDecision = (!anime && imageCfg.faceRef)
+    ? resolveReference({
+        outfitText: String(outfit ?? ''),
+        outfitId: '',                    // 当前日程服装没有稳定 ID → 走完整文本比较
+        canon: canon
+          ? { file: canon.file, outfitId: canon.outfitId, outfitText: canon.outfitText, version: canon.version }
+          : null,
+        faceRef: String(imageCfg.faceRef),
+        faceRefKind: String(imageCfg.faceRefKind ?? 'unknown'),
+        mode: resolverMode,
+        characterVersion: imageCfg.characterVersion ?? '',
+        bodyRef: String(imageCfg.bodyRefImage ?? ''),
+        bodyRefVersion: BODY_REF_VERSION,
+      })
+    : null
+  /* resolver 启用时：它的决定就是最终决定（fallback 也不偷偷退回旧 refImage） */
+  const refImage = refDecision ? (refDecision.refImage || '') : (canon ? canon.file : baseRef)
 
   /* ⑥ 连续性说明（只继承状态，不继承构图） */
   const note = continuity.continuityNote(scope, { outfit, hair, slot })
@@ -176,9 +221,14 @@ export function planShot(o = {}) {
     plan, framing, scene: sceneFixed, outfit, hair, weather, mood,
     continuity: note, hasRef: Boolean(refImage), anime, bodyOverride, sceneOnly,
     expression,
-    canonRef: Boolean(canon),
+    canonRef: refDecision ? refDecision.strategy === 'canon' : Boolean(canon),
     mode,
-    character: { faceRef: imageCfg.refImage, bodyRef: imageCfg.bodyRefImage },
+    character: {
+      faceRef: refDecision
+        ? (refDecision.strategy === 'face' ? (refDecision.identityRef || '') : '')
+        : imageCfg.refImage,
+      bodyRef: imageCfg.bodyRefImage,
+    },
   })
 
   /* ⑧ 记录本次状态（供下一张用） */
@@ -195,7 +245,8 @@ export function planShot(o = {}) {
     framing: framing.framing,
     prompt,
     refImage,
-    canonRef: Boolean(canon),
+    refDecision,
+    canonRef: refDecision ? refDecision.strategy === 'canon' : Boolean(canon),
     size,
     issues: check.issues,
     fixedFrom: plan.fixedFrom,
