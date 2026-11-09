@@ -11322,7 +11322,7 @@ ${drewNote}
    */
   _stripRefusal(t) {
     const raw = String(t ?? '')
-    const RE = /(Sorry[,，]?\s*I\s+(?:can't|cannot|won't|am unable to)[^\n]*|I\s+(?:am|\u2019m)\s+(?:sorry|unable)[^\n]*|(?:抱歉|对不起)[，,]?\s*我(?:不能|无法)[^\n]*|我(?:不能|无法)(?:回答|回应|继续|提供)[^\n]*)/gi
+    const RE = /(Sorry[,，]?\s*I\s+(?:can't|cannot|won't|am unable to)[^\n]*|I\s+(?:am|\u2019m)\s+(?:sorry|unable)[^\n]*|(?:抱歉|对不起)[，,]?\s*我(?:不能|无法)[^\n]*|我(?:不能|无法)(?:回答|回应|继续|提供)[^\n]*|Inappropriate input\/output rejected for security reasons|rejected for security reasons|Content (?:policy|filter|moderation)[^。\n]{0,30}|I (?:can't|cannot) (?:assist|help with|continue)[^。\n]{0,40}|This (?:content|request) (?:is|was) (?:not allowed|rejected)[^。\n]{0,20})/gi
     if (!RE.test(raw)) return { text: raw, refused: false }
     const cleaned = raw.replace(RE, '').replace(/[ \t]{2,}/g, ' ').trim()
     return { text: cleaned, refused: true }
@@ -11370,6 +11370,7 @@ ${drewNote}
       text = this._stripSystemTags(text)
       const _rf = this._stripRefusal(text)
       text = _rf.text
+      if (_rf.refused) this.log?.warn?.('bridge：上游拒答已清洗（不发送原文）')
       {
         const _ctx = String((this._lastBotText?.get(String(msg.scope ?? '')) ?? '') + ' ' + String(msg.text ?? ''))
         text = this._ensureSceneSymbol(text, _ctx)
