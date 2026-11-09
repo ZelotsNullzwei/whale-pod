@@ -110,7 +110,7 @@ export async function reviewNoPhone({ buf, gateway, key, timeoutMs = DEFAULT_TIM
   }
   if (!parsed) {
     log.warn?.(`captureCheck/no_phone：两次识别失败${lastErr ? ' — ' + String(lastErr?.message ?? lastErr).slice(0, 50) : ''}`)
-    return mk({ reviewer: 'no_phone', status: 'uncertain', why: '视觉识别失败（三次）', serviceError: true })
+    return mk({ reviewer: 'no_phone', status: 'uncertain', why: '视觉识别失败（两次）', serviceError: true })
   }
 
   const v = parsed.phone_visible
@@ -196,7 +196,7 @@ export async function reviewHands({ buf, gateway, key, maxVisibleHands = 1, time
   }
   if (!parsed) {
     log.warn?.(`captureCheck/hands：三次识别失败${lastErr ? ' — ' + String(lastErr?.message ?? lastErr).slice(0, 90) : ''}`)
-    return mk({ reviewer: 'hands', status: 'uncertain', why: '视觉识别失败（两次）', serviceError: true })
+    return mk({ reviewer: 'hands', status: 'uncertain', why: '视觉识别失败（三次）', serviceError: true })
   }
 
   const hands = Number(parsed.hands)
