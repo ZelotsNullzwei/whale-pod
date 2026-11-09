@@ -1,144 +1,178 @@
 /**
- * reference-manager 回归（P1-1b 第 1~3 步）
- * 覆盖评审列出的 14 个场景；每项都断言 strategy / reason / conflict（不只看 strategy）。
+ * reference-manager 回归（P1-1b 复核修正版）
+ * 每项都断言 strategy / reason / conflict；涉及版本时同时断言 checks。
  */
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import { fileURLToPath } from 'node:url'
-import { resolveReference, sameOutfitText, normalizeVersion, REFERENCE_STRATEGIES } from '../src/photo/reference-manager.js'
+import { resolveReference, sameOutfitText, parseVersion, normalizeVersion, REFERENCE_STRATEGIES } from '../src/photo/reference-manager.js'
 
 let pass = 0, fail = 0
 function ok(name, fn) {
   try { fn(); console.log('  OK  ' + name); pass++ }
   catch (e) { console.log('  XX  ' + name + '\n      ' + e.message); fail++ }
 }
+const has = (r, name) => r.checks.some((c) => c.name === name)
 
 const DAY = '蓝色小发夹，浅灰吊带背心 + 米色棉质家居短裤（光腿），白棉袜，木色拖鞋'
 const MAID = '白色蕾丝头带，女仆装短款（藏青渐变连身裙、两层白蕾丝裙摆），白色蕾丝围裙，白棉袜，藏青玛丽珍鞋'
 const HEAD = 'refs/version-a/face-front.png'
 const COSTUME = 'refs/head-video-ahoge.png'
+const canonA = (x = {}) => ({ match: '女仆装短款', file: 'canon/maid-short.png', outfitId: 'maid-short-v3', outfitText: MAID, version: 'A', ...x })
 
-const canonA = (extra = {}) => ({
-  match: '女仆装短款',
-  file: 'canon/maid-short.png',
-  outfitId: 'maid-short-v3',
-  outfitText: MAID,
-  version: 'A',
-  ...extra,
+console.log('=== A. 版本校验不得被 NO_PERSON 绕过（本轮重点） ===')
+ok('first_person + A角色 + B身体参考图 → conflict，并记 body_version_mismatch', () => {
+  const r = resolveReference({
+    mode: 'first_person', characterVersion: 'A',
+    bodyRef: 'refs/version-b/body-3view.png', bodyRefVersion: 'B',
+  })
+  assert.equal(r.strategy, 'none')
+  assert.equal(r.identityRef, null)
+  assert.equal(r.humanPartsAllowed, true)
+  assert.equal(r.conflict, true, '不能返回 conflict:false')
+  assert.ok(has(r, 'body_version_mismatch'), '必须记录 body_version_mismatch')
+  assert.equal(r.reason, 'no_person_with_version_conflict')
+})
+ok('scene_only + 跨版本 bodyRef → conflict', () => {
+  const r = resolveReference({ mode: 'scene_only', characterVersion: 'B', bodyRef: 'x.png', bodyRefVersion: 'A' })
+  assert.equal(r.strategy, 'none')
+  assert.equal(r.conflict, true)
+  assert.ok(has(r, 'body_version_mismatch'))
+})
+ok('rear_object + 跨版本 bodyRef → conflict', () => {
+  const r = resolveReference({ mode: 'rear_object', characterVersion: 'A', bodyRef: 'x.png', bodyRefVersion: 'B' })
+  assert.equal(r.conflict, true)
+  assert.ok(has(r, 'body_version_mismatch'))
+})
+ok('first_person 无跨版本 → 不冲突，仅 none', () => {
+  const r = resolveReference({ mode: 'first_person', characterVersion: 'A', bodyRef: 'a.png', bodyRefVersion: 'A' })
+  assert.equal(r.strategy, 'none')
+  assert.equal(r.conflict, false)
+  assert.equal(r.reason, 'mode_has_no_person')
 })
 
-console.log('=== 1. 正则命中 ≠ 同套（核心修正） ===')
-ok('正则 match 命中女仆装、日程是灰吊带 → conflict，且不使用 canon', () => {
-  const r = resolveReference({
-    outfitText: DAY, outfitId: 'day-tank-shorts',
-    canon: canonA(), faceRef: HEAD, faceRefKind: 'head', mode: 'front_selfie',
-  })
+console.log('\n=== B. 非法版本值 ===')
+ok('characterVersion="C" → 明确冲突，不静默当 A', () => {
+  const r = resolveReference({ mode: 'front_selfie', characterVersion: 'C', outfitText: MAID, outfitId: 'maid-short-v3', canon: canonA() })
+  assert.equal(r.conflict, true)
+  assert.ok(has(r, 'character_version'))
+  assert.equal(r.checks.find((c) => c.name === 'character_version').ok, false)
+  assert.equal(r.version.valid, false)
+  assert.equal(r.version.current, null)
+})
+ok('parseVersion 语义：未声明/显式A/显式B/非法', () => {
+  assert.deepEqual(parseVersion(''), { value: 'A', assumed: true, valid: true })
+  assert.deepEqual(parseVersion('A'), { value: 'A', assumed: false, valid: true })
+  assert.deepEqual(parseVersion('b'), { value: 'B', assumed: false, valid: true })
+  assert.deepEqual(parseVersion('C'), { value: null, assumed: false, valid: false })
+  assert.equal(normalizeVersion(''), 'A')
+})
+
+console.log('\n=== C. 服装文本比较（不再用类别词数量） ===')
+ok('不同颜色/款式但都是吊带短裤 → 不同套', () => {
+  assert.equal(sameOutfitText(
+    '浅灰吊带背心 + 米色棉质家居短裤，白棉袜',
+    '黑色细带吊带 + 牛仔短裤，黑色马丁靴',
+  ), false)
+})
+ok('完全相同描述（仅两个主体词）→ 同套（不得无故判冲突）', () => {
+  assert.equal(sameOutfitText('浅灰吊带短裤', '浅灰吊带短裤'), true)
+})
+ok('规范化后一致（空白/标点/星号差异）→ 同套', () => {
+  assert.equal(sameOutfitText('浅灰吊带背心+米色短裤，白棉袜', '浅灰吊带背心 + 米色短裤  白棉袜'), true)
+})
+ok('类别相同但内容不同 → 不得判同套', () => {
+  assert.equal(sameOutfitText('白色蕾丝连衣裙', '白色蕾丝女仆装短裙'), false)
+})
+ok('一侧过短 → 保守判不同套', () => {
+  assert.equal(sameOutfitText('吊带短裤', MAID), false)
+})
+
+console.log('\n=== D. 正则不得参与比较 / ID 优先 ===')
+ok('正则命中女仆装、日程灰吊带 → conflict，不用 canon', () => {
+  const r = resolveReference({ mode: 'front_selfie', outfitText: DAY, outfitId: 'day-tank', canon: canonA(), faceRef: HEAD, faceRefKind: 'head' })
   assert.equal(r.strategy, 'face')
   assert.equal(r.conflict, true)
   assert.match(r.reason, /outfit_conflict/)
-  assert.notEqual(r.refImage, 'canon/maid-short.png')
+  assert.ok(has(r, 'outfit_id'))
+  assert.equal(r.checks.find((c) => c.name === 'outfit_id').ok, false)
 })
-ok('sameOutfitText 不因 "白色/蕾丝" 就判同套', () => {
-  assert.equal(sameOutfitText('白色蕾丝连衣裙', '白色蕾丝女仆装短裙'), false)
-})
-
-console.log('\n=== 2. outfitId 语义 ===')
-ok('outfitId 相同 → canon', () => {
-  const r = resolveReference({ outfitText: MAID, outfitId: 'maid-short-v3', canon: canonA(), faceRef: HEAD, faceRefKind: 'head', mode: 'front_selfie' })
+ok('outfitId 相同 → canon（且不回退文本）', () => {
+  const r = resolveReference({ mode: 'front_selfie', outfitText: '完全不相关的描述', outfitId: 'maid-short-v3', canon: canonA(), faceRef: HEAD, faceRefKind: 'head' })
   assert.equal(r.strategy, 'canon')
   assert.equal(r.conflict, false)
   assert.equal(r.reason, 'outfit_matches_canon')
 })
 ok('outfitId 不同 → conflict', () => {
-  const r = resolveReference({ outfitText: MAID, outfitId: 'other-id', canon: canonA(), faceRef: HEAD, faceRefKind: 'head', mode: 'front_selfie' })
+  const r = resolveReference({ mode: 'front_selfie', outfitText: MAID, outfitId: 'other', canon: canonA(), faceRef: HEAD, faceRefKind: 'head' })
   assert.equal(r.conflict, true)
-  assert.match(r.reason, /outfit_conflict/)
+  assert.ok(has(r, 'outfit_id'))
 })
-
-console.log('\n=== 3. outfitText 次级比较 ===')
-ok('无 ID、完整描述一致 → canon', () => {
-  const c = canonA({ outfitId: undefined })
-  const r = resolveReference({ outfitText: MAID, canon: c, faceRef: HEAD, faceRefKind: 'head', mode: 'front_selfie' })
+ok('无 ID、文本一致 → canon', () => {
+  const r = resolveReference({ mode: 'front_selfie', outfitText: MAID, canon: canonA({ outfitId: undefined }), faceRef: HEAD, faceRefKind: 'head' })
   assert.equal(r.strategy, 'canon')
   assert.equal(r.conflict, false)
+  assert.ok(has(r, 'outfit_text'))
 })
-ok('描述不完整（canon 无 outfitText 且无 ID）→ conflict', () => {
-  const c = canonA({ outfitId: undefined, outfitText: undefined })
-  const r = resolveReference({ outfitText: MAID, canon: c, faceRef: HEAD, faceRefKind: 'head', mode: 'front_selfie' })
+ok('信息不完整（无 ID 无文本）→ conflict', () => {
+  const r = resolveReference({ mode: 'front_selfie', outfitText: MAID, canon: canonA({ outfitId: undefined, outfitText: undefined }), faceRef: HEAD, faceRefKind: 'head' })
   assert.equal(r.conflict, true)
-  assert.equal(r.strategy, 'face')
+  assert.ok(has(r, 'outfit_info_incomplete'))
 })
 
-console.log('\n=== 4. 版本隔离 ===')
-ok('canon 版本 A、当前 B → conflict（version）', () => {
-  const r = resolveReference({ outfitText: MAID, outfitId: 'maid-short-v3', canon: canonA(), faceRef: HEAD, faceRefKind: 'head', mode: 'front_selfie', characterVersion: 'B' })
+console.log('\n=== E. canon 版本隔离 ===')
+ok('canon 版本 A、当前 B → conflict 且不用 canon', () => {
+  const r = resolveReference({ mode: 'front_selfie', characterVersion: 'B', outfitText: MAID, outfitId: 'maid-short-v3', canon: canonA(), faceRef: HEAD, faceRefKind: 'head' })
   assert.equal(r.conflict, true)
+  assert.ok(has(r, 'canon_version_mismatch'))
+  assert.notEqual(r.strategy, 'canon')
   assert.match(r.reason, /version_conflict/)
-  assert.notEqual(r.strategy, 'canon')
-})
-ok('当前版本未声明 → 默认 A', () => {
-  const r = resolveReference({ outfitText: MAID, outfitId: 'maid-short-v3', canon: canonA(), faceRef: HEAD, faceRefKind: 'head', mode: 'front_selfie' })
-  assert.equal(r.version.current, 'A')
-  assert.equal(r.version.assumed, true)
-  assert.equal(r.strategy, 'canon')
-})
-ok('B 版未显式指定 → 不会进入 B（normalizeVersion 归一）', () => {
-  assert.equal(normalizeVersion(undefined), 'A')
-  assert.equal(normalizeVersion(''), 'A')
-  assert.equal(normalizeVersion('b'), 'B')
-  const r = resolveReference({ outfitText: MAID, outfitId: 'maid-short-v3', canon: canonA(), faceRef: HEAD, faceRefKind: 'head', mode: 'front_selfie' })
-  assert.equal(r.version.current, 'A', '未声明时必须按 A')
-})
-ok('A/B 身体参考图交叉使用 → 拒绝', () => {
-  const r = resolveReference({
-    outfitText: MAID, outfitId: 'maid-short-v3', canon: canonA(), faceRef: HEAD, faceRefKind: 'head',
-    mode: 'front_selfie', characterVersion: 'A',
-    bodyRef: 'refs/version-b/body-3view.png', bodyRefVersion: 'B',
-  })
-  assert.equal(r.conflict, true)
-  assert.ok(r.checks.some((c) => c.name === 'body_version_mismatch' && !c.ok))
-  assert.notEqual(r.strategy, 'canon')
 })
 
-console.log('\n=== 5. first_person 语义（none ≠ 禁止人体局部） ===')
-ok('first_person → identityRef=null 且 humanPartsAllowed=true', () => {
-  const r = resolveReference({ outfitText: DAY, canon: null, faceRef: COSTUME, faceRefKind: 'costume', mode: 'first_person' })
+console.log('\n=== F. 双重身份参考图 ===')
+ok('faceRef 与 bodyRef 同一张 → conflict + dual_identity_reference', () => {
+  const same = 'refs/x.png'
+  const r = resolveReference({ mode: 'front_selfie', characterVersion: 'A', faceRef: same, faceRefKind: 'head', bodyRef: same, bodyRefVersion: 'A' })
+  assert.equal(r.conflict, true)
+  assert.ok(has(r, 'dual_identity_reference'))
+})
+
+console.log('\n=== G. first_person 语义 & faceRefKind ===')
+ok('first_person：identityRef=null、humanPartsAllowed=true、reason=mode_has_no_person', () => {
+  const r = resolveReference({ mode: 'first_person' })
   assert.equal(r.strategy, 'none')
   assert.equal(r.identityRef, null)
   assert.equal(r.humanPartsAllowed, true)
   assert.equal(r.reason, 'mode_has_no_person')
   assert.equal(r.conflict, false)
 })
-ok('scene_only / rear_object 同样只禁身份参考图', () => {
-  for (const mode of ['scene_only', 'rear_object']) {
-    const r = resolveReference({ mode })
-    assert.equal(r.strategy, 'none')
-    assert.equal(r.humanPartsAllowed, true)
-  }
-})
-
-console.log('\n=== 6. faceRefKind 判定 ===')
-for (const [kind, expect] of [['costume', 'fallback'], ['unknown', 'fallback'], ['head', 'face']]) {
+for (const [kind, expect, reasonRe] of [['costume', 'fallback', /carries_costume|no_usable/], ['unknown', 'fallback', /no_usable/], ['head', 'face', /no_canon/]]) {
   ok(`faceRefKind=${kind} → ${expect}`, () => {
-    const r = resolveReference({ outfitText: DAY, canon: null, faceRef: COSTUME, faceRefKind: kind, mode: 'front_selfie' })
+    const r = resolveReference({ mode: 'front_selfie', outfitText: DAY, canon: null, faceRef: COSTUME, faceRefKind: kind })
     assert.equal(r.strategy, expect)
+    assert.match(r.reason, reasonRe)
+    assert.equal(r.conflict, false)
   })
 }
 
-console.log('\n=== 7. 契约 ===')
-ok('字段齐全且策略合法', () => {
-  const r = resolveReference({ outfitText: DAY, mode: 'front_selfie' })
+console.log('\n=== H. 契约 ===')
+ok('字段齐全、无 undefined、策略合法', () => {
+  const walk = (v, p) => { if (v === undefined) throw new Error('undefined at ' + p); if (v && typeof v === 'object') for (const [k, x] of Object.entries(v)) walk(x, p + '.' + k) }
+  const r = resolveReference({ mode: 'front_selfie', outfitText: DAY })
   for (const k of ['strategy', 'refImage', 'identityRef', 'humanPartsAllowed', 'reason', 'conflict', 'version', 'checks']) assert.ok(k in r, '缺 ' + k)
   assert.ok(REFERENCE_STRATEGIES.includes(r.strategy))
-  assert.ok('current' in r.version && 'canon' in r.version && 'body' in r.version && 'assumed' in r.version)
-})
-ok('无 undefined', () => {
-  const walk = (v, p) => { if (v === undefined) throw new Error('undefined at ' + p); if (v && typeof v === 'object') for (const [k, x] of Object.entries(v)) walk(x, p + '.' + k) }
-  walk(resolveReference({ outfitText: DAY, mode: 'front_selfie' }), 'r')
+  walk(r, 'r')
 })
 ok('未接入正式入口（不 import photo-prompt/index/bridge）', () => {
   const self = fs.readFileSync(fileURLToPath(import.meta.url), 'utf8')
   assert.ok(!/from '\.\.\/src\/(photo-prompt|index)\.js'/.test(self))
+})
+
+console.log('\n=== I. 同一张 faceRef 只能当身份参考 ===')
+ok('重复调用不会把 faceRef 用作 canon', () => {
+  const r = resolveReference({ mode: 'front_selfie', outfitText: DAY, canon: null, faceRef: HEAD, faceRefKind: 'head' })
+  assert.equal(r.strategy, 'face')
+  assert.equal(r.refImage, HEAD)
 })
 
 console.log(`\npass ${pass} / fail ${fail}`)
