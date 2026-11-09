@@ -237,7 +237,7 @@ export async function runCaptureReview({
   const finalCapture = qcRetry?.capture ?? qcFirst.capture
   const reviewUnavailable = Boolean(requireReview) && (
     (!captureReviewer)
-    || (finalCapture && finalCapture.status === 'uncertain' && /异常|失败|网关|超时/.test(String(finalCapture.why ?? '')))
+    || (finalCapture && finalCapture.status === 'uncertain' && finalCapture.serviceError === true)
   )
   const gate = shouldBlockSend({ legacy: qcRetry?.legacy?.ok === false ? qcRetry.legacy : qcFirst.legacy, capture: qcFirst.capture, retryCapture: qcRetry?.capture, reviewSkipped: reviewUnavailable })
   return { finalBuf, retried, finalChoice, qcFirst, qcRetry, decision, ...gate, block: Boolean(requireReview) && gate.block }

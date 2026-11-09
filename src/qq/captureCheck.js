@@ -26,9 +26,9 @@ function normConf(v) {
   return (typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= 1) ? v : null
 }
 
-function mk({ reviewer, status, violation = null, why = '', confidence = null, severity = null, hands = null, arms = null }) {
+function mk({ reviewer, status, violation = null, why = '', confidence = null, severity = null, hands = null, arms = null, serviceError = false }) {
   const ok = status === 'pass' ? true : (status === 'violation' ? false : null)
-  return { status, ok, reviewer, violation, severity, why: String(why ?? '').slice(0, 120), confidence: normConf(confidence), hands, arms }
+  return { status, ok, reviewer, violation, severity, why: String(why ?? '').slice(0, 120), confidence: normConf(confidence), hands, arms, serviceError: Boolean(serviceError) }
 }
 
 /**
@@ -176,14 +176,19 @@ export async function reviewHands({ buf, gateway, key, maxVisibleHands = 1, time
     return mk({ reviewer: 'hands', status: 'uncertain', why: '图片为空或过小' })
   }
   let parsed = null
-  try {
-    const sys = HANDS_SYSTEM + '\n本图最多允许 ' + Number(maxVisibleHands) + ' 只手；超过该数量即属于多余手。'
-    parsed = await ask({ buf, gateway, key, system: sys, userText: '这张图里的手和手臂是什么情况？', timeoutMs })
-  } catch (e) {
-    log.warn?.(`captureCheck/hands：视觉调用异常 — ${String(e?.message ?? e).slice(0, 60)}`)
-    return mk({ reviewer: 'hands', status: 'uncertain', why: '视觉服务异常' })
+  let lastErr = null
+  const sys = HANDS_SYSTEM + '\n本图最多允许 ' + Number(maxVisibleHands) + ' 只手；超过该数量即属于多余手。'
+  for (let attempt = 0; attempt < 2 && !parsed; attempt++) {
+    try {
+      parsed = await ask({ buf, gateway, key, system: sys, userText: '这张图里的手和手臂是什么情况？', timeoutMs })
+    } catch (e) {
+      lastErr = e
+    }
   }
-  if (!parsed) return mk({ reviewer: 'hands', status: 'uncertain', why: '识别失败或无法判断' })
+  if (!parsed) {
+    log.warn?.(`captureCheck/hands：两次识别失败${lastErr ? ' — ' + String(lastErr?.message ?? lastErr).slice(0, 50) : ''}`)
+    return mk({ reviewer: 'hands', status: 'uncertain', why: '视觉识别失败（两次）', serviceError: true })
+  }
 
   const hands = Number(parsed.hands)
   const arms = Number(parsed.arms)
@@ -213,7 +218,7 @@ export async function reviewHands({ buf, gateway, key, maxVisibleHands = 1, time
     return mk({ ...base, status: 'uncertain', why: why || '两只手但无法判断左右', confidence: conf })
   }
   if (parsed.anatomy_ok === null || !Number.isFinite(hands)) {
-    return mk({ ...base, status: 'uncertain', why: why || '手部信息不足，无法确认', confidence: conf })
+    return mk({ ...base, status: 'uncertain', why: why || '手部信息不足，无法确认', confidence: conf, serviceError: false })
   }
   return mk({ ...base, status: 'pass', why: why || '手部数量与结构正常', confidence: conf })
 }

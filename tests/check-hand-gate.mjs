@@ -81,12 +81,12 @@ await ok('初审 fatal + 重拍失败 → block（无更优图）', async () => 
   })
   assert.equal(sel.block, true); assert.deepEqual(store, { cache: 0, send: 0 })
 })
-await ok('普通 uncertain（信息不足）→ 不阻断，按放行发送原图', async () => {
-  const { sel, store } = await pipeline({ capture: async () => ({ status: 'uncertain', why: '手部信息不足' }) })
+await ok('普通 uncertain（信息不足、非服务错误）→ 不阻断，按放行发送原图', async () => {
+  const { sel, store } = await pipeline({ capture: async () => ({ status: 'uncertain', why: '手部信息不足', serviceError: false }) })
   assert.equal(sel.block, false); assert.deepEqual(store, { cache: 1, send: 1 })
 })
 await ok('审核服务异常（requireReview）→ fail closed，block', async () => {
-  const { sel, store } = await pipeline({ capture: async () => ({ status: 'uncertain', why: '视觉服务异常' }) })
+  const { sel, store } = await pipeline({ capture: async () => ({ status: 'uncertain', why: '视觉服务异常', serviceError: true }) })
   assert.equal(sel.block, true); assert.deepEqual(store, { cache: 0, send: 0 })
 })
 await ok('无审核器 + requireReview → reviewSkipped 阻断', async () => {

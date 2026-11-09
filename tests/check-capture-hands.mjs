@@ -86,5 +86,23 @@ await ok('对镜自拍：2 手但左右无法判断（same_side=null）→ uncer
   assert.equal(r.status, 'uncertain'); assert.equal(r.ok, null)
 })
 
+console.log('\n=== 服务错误 vs 模型拿不准（fail-closed 依据）===')
+await ok('两次解析都失败 → uncertain 且 serviceError=true', async () => {
+  let calls = 0
+  const askNull = async () => { calls++; return null }
+  const r = await reviewHands({ buf: BUF, maxVisibleHands: 1, ask: askNull })
+  assert.equal(r.status, 'uncertain'); assert.equal(r.serviceError, true); assert.equal(calls, 2, '应重试一次')
+})
+await ok('第一次失败、第二次成功 → 用第二次结果（重试生效）', async () => {
+  let calls = 0
+  const askSeq = async () => (++calls === 1 ? null : { hands: 1, arms: 1, same_side: false, anatomy_ok: true, why: 'ok', confidence: 0.9 })
+  const r = await reviewHands({ buf: BUF, maxVisibleHands: 1, ask: askSeq })
+  assert.equal(r.status, 'pass'); assert.equal(calls, 2)
+})
+await ok('JSON 正常但字段 null（模型拿不准）→ uncertain 且 serviceError=false', async () => {
+  const r = await reviewHands({ buf: BUF, maxVisibleHands: 2, ask: ask({ hands: 2, arms: 2, same_side: null, anatomy_ok: true }) })
+  assert.equal(r.status, 'uncertain'); assert.equal(r.serviceError, false)
+})
+
 console.log(`\npass ${pass} / fail ${fail}`)
 process.exit(fail === 0 ? 0 : 1)
