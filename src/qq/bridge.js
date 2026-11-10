@@ -1826,7 +1826,16 @@ export class QQBridge {
         size: imgCfg.size,
         aspect: imgCfg.aspect ?? '9:16',
         resolution: imgCfg.resolution ?? '1K',
-        refImage: __needFace ? (imgCfg.faceRefImage ?? imgCfg.refImage ?? null) : null,
+        /*
+         * ⚠️ **优先用 pickRefImage 挑好的那张**（2026-11-10 修）。
+         *
+         * 原来这里写死 `imgCfg.faceRefImage`，把 `shot.refImage` 直接盖掉 ——
+         * 于是 planShot 里「写实档用三视图 / 动漫档用 anime 图 / 露脸用头像」
+         * 那套判断**在说说配图这条路一次都没跑过**。
+         * 实测后果：永远喂 `head-video-ahoge.png`（2.5D 动漫脸 + 女仆蕾丝头带），
+         * 出来就是动漫风 + 头带，提示词写「真实生活摄影」「不戴头饰」都压不住。
+         */
+        refImage: __needFace ? (shot.refImage || imgCfg.faceRefImage || imgCfg.refImage || null) : null,
         home: this.cfg?.home ?? '',
         log: this.log,
       })
