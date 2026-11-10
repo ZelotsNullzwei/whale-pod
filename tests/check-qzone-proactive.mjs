@@ -176,5 +176,12 @@ ok('★ bridge 侧也会删过期确认项（不只是跳过）', () => {
   assert.match(src, /QZONE_CONFIRM_TTL_MS/, 'TTL 没和调度器共用常量（会漂移）')
 })
 
+ok('★ 配图可整条关掉（参考图有问题时的止血开关）', () => {
+  const src = fs.readFileSync(new URL('../src/qq/bridge.js', import.meta.url), 'utf8')
+  assert.match(src, /qzoneProactive\?\.imageEnabled === false/, '_makeQzoneImage 没有读这个开关')
+  const qsrc = fs.readFileSync(new URL('../src/qq/qzoneProactive.js', import.meta.url), 'utf8')
+  assert.match(qsrc, /imageEnabled:\s*false/, '默认值应为关闭（参考图未换前不出图）')
+})
+
 console.log(`\n${'='.repeat(44)}\n通过 ${pass} / 失败 ${fail}`)
 process.exit(fail === 0 ? 0 : 1)

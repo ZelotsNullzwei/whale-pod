@@ -1739,6 +1739,21 @@ export class QQBridge {
   async _makeQzoneImage(scope, content) {
     const say = String(content ?? '').trim()
     if (!say) return ''
+    /*
+     * ⚠️ **说说配图可以整条关掉**（2026-11-10）。
+     *
+     * 现场：10:50 主动说说配了一张「动漫脸 + 女仆蕾丝头带 + 撩衣露腰」的图，
+     * 与「早起喝豆浆」完全无关，形象也不是她。
+     * 根因在参考图：`qq.image.faceRef`（photo-v3 版A 的正脸）本身是 2.5D 动漫脸，
+     * 且三张参考图全戴白蕾丝女仆头带 —— 提示词写了「不戴头饰」也压不过参考图。
+     *
+     * 换参考图之前，先把配图关掉（配置项，改回 true 即恢复）：
+     *   qq.qzoneProactive.imageEnabled = false
+     */
+    if (this.cfg?.qq?.qzoneProactive?.imageEnabled === false) {
+      this.log?.info?.('bridge：说说配图已关闭（qq.qzoneProactive.imageEnabled=false）→ 这条只发文字')
+      return ''
+    }
     const imgCfg = this.cfg?.qq?.image ?? {}
     try {
       const WORDS = ['杯', '碗', '衣服', '裙', '鞋', '花', '猫', '书', '画', '灯', '桌', '窗', '快递', '水果', '面', '汤']

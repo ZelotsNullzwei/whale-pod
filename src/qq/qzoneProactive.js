@@ -41,6 +41,13 @@ const DEFAULTS = {
   windowEnd: 23,
   minChars: 12,
   draftCooldownMs: 90 * 60_000,
+  /**
+   * 配图开关。**当前默认关**（2026-11-10）：
+   * 参考图（qq.image.faceRef / bodyRefImage）本身是 2.5D 动漫脸且戴女仆蕾丝头带，
+   * 生成的图「画风/形象/头饰」全不对；换参考图之前只发文字。
+   * 换好参考图后改回 true 即恢复配图。
+   */
+  imageEnabled: false,
 }
 
 /** 等他确认的最长时间。与 bridge._handle 里那道闸共用同一个常量，避免两边漂移。 */
