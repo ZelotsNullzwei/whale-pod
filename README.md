@@ -30,6 +30,8 @@
 
 ---
 
+> ⚠️ **本项目为个人非商业项目，与腾讯公司无任何隶属/授权/合作关系，也不是 QQ 官方产品。** 使用非官方协议存在账号风险，详见 [DISCLAIMER.md](./DISCLAIMER.md)。
+
 ## 先说清楚：这是个 DSH 插件
 
 WhalePod **依附于 [DSH Desktop](https://github.com/deepseek-ai/deepseek-harness)**
@@ -200,7 +202,7 @@ WhalePod 能自己把协议端装好，不需要用户去 GitHub 翻 Release：
 |---|---|---|---|
 | **NapCat** | Limited Redistribution License | ✅ 下载官方 Release | OneBot v11 协议端，约 0.9 MB |
 | **AstrBot** | AGPL-3.0 | ⚠️ 框架已有，**未完善** | 见上文说明，当前不可用 |
-| **SnowLuma** | 源码可见非商业许可 | ❌ **刻意不支持** | EULA 禁止自动化部署 |
+| **SnowLuma** | 源码可见非商业许可 | ❌ **已移除** | 上游已于 2026-11 变为 404，支持已从代码删除 |
 
 ### 自带运行时（为 AstrBot 预留）
 
@@ -228,11 +230,10 @@ WhalePod 下载 uv（14.6 MB，单文件）
 > 所以日常使用不会碰到。要启用 AstrBot 模式之前，先按上面的说明做好
 > 「可能跑不通」的准备。
 
-### 为什么 SnowLuma 不做自动安装
+### SnowLuma 已移除
 
-SnowLuma 的 EULA 明确规定「将其并入第三方安装包或 Docker 镜像、
-**通过自动化脚本部署**」须事先取得书面授权。同类项目 `qq-bridge`
-也因此移除过该功能。WhalePod 只探测、不部署 —— 安装与扫码由用户自己完成。
+SnowLuma 上游仓库已于 2026-11 变为 404，相关后端支持已从代码中删除（NapCat / AstrBot 不受影响）。
+
 
 ### 许可合规
 
@@ -326,7 +327,7 @@ node src/index.js
 |---|---|
 | **DSH Desktop** | 装成插件时必需（复用它的 `channel-pack` 和凭据）；独立跑时可选 |
 | **Node 22+** | 独立跑必需；用 DSH 自带的运行时也行 |
-| **QQ 协议端** | NapCat / SnowLuma —— **可以在「组件」页一键装**，不用手动折腾 |
+| **QQ 协议端** | NapCat —— 可在「组件」页一键装；SnowLuma 已随上游 404 移除 |
 
 ### 立刻用起来（任何 OpenAI 客户端）
 
@@ -544,12 +545,12 @@ WhalePod 会把送进模型的文本里的 `[表情包:xx]`/`[图片]` 改写成
 ### 协议端
 
 WhalePod 只**连接**协议端，**不下载、不安装**。
-你需要自己装好 NapCat 或 SnowLuma，在里面开启：
+你需要自己装好 NapCat，在里面开启：
 
 - **WebSocket 服务端**（正向 WS）→ 填到 `wsUrl`
 - **HTTP API** → 填到 `httpUrl`
 
-> NapCat 与 SnowLuma 的关系：NapCat 官方 README 推荐用 SnowLuma 作为
+> SnowLuma 已于 2026-11 上游 404，本项目不再提供其任何支持。
 > GUI 替代品。两者都实现 OneBot v11，WhalePod 都支持。
 >
 > ⚠️ SnowLuma 的 EULA 对「通过自动化脚本部署」有限制，
@@ -922,7 +923,7 @@ See the Chinese sections above for configuration details, the full CLI reference
 ## 已知限制
 
 - **reverse WS 未实现** —— 只支持 WhalePod 主动连协议端（forward）。
-  NapCat/SnowLuma 都支持正向 WS，够用。
+  NapCat 支持正向 WS，够用。
 - **图片只记占位** —— 收到图片存 `[图片]`，不送多模态（可扩展）。
 - **托盘需要额外包** —— 未装 `systray2` 时回退控制台模式，核心功能不受影响。
 - **长期记忆用摘要而非向量检索** —— 见上文取舍说明。
