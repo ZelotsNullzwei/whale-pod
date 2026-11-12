@@ -49,7 +49,7 @@ WhalePod **依附于 [DSH Desktop](https://github.com/deepseek-ai/deepseek-harne
 来自 DSH —— 这是它设计的立足点。
 
 > 代码里也留了「不装 DSH 直接 `node src/index.js`」的口子（见
-> [独立跑](#独立跑)），但那只是**命令行跑网关 + 桥接**，没有侧栏面板，
+> [独立跑](#独立跑少数情况)），但那只是**命令行跑网关 + 桥接**，没有侧栏面板，
 > 模型渠道要自己配。**99% 的人应该装插件，不是走那条路。**
 
 ### 30 秒判断
@@ -69,7 +69,7 @@ WhalePod **依附于 [DSH Desktop](https://github.com/deepseek-ai/deepseek-harne
 **❌ 不适合，如果**
 
 - 你**没有 DSH** —— 先去把 DSH 装上，这里没有替代方案
-- 你以为是一键脚本 —— 还要装 NapCat、配 QQ 号、扫码登录
+- 你以为是一键脚本 —— 还要自备 QQ 协议端（NapCat 上游已终止）、配 QQ 号、扫码登录
 - 你想要开箱即用的成品 —— 现在还在 beta
 - 你想要「自动回复机器人」—— 它**经常故意不说话**，这是设计
 
@@ -99,7 +99,7 @@ WhalePod **依附于 [DSH Desktop](https://github.com/deepseek-ai/deepseek-harne
 │  ├─ 决策层    Jev / 规则 / 自定义（可插拔）                 │
 │  ├─ 记忆层    短期上下文 + 长期摘要                        │
 │  ├─ 人格层    角色提示词（可编辑）                          │
-│  ├─ 组件管理  内置下载 NapCat（含协议端托管）               │
+│  ├─ 组件管理  协议端托管（NapCat 上游已终止，需自备）       │
 │  └─ 管理界面  Web UI（10 个页面，可折叠侧栏 + 线性图标）    │
 └──────────────────────────────────────────────────────────┘
 ```
@@ -180,7 +180,7 @@ QQ 机器人常见的两个痛点，WhalePod 各解决一个：
 | **要开一堆窗口** | NapCat + 框架 + 桥接，2-3 个 cmd/node 挂着 | **一个托盘进程**，Web 管所有 |
 | **烧钱** | 每条消息都调付费 API | **免费渠道优先**，付费仅兜底 |
 | **说话很呆** | 逢消息必回 | **决策层**先判断该不该说 |
-| **装组件要自己折腾** | 去 GitHub 找 Release、装 Python、配环境 | **内置下载**，一键装 NapCat |
+| **装组件要自己折腾** | 去 GitHub 找 Release、装 Python、配环境 | **一键启停 + 托管**；自动下载随 NapCat 上游终止失效 |
 
 第三点是关键。真人不会每条消息都回 —— 他们会判断「这是在问我吗」
 「我刚说过话要不要歇会」「现在插话合适吗」。WhalePod 把这件事拆成两层：
@@ -194,13 +194,13 @@ QQ 机器人常见的两个痛点，WhalePod 各解决一个：
 
 ---
 
-## 内置组件下载
+## 组件与协议端
 
-WhalePod 能自己把协议端装好，不需要用户去 GitHub 翻 Release：
+WhalePod 负责**托管**协议端（启停、日志、扫码登录）；**自动下载**原本也有，但 NapCat 上游 2026-11 终止后这条路已经走不通：
 
 | 组件 | 许可 | 自动安装 | 说明 |
 |---|---|---|---|
-| **NapCat** | Limited Redistribution License | ✅ 下载官方 Release | OneBot v11 协议端，约 0.9 MB |
+| **NapCat** | Limited Redistribution License | ❌ **上游已终止** | 2026-11-12 仓库被清空、Release 全删；已装的照常跑，新装需自备 |
 | **AstrBot** | AGPL-3.0 | ⚠️ 框架已有，**未完善** | 见上文说明，当前不可用 |
 | **SnowLuma** | 源码可见非商业许可 | ❌ **已移除** | 上游已于 2026-11 变为 404，支持已从代码删除 |
 
@@ -230,10 +230,20 @@ WhalePod 下载 uv（14.6 MB，单文件）
 > 所以日常使用不会碰到。要启用 AstrBot 模式之前，先按上面的说明做好
 > 「可能跑不通」的准备。
 
-### SnowLuma 已移除
+### 上游变化：SnowLuma 与 NapCat
 
-SnowLuma 上游仓库已于 2026-11 变为 404，相关后端支持已从代码中删除（NapCat / AstrBot 不受影响）。
+| 上游 | 现状 | WhalePod 的处理 |
+|---|---|---|
+| **SnowLuma** | 仓库 2026-11 变 404 | 后端支持已从代码删除 |
+| **NapCat** | 2026-11-12 仓库被清空：只剩一句「到这里告一段落」，**0 个 Release、0 个 Tag**，文档站也 404 | 后端与进程托管**保留**；**自动下载失效**（`/releases/latest` 变 404） |
 
+NapCat 这条要展开说，因为它影响「装」这一步：
+
+- **已经装好的**：照常启动、照常托管，配置和登录态都不受影响
+- **面板「一键装」**：会停在 `查询 NapCat 版本失败：HTTP 404` —— 代码没删，是上游没东西可下了
+- **新装**：自己准备一份 NapCat（旧版备份、别的机器拷来、或社区 fork 的 Release —— ⚠️ 非官方，自行判断来源、风险与许可），解压到 `~/.whale-pod/protocol/napcat/`
+
+WhalePod 认这个目录：只要里面能找到入口（`index.js`，或 `NapCat.*.Shell/NapCatWinBootMain.exe`），就显示「已安装」，启停与日志照常。
 
 ### 许可合规
 
@@ -242,7 +252,10 @@ SnowLuma 上游仓库已于 2026-11 变为 404，相关后端支持已从代码�
 - **下载官方 Release** → 用户主动从上游获取，**不是 WhalePod 再分发** ✅
 - **打进 WhalePod 发行包** → 属于再分发，受各自许可约束 ⚠️
 
-所以 WhalePod **只做下载器 + 进程托管**，不把协议端代码放进自己的仓库。
+> NapCat 上游 2026-11 终止后，「下载官方 Release」这条路已经不可用；
+> 原则不变 —— WhalePod 依旧不把协议端代码放进自己的仓库。
+
+所以 WhalePod **只做进程托管**（下载器只在上游还在时可用），不把协议端代码放进自己的仓库。
 下载前 UI 会强制展示许可名称、链接与要点，用户显式确认后才开始；
 下载后自动把上游 LICENSE 与来源说明 (`WHALE-POD-NOTICE.md`) 一并存下来。
 
@@ -255,7 +268,7 @@ SnowLuma 上游仓库已于 2026-11 变为 404，相关后端支持已从代码�
 | 你想做什么 | 走哪条 |
 |---|---|
 | **在 DSH 里用**（推荐，也是这个插件的主用途） | ↓ [装成 DSH 插件](#装成-dsh-插件) |
-| **只要那个 LLM 网关**（用 OpenAI 客户端接） | ↓ [独立跑](#独立跑) |
+| **只要那个 LLM 网关**（用 OpenAI 客户端接） | ↓ [独立跑](#独立跑少数情况) |
 
 两条路互不冲突：装成插件之后，网关也照样能用。
 
@@ -281,7 +294,7 @@ dsh plugin --profile desktop add link:<解压目录>/plugin
 侧栏会出现「鲸舱」。第一次点「一键启动」，它会：
 
 - 自己拉 WhalePod 进程
-- 自己下载 NapCat（如果还没有）
+- 托管你自己准备的 NapCat（上游已终止，不能再自动下载 —— 见 [上游变化](#上游变化snowluma-与-napcat)）
 - 弹二维码让你扫码登录
 
 **④ 扫码登录 QQ**
@@ -327,7 +340,7 @@ node src/index.js
 |---|---|
 | **DSH Desktop** | 装成插件时必需（复用它的 `channel-pack` 和凭据）；独立跑时可选 |
 | **Node 22+** | 独立跑必需；用 DSH 自带的运行时也行 |
-| **QQ 协议端** | NapCat —— 可在「组件」页一键装；SnowLuma 已随上游 404 移除 |
+| **QQ 协议端** | 自备一份 NapCat 放进 `~/.whale-pod/protocol/napcat/`（上游 2026-11 终止，Release 已全删）；SnowLuma 已随上游 404 移除 |
 
 ### 立刻用起来（任何 OpenAI 客户端）
 
@@ -544,17 +557,23 @@ WhalePod 会把送进模型的文本里的 `[表情包:xx]`/`[图片]` 改写成
 
 ### 协议端
 
-WhalePod 只**连接**协议端，**不下载、不安装**。
-你需要自己装好 NapCat，在里面开启：
+两种用法都行：
+
+- **让 WhalePod 托管**：在「组件」页启停 —— 用本机已装的那份，或你自己放进
+  `~/.whale-pod/protocol/napcat/` 的一份
+- **只连接**：你自己跑着协议端，把地址填进来
+
+不管哪种，协议端里都要开启：
 
 - **WebSocket 服务端**（正向 WS）→ 填到 `wsUrl`
 - **HTTP API** → 填到 `httpUrl`
 
-> SnowLuma 已于 2026-11 上游 404，本项目不再提供其任何支持。
-> GUI 替代品。两者都实现 OneBot v11，WhalePod 都支持。
+> **2026-11 上游变化**：SnowLuma 仓库 404；NapCat 仓库被清空（Release 与 Tag 全删，
+> 文档站也 404）。这两条**自动下载**的路都不通了 —— 已装在本机的那份不受影响，
+> 新装请自备，见[「上游变化」](#上游变化snowluma-与-napcat)。
 >
 > ⚠️ SnowLuma 的 EULA 对「通过自动化脚本部署」有限制，
-> 所以 WhalePod 刻意不做自动安装。
+> 所以 WhalePod 刻意不做它的自动安装。
 
 ---
 
@@ -604,7 +623,7 @@ Web UI 的「人格」页可以直接编辑并切换当前角色。
 | **QQ** | 连接状态、消息统计、最近交互、暂停开关 |
 | **模型** | **路由策略 / 渠道优先级 / 默认模型 / token 上限 / 试跑** |
 | **渠道** | 自备渠道管理（添加、测试连接、删除） |
-| **组件** | **模式切换 + 内置下载 NapCat + 启停 + 日志**（AstrBot 为未完善） |
+| **组件** | **模式切换 + 协议端启停/日志**（自动下载随 NapCat 上游终止失效；AstrBot 为未完善） |
 | **决策** | 提供者可用性、**在线试判断**（不真的发消息） |
 | **人格** | 编辑角色、切换当前角色 |
 | **记忆** | 各会话上下文、长期摘要、清空 |
@@ -845,8 +864,8 @@ This is a **DSH plugin**, not a standalone app.
   you have a DeepSeek API key, and you want a group-chat bot that knows when to
   stay quiet.
 - ❌ **No, if** you don't have DSH, you expected a one-click script (you'll still
-  configure NapCat and scan a QR code), or you want a "reply to everything" bot —
-  this one deliberately stays silent most of the time.
+  bring your own QQ protocol host, configure it, and scan a QR code), or you want a
+  "reply to everything" bot — this one deliberately stays silent most of the time.
 
 **Does it cost anything?**
 
@@ -874,7 +893,7 @@ looking things up. Point it at a local model and cost drops to zero.
 
 - **LLM gateway (OpenAI-compatible).** Ships with DeepSeek account credentials; any OpenAI-compatible endpoint can be added as a custom provider.
 - **QQ bridge.** OneBot v11 in and out. A decision layer first asks *should I speak at all*, then the model decides *what to say* — which is both cheaper and more human than replying to everything.
-- **Protocol host.** Downloads and supervises NapCat for you, including QR-less quick login.
+- **Protocol host.** Starts, stops and supervises NapCat (logs, QR-less quick login). Upstream NapCat was wiped in 2026-11 — its releases are gone, so the built-in downloader can no longer work; drop your own copy under `~/.whale-pod/protocol/napcat/`.
 
 **Modes**
 
@@ -914,7 +933,7 @@ layer already filters out most messages.
 - Decision and expression are separate layers — that separation is what makes it feel less like a bot.
 - Data lives in `~/.whale-pod`; deleting that directory uninstalls everything.
 
-**Requirements:** DSH Desktop · Node 22.19+ · a QQ protocol host (NapCat can be installed from the UI)
+**Requirements:** DSH Desktop · Node 22.19+ · a QQ protocol host of your own (NapCat upstream ended in 2026-11; put a copy under `~/.whale-pod/protocol/napcat/`)
 
 See the Chinese sections above for configuration details, the full CLI reference, and the API surface.
 
@@ -924,6 +943,9 @@ See the Chinese sections above for configuration details, the full CLI reference
 
 - **reverse WS 未实现** —— 只支持 WhalePod 主动连协议端（forward）。
   NapCat 支持正向 WS，够用。
+- **协议端自动下载已失效** —— NapCat 上游 2026-11-12 清空仓库、Release 全删，
+  「组件」页的一键装会报 `HTTP 404`。已装好的照常跑，新装需自备一份放进
+  `~/.whale-pod/protocol/napcat/`。
 - **图片只记占位** —— 收到图片存 `[图片]`，不送多模态（可扩展）。
 - **托盘需要额外包** —— 未装 `systray2` 时回退控制台模式，核心功能不受影响。
 - **长期记忆用摘要而非向量检索** —— 见上文取舍说明。
@@ -934,8 +956,8 @@ See the Chinese sections above for configuration details, the full CLI reference
 
 ## 合规
 
-- WhalePod **不下载、不安装、不修改** QQ 客户端或协议端。
-- 使用第三方协议端（NapCat / SnowLuma 等）请自行阅读其许可与
+- WhalePod **不修改** QQ 客户端或协议端，也**不在发行包里附带**它们；协议端由用户自己获取（「组件」页只在上游可用时代为下载）。
+- 使用第三方协议端（NapCat 及其社区分支等）请自行阅读其许可与
   《QQ 用户协议》。**建议使用小号**，账号风险自负。
 - WhalePod 本身 MIT 许可，不含任何腾讯专有代码。
 
