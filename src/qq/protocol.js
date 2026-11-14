@@ -134,6 +134,28 @@ export function webInfo(home, backendId) {
 
   if (backendId !== 'napcat') return out
 
+  // 2026-11-15：SnowCat 的 WebUI 配置在 D:\SnowCat.Portable\...\config\webui.json
+  const snowcatRoot = process.env.SNOWCAT_ROOT || 'D:\\SnowCat.Portable'
+  const snowcatWebui = path.join(snowcatRoot, 'SnowCat.9.9.37-54395.Shell', 'config', 'webui.json')
+  const snowcatCandidates = [snowcatWebui]
+  try {
+    for (const d of fs.readdirSync(snowcatRoot)) {
+      if (/^SnowCat\..*\.Shell$/i.test(d)) snowcatCandidates.push(path.join(snowcatRoot, d, 'config', 'webui.json'))
+    }
+  } catch { /* ignore */ }
+  for (const f of snowcatCandidates) {
+    try {
+      if (!fs.existsSync(f)) continue
+      const j = JSON.parse(fs.readFileSync(f, 'utf8'))
+      if (j?.token) {
+        out.token = String(j.token)
+        if (j.port) out.port = Number(j.port)
+        out.url = `http://127.0.0.1:${out.port ?? 6099}/webui`
+        return out
+      }
+    } catch { /* 换下一个 */ }
+  }
+
   // NapCat 独立模式（完整包 v4.x）：<protocol>/napcat/napcat/config/webui.json
   // NapCat 注入模式（Shell 目录）：<protocol>/napcat/NapCat.*.Shell/versions/*/resources/app/napcat/config/webui.json
   const root = path.join(home, 'protocol', 'napcat')
@@ -198,6 +220,16 @@ export function listProcesses(home, backendId) {
   //    用户 D:\Tencent\QQ 的那个，470MB）。必须再校验可执行文件路径
   //    是否落在该后端的安装目录下。
   const prefix = path.join(home, 'protocol', backendId).replace(/\//g, '\\').toLowerCase()
+  // 2026-11-15：SnowCat 的 QQ 进程在独立目录（非 home/protocol/napcat），
+  // napcat 后端也要把它算进来，否则"后端进程"只显示 WhalePod 一个。
+  const snowcatPrefix = (process.env.SNOWCAT_ROOT || 'D:\\SnowCat.Portable')
+    .replace(/\//g, '\\').toLowerCase()
+  const matchPrefix = (full) => {
+    const f = full.replace(/\//g, '\\').toLowerCase()
+    if (f.startsWith(prefix)) return true
+    if (backendId === 'napcat' && f.startsWith(snowcatPrefix)) return true
+    return false
+  }
 
   try {
     const raw = execFileSync('tasklist', ['/FO', 'CSV', '/NH'], {
@@ -222,7 +254,7 @@ export function listProcesses(home, backendId) {
     for (const c of candidates) {
       const full = procPathOf(c.pid)
       if (!full) continue
-      if (!full.replace(/\//g, '\\').toLowerCase().startsWith(prefix)) continue
+      if (!matchPrefix(full)) continue
       out.push({ ...c, exe: full })
     }
   } catch { /* 查不到就返回空 —— 界面降级显示 */ }

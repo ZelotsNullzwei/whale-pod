@@ -2626,7 +2626,7 @@ async function whalePodCompat(o) {  const { sub, method, url, req, res, json, re
           webui = {
             url: w.url,
             hasToken: w.token !== null,
-            autoLoginUrl: w.token === null ? null : `${w.url}${w.url.includes('?') ? '&' : '?'}token=${encodeURIComponent(w.token)}`,
+            autoLoginUrl: w.token === null ? null : `${w.url.replace(/\/$/, '')}/web_login?token=${encodeURIComponent(w.token)}`,
           }
         }
       } catch { /* ignore */ }
@@ -2698,7 +2698,7 @@ async function whalePodCompat(o) {  const { sub, method, url, req, res, json, re
         ok: true,
         url: w.url,
         token: w.token,
-        autoLoginUrl: w.token === null ? null : `${w.url}${w.url.includes('?') ? '&' : '?'}token=${encodeURIComponent(w.token)}`,
+        autoLoginUrl: w.token === null ? null : `${w.url.replace(/\/$/, '')}/web_login?token=${encodeURIComponent(w.token)}`,
       })
     }
 
