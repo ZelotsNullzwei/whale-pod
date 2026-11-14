@@ -14,6 +14,7 @@
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import { detectBodyPart, composeFraming } from '../src/photo/photo-composer.js'
+import { processImage } from '../src/qq/photoCapturePipeline.js'
 import { classifyDrawIntent } from '../src/qq/bridge.js'
 import { partBandOf, buildPartRef, resolveBand, selfSafeBandOf, PART_REF_ALGO_VERSION, FACE_SAFETY_MARGIN } from '../src/photo/partRef.js'
 
@@ -24,6 +25,11 @@ let pass = 0
 let fail = 0
 function ok(name, fn) {
   try { fn(); console.log(`  ✅ ${name}`); pass++ }
+  catch (e) { console.log(`  ❌ ${name}\n     ${e.message}`); fail++ }
+}
+/** 异步版 ok（用例里有 await 时用这个，避免断言在打印之后才跑） */
+async function okAsync(name, fn) {
+  try { await fn(); console.log(`  ✅ ${name}`); pass++ }
   catch (e) { console.log(`  ❌ ${name}\n     ${e.message}`); fail++ }
 }
 
@@ -121,13 +127,44 @@ ok('★ mcpImage 有 cropRegion（结果确定，不跟模型较劲）', () => {
   assert.match(b, /export async function cropRegion/)
   assert.match(b, /b - t >= 0\.15/, '要挡住非法区间，别裁成一条线')
 })
-ok('★ bridge 生成后只裁「离脸远」的部位（腿/脚/小腹/腰）', () => {
-  const b = fs.readFileSync(new URL('../src/qq/bridge.js', import.meta.url), 'utf8')
-  assert.match(b, /const bpCrop = \(\(\) => \{/)
-  for (const k of ['腿', '脚', '小腹', '腰']) {
-    assert.ok(b.includes(`${k}: [`), `裁切表里缺「${k}」`)
+/*
+ * 2026-11-10 改：原来是锁源码形状（`const bpCrop = (() => {`），
+ * 那份代码已经抽到 `src/qq/photoCapturePipeline.js`，断言就假红了。
+ * 现在直接**跑一遍 processImage**，看它到底有没有按部位裁、裁的区间对不对。
+ */
+await okAsync('★ 生成后只裁「离脸远」的部位（腿/脚/小腹/腰）——按实际行为验', async () => {
+  const calls = []
+  const ops = {
+    cropRegion: async (buf, top, bottom) => { calls.push(['cropRegion', top, bottom]); return buf },
+    cropBottom: async (buf) => buf,
+    eraseCornerWatermark: async (buf) => buf,
+    log: { info() {}, warn() {} },
   }
-  assert.match(b, /cropRegion\(buf, bpCrop\[0\], bpCrop\[1\]/, '没真正调用裁切')
+  const big = Buffer.alloc(4096, 7)   // >1024 且 <8MB，过尺寸闸
+
+  const expected = { 腿: [0.42, 1.0], 脚: [0.62, 1.0], 小腹: [0.35, 0.78], 腰: [0.30, 0.72] }
+  for (const [part, [t, b]] of Object.entries(expected)) {
+    calls.length = 0
+    const r = await processImage(big, { shot: { framingInfo: { bodyPart: part } }, imgCfg: {}, ops })
+    assert.equal(r.ok, true, `${part} 应处理成功`)
+    const hit = calls.find((c) => c[0] === 'cropRegion')
+    assert.ok(hit, `${part} 必须真的调用 cropRegion`)
+    assert.equal(hit[1], t, `${part} 上边界应为 ${t}`)
+    assert.equal(hit[2], b, `${part} 下边界应为 ${b}`)
+  }
+
+  // 锁骨/胸部/肩颈：不进裁切表 → 不能调 cropRegion（否则整脸图被切成半张脸）
+  for (const part of ['锁骨', '胸部', '胸', '肩颈', '肩膀']) {
+    calls.length = 0
+    await processImage(big, { shot: { framingInfo: { bodyPart: part } }, imgCfg: {}, ops })
+    assert.equal(calls.filter((c) => c[0] === 'cropRegion').length, 0, `${part} 不该被裁`)
+  }
+
+  // 太小的图：必须拒绝，不能往下裁
+  calls.length = 0
+  const small = await processImage(Buffer.alloc(200), { shot: { framingInfo: { bodyPart: '腿' } }, imgCfg: {}, ops })
+  assert.equal(small.ok, false, '过小的图应判失败')
+  assert.equal(calls.length, 0, '过小的图不该再调裁切')
 })
 ok('★ 锁骨/胸部/肩颈**不进**事后裁切表（否则整脸图会被切成半张脸）', () => {
   const b = fs.readFileSync(new URL('../src/qq/bridge.js', import.meta.url), 'utf8')

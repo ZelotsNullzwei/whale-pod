@@ -210,6 +210,22 @@ ok('applyLimits() 后 toPrompt 立刻按新预算裁', () => {
   assert.equal(m.summary.length, storedBefore, '存储不受影响')
 })
 
+ok('极小注入预算仍严格守限，按优先级省略尾注', () => {
+  const s = mk({ maxChars: 12000, injectChars: 300 })
+  const m = s.get('group:small-budget')
+  m.summary = '【事】\n' + '重点'.repeat(300)
+  m.updatedAt = Date.now()
+  for (const budget of [300, 200, 150, 140, 100, 17]) {
+    /* 配置层会夹紧到 500；直接设运行时值以覆盖已报告的边界区间。 */
+    m.limits = { ...m.limits, inject: budget }
+    const p = m.toPrompt()
+    assert.ok(p.length <= budget, `预算 ${budget}，实际 ${p.length}`)
+    assert.ok(!p || p.startsWith('【关于这个会话你已经知道的】'), `预算 ${budget} 时不能注入半截标题`)
+  }
+  m.limits = { ...m.limits, inject: 10 }
+  assert.equal(m.toPrompt(), '', '连标题都放不下时不注入残片')
+})
+
 ok('源码锁：/api/config 的 POST 必须热更新 longMemory', () => {
   const src = fs.readFileSync(path.resolve(import.meta.dirname, '..', 'src', 'web', 'server.js'), 'utf8')
   const at = src.indexOf("p === '/api/config' && req.method === 'POST'")

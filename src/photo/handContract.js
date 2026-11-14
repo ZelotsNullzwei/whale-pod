@@ -17,13 +17,19 @@
 
 /** 每个模式的基准契约（不含"动作确需双手"的例外） */
 export const HAND_CONTRACTS = {
-  first_person: { maxVisibleHands: 1, baselineHands: 0, holderHand: 'none', allowTwoHandsWhenAction: false, note: '默认不出手；单手动作最多 1 只' },
-  rear_object: { maxVisibleHands: 1, baselineHands: 0, holderHand: 'hidden', allowTwoHandsWhenAction: false, note: '持机手不入画，最多 1 只操作手' },
-  rear_selfie: { maxVisibleHands: 1, baselineHands: 0, holderHand: 'hidden', allowTwoHandsWhenAction: false, note: '可只露手/手臂，最多 1 只；确需双手须显式声明' },
-  front_selfie: { maxVisibleHands: 1, baselineHands: 0, holderHand: 'hidden', allowTwoHandsWhenAction: false, note: '持机手/手机在画外，可见手最多 1 只' },
-  face_closeup: { maxVisibleHands: 1, baselineHands: 0, holderHand: 'hidden', allowTwoHandsWhenAction: false, note: '怼脸特写：默认不出手；托腮/挡脸等最多 1 只' },
-  mirror_selfie: { maxVisibleHands: 2, baselineHands: 1, holderHand: 'visible', allowTwoHandsWhenAction: false, note: '镜中可见持机手+手机；另一只手可自然下垂或摆姿势，不得出现第三只手' },
-  back_view: { maxVisibleHands: 0, baselineHands: 0, holderHand: 'hidden', allowTwoHandsWhenAction: false, note: '背影，手不入画' },
+  first_person: { maxVisibleHands: 1, baselineHands: 0, holderHand: 'none', allowTwoHandsWhenAction: false, occupiesHand: true, holderVisible: false, note: '默认不出手；单手动作最多 1 只' },
+  rear_object: { maxVisibleHands: 1, baselineHands: 0, holderHand: 'hidden', allowTwoHandsWhenAction: false, occupiesHand: true, holderVisible: false, note: '持机手不入画，最多 1 只操作手' },
+  rear_selfie: { maxVisibleHands: 1, baselineHands: 0, holderHand: 'hidden', allowTwoHandsWhenAction: false, occupiesHand: true, holderVisible: false, note: '可只露手/手臂，最多 1 只；确需双手须显式声明' },
+  front_selfie: { maxVisibleHands: 1, baselineHands: 0, holderHand: 'hidden', allowTwoHandsWhenAction: false, occupiesHand: true, holderVisible: false, note: '持机手/手机在画外，可见手最多 1 只' },
+  face_closeup: { maxVisibleHands: 1, baselineHands: 0, holderHand: 'hidden', allowTwoHandsWhenAction: false, occupiesHand: true, holderVisible: false, note: '怼脸特写：默认不出手；托腮/挡脸等最多 1 只' },
+  mirror_selfie: { maxVisibleHands: 2, baselineHands: 1, holderHand: 'visible', allowTwoHandsWhenAction: false, occupiesHand: true, holderVisible: true, note: '镜中可见持机手+手机；另一只手做当前动作或自然垂放，不得出现第三只手' },
+  back_view: { maxVisibleHands: 0, baselineHands: 0, holderHand: 'hidden', allowTwoHandsWhenAction: false, occupiesHand: false, holderVisible: false, status: 'placeholder_pending_product', note: '背影：占位规则（怎么拍待产品决定），手不入画' },
+  /* 架机定时（2026-11-10）：没有持机手，双手都可以入画 */
+  tripod: { maxVisibleHands: 2, baselineHands: 0, holderHand: 'none', allowTwoHandsWhenAction: true, occupiesHand: false, holderVisible: false, note: '架机定时拍摄（无持机手，允许双手）' },
+  /* 视频通话：设备固定，不占手；手数上限待产品决定（null） */
+  video_call: { maxVisibleHands: null, baselineHands: 0, holderHand: 'none', allowTwoHandsWhenAction: true, occupiesHand: false, holderVisible: false, note: '视频通话（设备固定，手数上限待定）' },
+  /* 纯场景：画面没有人，也就没有手 */
+  scene_only: { maxVisibleHands: 0, baselineHands: 0, holderHand: 'hidden', allowTwoHandsWhenAction: false, occupiesHand: false, holderVisible: false, note: '纯场景图，无人无手' },
 }
 
 /**
@@ -52,6 +58,7 @@ export function handRuleLine(contract) {
     ? '镜中可以看到持机手与手机；另一只手可自然出现，不得出现第三只手'
     : (holderHand === 'hidden' ? '持机手与手机不入画' : '画面中不出现持机手')
   if (max === 0) return `【手部契约】${note}：**画面里不得出现手或手臂**（${holder}）。`
+  if (max == null) return `【手部契约】${note}：手数上限**待定**（${holder}）；不要出现多余的手。`
   return `【手部契约】${note}：**最多 ${max} 只手**（${holder}）；不得出现多余的手、重复的同侧手或第三只手。`
 }
 
@@ -62,12 +69,23 @@ export function handRuleLine(contract) {
 export function handDutyLine(contract, pose) {
   if (!contract || !pose || !pose.hands) return ''
   const h = pose.hands
-  const reqRaw = Number(h.requiredCount ?? 0)
-  const req = Number.isFinite(Number(h.actionHands)) ? Number(h.actionHands) + (contract.holderHand === 'visible' ? Math.min(Number(h.cameraHands ?? 0), 1) : 0) : reqRaw
   const camRaw = Number(h.cameraHands ?? 0)
-  const action = Number.isFinite(Number(h.actionHands)) ? Number(h.actionHands) : Math.max(0, req - camRaw)
   const camVisible = contract.holderHand === 'visible' ? camRaw : 0
   const camHidden = contract.holderHand === 'hidden' ? camRaw : 0
+  const cap = contract.maxVisibleHands
+
+  /* unknown：不写"动作手 N 只"，只写按上限执行（2026-11-10） */
+  const need = h.needVisibleHands !== undefined ? h.needVisibleHands : (h.requiredCount ?? null)
+  if (need == null) {
+    const parts0 = []
+    if (camVisible > 0) parts0.push('持机手 ' + camVisible + ' 只（镜中可见）')
+    else if (camHidden > 0) parts0.push('持机手 ' + camHidden + ' 只（不入画）')
+    parts0.push('手数未知：按本模式最多 ' + (cap == null ? '待定' : cap) + ' 只手执行，不要增加手')
+    return '【动作手部】' + parts0.join('｜') + '。'
+  }
+
+  const action = Number(h.actionHands ?? 0)
+  const poseHands = Number(h.poseHands ?? 0)
   const fmt = (side) => {
     if (!side) return ''
     if (typeof side === 'string') return side
@@ -78,12 +96,12 @@ export function handDutyLine(contract, pose) {
   const right = fmt(h.right)
   const parts = []
   if (action > 0) parts.push('动作手 ' + action + ' 只')
+  if (poseHands > 0) parts.push('摆姿势手 ' + poseHands + ' 只')
   if (camVisible > 0) parts.push('持机手 ' + camVisible + ' 只（镜中可见）')
   else if (camHidden > 0) parts.push('持机手 ' + camHidden + ' 只（不入画）')
   const duties = [left && '左手:' + left, right && '右手:' + right].filter(Boolean)
   if (duties.length) parts.push(duties.join('；'))
   if (!parts.length) return ''
-  const cap = contract.maxVisibleHands
-  if (req > cap) parts.push('⚠️ 规划动作需要 ' + req + ' 只手，超过本模式上限 ' + cap + '：优先拆分动作或让物品放桌面/支撑，不要增加第三只手')
+  if (cap != null && need > cap) parts.push('⚠️ 规划动作需要 ' + need + ' 只手，超过本模式上限 ' + cap + '：优先拆分动作或让物品放桌面/支撑，不要增加第三只手')
   return '【动作手部】' + parts.join('｜') + '。'
 }

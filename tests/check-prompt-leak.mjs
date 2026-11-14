@@ -93,9 +93,17 @@ ok('★★ 反向：正常聊天提到"表情包"也不能被剥', () => {
 })
 
 ok('★ 提示原文常量：注入侧和清洗侧共用同一份', () => {
+  /*
+   * ⚠️ 2026-11-10 修：原来断言第一条必须含「只回一个表情」——
+   * 那是 2026-11-04 的旧文案，后来改成了「看懂意思就行…」。
+   * 真正要锁的是**共用同一份**这个不变量：拿常量原文当输入，清洗侧必须能擦掉。
+   */
   assert.ok(Array.isArray(PROMPT_NOTE_TEXTS) && PROMPT_NOTE_TEXTS.length > 0)
-  assert.ok(PROMPT_NOTE_TEXTS[0].includes('只回一个表情'),
-    '第一条就是表情包注里那句 —— 清洗侧按它擦')
+  const note = PROMPT_NOTE_TEXTS[0]
+  const probe = note.slice(0, 24)
+  const out = cleanModelText(`前一句\n${note}\n后一句`)
+  assert.ok(!out.includes(probe), '清洗侧没按常量擦掉注入用的提示原文')
+  assert.ok(out.includes('前一句') && out.includes('后一句'), '正常内容不能被误删')
 })
 
 console.log(`\n通过 ${pass} / 失败 ${fail}`)

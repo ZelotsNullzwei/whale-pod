@@ -56,7 +56,25 @@ ok('★ 引用的是她的消息 → 不命中', () => {
   assert.equal(p._isColdSticker.call({}, msg, memOf([{ isMe: true, id: '9' }])), false)
 })
 
-console.log('\n=== 3. 源码锁 ===')
+console.log('\n=== 3. 决策为沉默时，不由冷场补话重新解释表情包 ===')
+ok('★ 文本表情标记 → 不启动 deadair 定时器', () => {
+  const ctx = {
+    _deadAirCfg: () => ({ enabled: true, delayMs: 3_600_000, minGapMs: 300_000 }),
+    log: { info() {} },
+  }
+  p._armDeadAir.call(ctx, { kind: 'group', scope: 'sticker-text', text: '[表情包:震惊]' }, memOf([]), '', '')
+  assert.equal(ctx._deadAirTimers, undefined, '表情包不应进入冷场补话')
+})
+ok('★ stickerRefs 标记 → 即使文本无标记也不启动 deadair', () => {
+  const ctx = {
+    _deadAirCfg: () => ({ enabled: true, delayMs: 3_600_000, minGapMs: 300_000 }),
+    log: { info() {} },
+  }
+  p._armDeadAir.call(ctx, { kind: 'group', scope: 'sticker-ref', text: '', stickerRefs: ['file:///sticker.png'] }, memOf([]), '', '')
+  assert.equal(ctx._deadAirTimers, undefined, '原始图片消息不应进入冷场补话')
+})
+
+console.log('\n=== 4. 源码锁 ===')
 ok('★ 冷场分支必须排在「看图判断」之前（否则又被抓去调模型）', async () => {
   const fs = await import('node:fs')
   const SRC = fs.readFileSync(new URL('../src/qq/bridge.js', import.meta.url), 'utf8')

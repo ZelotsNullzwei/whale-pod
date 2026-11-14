@@ -10,7 +10,7 @@
 
 export const PROFILE = {
   name: '鲸鱼娘',
-  age: '十八九岁',
+  age: '24岁以上的成年女性',
   /* 面部 */
   face: {
     shape: '脸型柔和、下颌线清楚（不要婴儿肥、不要锥子脸）',
@@ -35,59 +35,34 @@ export const PROFILE = {
     earNote: '是**戴上去的饰品**，不是从头上长出来的鳍，也不是精灵耳；耳朵是普通人的耳朵，被头发半遮着',
     earForbid: ['耳钉', '多个耳洞', '精灵耳'],
   },
-  /* 身材（数值定死） */
+  /* 身形：只参照人物图，不给模型下固定尺寸 */
   body: {
-    height: 165,
-    headRatio: 7.8,
-    shoulder: 33,
-    bust: 82,
-    waist: 58,
-    hip: 85,
-    upperArm: 21,
-    wrist: 13,
-    footSize: 35,
-    /*
-     * ★ 三围要**定死**（2026-11-06 用户：「三围每次都变，能不能定死」）：
-     *   光写厘米数模型不会照着画 —— 必须给可执行的形体词。
-     */
-    shape: '**纤细偏瘦**的少女体型（不是丰满型、不是前凸后翘、不是欧美身材）',
-    bustNote: '胸**小、平**（A~B 罩杯的观感）：胸口平顺，**不要大胸、不要事业线、不要撑出曲线**',
-    waistNote: '腰**细**，腰线明显、侧面看是收进去的',
-    hipNote: '臀**窄**，胯不宽，**不是翘臀**',
-    limbNote: '四肢细：上臂细、小臂到手腕收细、腿细直',
-    forbid: ['丰满', '大胸', '前凸后翘', 'S 曲线', '欧美身材', '肌肉感'],
+    shape: '成年女性的自然身形，以人物参考图为准，不夸张塑形',
     notes: [
-      '成年少女体型：不是幼童比例，也不是模特的夸张长腿',
-      '肩膀是自然斜肩（肩线从颈部微微下倾、肩头圆润）；不要平直的直角肩/外扩的方肩',
-      '手臂很细：上臂细、肘部窄、小臂到手腕逐渐收细；垂手时手腕在大腿根附近、指尖到大腿中段',
-      '双腿并拢能自然贴合（不是O型腿），膝盖朝正前方',
+      '保持自然肩线与四肢比例，不刻意拉长或缩窄身体',
+      '双腿结构自然，膝盖朝向一致，不画成 O 型腿',
     ],
   },
   hands: {
-    desc: '手掌长约16.5cm，手指修长、指节清楚，指甲短而平整（不涂甲油），手背有自然细小血管',
+    desc: '手指自然修长、指节清楚，指甲短而平整（不涂甲油），保留真实皮肤纹理',
     forbid: ['塑料感的完美手', '多指', '并指'],
   },
   feet: {
-    desc: '脚长约22.5cm（35码），脚背干净、脚趾自然分开，平时穿白棉袜',
+    desc: '脚部结构自然，脚趾自然分开，平时穿白棉袜',
     forbid: ['脚尖绷紧的姿势'],
   },
 }
 
-/** 拿不到参考图时的兜底文字（尽量短，别写成长篇小说） */
+/** 拿不到参考图时的兜底文字（尽量短，避免堆砌形体描述） */
 export function fallbackText() {
   const p = PROFILE
-  return `十八九岁的中国女孩子：${p.face.shape}，${p.face.skin}；${p.face.eyes}；${p.face.nose}。
-${p.hair.base}，${p.hair.bangs}，${p.hair.ahoge}。
-${p.accessories.head}；${p.accessories.ears}（${p.accessories.earNote}）。
-身高 ${p.body.height}cm，头身比 ${p.body.headRatio}，肩宽 ${p.body.shoulder}cm（窄肩薄背、自然斜肩），
-胸 ${p.body.bust}（A~B）／腰 ${p.body.waist}／臀 ${p.body.hip}，上臂围 ${p.body.upperArm}cm、手腕 ${p.body.wrist}cm，腿直不O型。
-${p.hands.desc}。`
+  return `${p.age}：${p.face.shape}，${p.face.skin}；${p.face.eyes}；${p.face.nose}。\n`
+    + `${p.hair.base}，${p.hair.bangs}，${p.hair.ahoge}。\n`
+    + `${p.accessories.head}；${p.accessories.ears}（${p.accessories.earNote}）。\n`
+    + `${p.body.shape}；${p.hands.desc}。`
 }
 
-/** 数值摘要（给"身形比例"那句用） */
+/** 旧接口兼容：仅返回定性参考，不输出身材数字。 */
 export function bodyNumbers() {
-  const b = PROFILE.body
-  return `身高 ${b.height}cm、头身比 ${b.headRatio}、肩宽 ${b.shoulder}cm（窄肩薄背、自然斜肩）、`
-    + `胸 ${b.bust}（**A~B，小而平**）／腰 ${b.waist}（**细，腰线明显**）／臀 ${b.hip}（**窄，不是翘臀**）、`
-    + `上臂围 ${b.upperArm}cm、手腕 ${b.wrist}cm、腿细直不O型`
+  return PROFILE.body.shape
 }

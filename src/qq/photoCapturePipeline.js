@@ -29,7 +29,7 @@ export async function processImage(buf, { shot = {}, imgCfg = {}, ops = {} } = {
   if (!buf || buf.length <= 1024) return { ok: false, buf, reason: `图片过小/空（${buf ? buf.length : 0} B）` }
   if (buf.length >= 8 * 1024 * 1024) return { ok: false, buf, reason: `图片过大（${buf.length} B）` }
 
-  const { cropRegion, cropBottom, eraseCornerWatermark, log } = ops
+  const { cropRegion, cropWatermarkSide, log } = ops
   let out = buf
 
   const part = shot?.framingInfo?.bodyPart
@@ -37,13 +37,8 @@ export async function processImage(buf, { shot = {}, imgCfg = {}, ops = {} } = {
   if (bp && typeof cropRegion === 'function') out = await cropRegion(out, bp[0], bp[1], log)
 
   if (out.length > 1024 && out.length < 8 * 1024 * 1024) {
-    if (shot?.framingInfo?.feet) {
-      if (typeof cropBottom === 'function') out = await cropBottom(out, 0.06, log)
-      if (typeof eraseCornerWatermark === 'function') out = await eraseCornerWatermark(out, log)
-    } else {
-      if (typeof cropBottom === 'function') out = await cropBottom(out, Number(imgCfg.cropBottom ?? 0.1), log)
-      if (typeof eraseCornerWatermark === 'function') out = await eraseCornerWatermark(out, log)
-    }
+    /* 2026-11-12 用户：水印一律用「裁两边」，不再裁底、不再擦除 */
+    if (typeof cropWatermarkSide === 'function') out = await cropWatermarkSide(out, { rightCut: 0.14 }, log)
     return { ok: true, buf: out }
   }
   return { ok: false, buf: out, reason: '处理后可发送尺寸异常' }
@@ -166,12 +161,12 @@ export async function runCaptureReview({
       small = await shrink(buf)
     } catch (e) {
       log.warn?.(`capture-review：审核缩图抛异常，按放行处理 — ${String(e?.message ?? e).slice(0, 60)}`)
-      return { finalBuf, retried, finalChoice, qcFirst: { legacy: { ok: true, why: '缩图失败放行' }, capture: null }, qcRetry, decision: null, block: Boolean(requireReview) }
+      return { finalBuf, retried, finalChoice, qcFirst: { legacy: { ok: true, why: '缩图失败放行' }, capture: null }, qcRetry, decision: null, block: Boolean(requireReview) && failClosed, degraded: Boolean(requireReview) && !failClosed }
     }
     if (!isUsableShrink(small, buf)) {
       /* 生产环境真实的失败形态：shrinkForReview 返回原图同一引用 */
       log.warn?.('capture-review：缩图结果不可用（返回原图/为空/未变小）→ 按放行处理')
-      return { finalBuf, retried, finalChoice, qcFirst: { legacy: { ok: true, why: '缩图失败放行' }, capture: null }, qcRetry, decision: null, block: Boolean(requireReview) }
+      return { finalBuf, retried, finalChoice, qcFirst: { legacy: { ok: true, why: '缩图失败放行' }, capture: null }, qcRetry, decision: null, block: Boolean(requireReview) && failClosed, degraded: Boolean(requireReview) && !failClosed }
     }
     reviewBuf = small
   }

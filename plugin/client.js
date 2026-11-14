@@ -71,7 +71,7 @@ window.__ModuleLoader__.load({
       zh: {
         nav: '鲸舱',
         title: '鲸舱',
-        sub: 'DSH 内置的 QQ 聊天机器人：NapCat 协议端 + 免费优先的 LLM 网关。',
+        sub: 'DSH 内置的 QQ 聊天机器人：协议端 + 免费优先的 LLM 网关。',
         loading: '正在加载…',
         loadFailed: '无法连接鲸舱后端',
         retry: '重试',
@@ -118,6 +118,10 @@ window.__ModuleLoader__.load({
       'dash.wardrobeSignature': '标志性造型',
       'dash.wardrobeHair': '发型',
       'dash.wardrobeEmpty': '还没读到衣柜',
+  'dash.season.spring': '春',
+  'dash.season.summer': '夏',
+  'dash.season.autumn': '秋',
+  'dash.season.winter': '冬',
       'dash.images': '生成图',
       'dash.imagesHint': '最近画的图 · 点开看大图',
       'dash.imagesEmpty': '还没画过图',
@@ -210,7 +214,7 @@ window.__ModuleLoader__.load({
         'persona.restored': '已恢复内置版本',
 
         // 设置页
-        'section.napcat': 'NapCat 协议端',
+        'section.napcat': '协议端',
         'section.napcatHint': '下载、启停与运行日志',
         'section.startup': '启动行为',
     'section.startupHint': 'DSH 启动时要不要自动拉起 WhalePod',
@@ -257,11 +261,11 @@ window.__ModuleLoader__.load({
         'qq.poke.chance': '戳一戳概率',
         'qq.supervisor': '自动托管 NapCat',
         'qq.supervisor.start': '启动 NapCat',
-        'qq.supervisor.stop': '停止 NapCat',
+        'qq.supervisor.stop': '停止协议端',
         'qq.start': '一键启动',
         'qq.stop': '完全关闭',
-        'qq.startHint': '启动 WhalePod 进程、NapCat 协议端与 QQ 桥接',
-        'qq.stopHint': '关闭桥接、停止 NapCat，并结束 WhalePod 进程（配置保留）',
+        'qq.startHint': '启动 WhalePod 进程、协议端与 QQ 桥接',
+        'qq.stopHint': '关闭桥接、停止协议端，并结束 WhalePod 进程（配置保留）',
         'actionRestarting': '已发出指令，状态刷新中…',
         'qq.paused': '已暂停',
         'qq.pause': '暂停',
@@ -407,7 +411,7 @@ window.__ModuleLoader__.load({
 
         'napcat.install': '安装 NapCat（内置运行）',
         'napcat.installing': '安装中…',
-        'napcat.logs': 'NapCat 运行日志',
+        'napcat.logs': '协议端运行日志',
         'napcat.logsEmpty': '暂无日志',
         'napcat.webui': '打开管理面板',
         'napcat.webuiStopped': 'NapCat 未运行，先启动它',
@@ -415,7 +419,7 @@ window.__ModuleLoader__.load({
         'napcat.webuiAt': '管理面板：',
         'napcat.accept': '我已阅读 NapCat 的许可（Limited Redistribution License）与《QQ 用户协议》，同意从官方 Release 下载到本机',
         'napcat.progress': '安装进度',
-        'napcat.builtIn': '内置托管：NapCat 由 DSH 自动拉起，无需手动开窗口',
+        'napcat.builtIn': '内置托管：协议端由 DSH 自动拉起，无需手动开窗口',
 
         'decision.provider': '决策提供者',
         'decision.threshold': '发言阈值',
@@ -437,9 +441,14 @@ window.__ModuleLoader__.load({
         'persona.scopeBy': '按会话',
         'persona.scopeHint': '只改选中的范围；选「全局」会清掉按会话的指定，群和私聊都用这一个',
         'persona.scopeEffective': '这一档现在生效',
+        'persona.owner': '主人 QQ',
+        'persona.ownerHint': '填了就绑成「这个私聊用 close 人格」；这条同时也是主动说说草稿的接收人。留空 = 清除绑定',
         'memory.stats': '记忆统计',
         'memory.clear': '清空记忆',
         'memory.cleared': '已清空',
+        'mem.saveSummary': '保存摘要',
+        'mem.summarySaved': '摘要已保存',
+        'mem.summaryEditHint': '改完点保存；旧版会留在历史里，可回滚。只影响这个会话的长期摘要。',
 
         'logs.empty': '暂无日志',
 
@@ -493,6 +502,10 @@ window.__ModuleLoader__.load({
       'dash.wardrobeSignature': 'Signature',
       'dash.wardrobeHair': 'Hair',
       'dash.wardrobeEmpty': 'Wardrobe not loaded',
+  'dash.season.spring': 'Spring',
+  'dash.season.summer': 'Summer',
+  'dash.season.autumn': 'Autumn',
+  'dash.season.winter': 'Winter',
       'dash.images': 'Generated',
       'dash.imagesHint': 'Recent pictures · click to enlarge',
       'dash.imagesEmpty': 'Nothing drawn yet',
@@ -764,9 +777,14 @@ window.__ModuleLoader__.load({
         'persona.scopeBy': 'Per scope',
         'persona.scopeHint': 'Only the selected scope changes; “Global” changes both.',
         'persona.scopeEffective': 'Effective here',
+        'persona.owner': 'Owner QQ',
+        'persona.ownerHint': 'Binds this DM to the "close" persona; also the only recipient of proactive Qzone drafts. Empty = unbind',
         'memory.stats': 'Memory stats',
         'memory.clear': 'Clear memory',
         'memory.cleared': 'Cleared',
+        'mem.saveSummary': 'Save summary',
+        'mem.summarySaved': 'Summary saved',
+        'mem.summaryEditHint': 'Edit then save; the previous version is kept in history. Affects this session only.',
 
         'logs.empty': 'No log entries yet',
 
@@ -1910,7 +1928,7 @@ window.__ModuleLoader__.load({
           },
             h('div', { style: { display: 'flex', flexDirection: 'column', gap: '4px' } },
               h('div', { style: { fontSize: '12px', color: 'var(--dsw-alias-label-secondary)' } },
-                `${t('dash.wardrobeToday')} · ${w.date ?? ''}`),
+                `${t('dash.wardrobeToday')} · ${w.date ?? ''} · ${t('dash.season.' + (w.season || 'autumn'))}`),
               todayRows.map(([label2, val], i) => h('div', { key: i, style: rowStyle },
                 h('span', { style: { fontSize: '11px', color: 'var(--dsw-alias-label-secondary)' } }, label2),
                 h('b', { style: { fontSize: '12px', lineHeight: 1.6, fontWeight: 500 } }, String(val).replace(/\*\*/g, ''))))),
@@ -3745,6 +3763,25 @@ window.__ModuleLoader__.load({
             setToast,
             t,
           }),
+          /*
+           * ★ 主人绑定（2026-11-10）：显式填 QQ 号。
+           *   等价于 activeByScope['private:<QQ>']='close'，也是主动说说草稿的唯一接收人。
+           *   留空提交 = 清除绑定（服务端会先删掉旧的 "private:* → close" 条目）。
+           */
+          h(Row, { label: t('persona.owner'), hint: t('persona.ownerHint') },
+            h(TextField, {
+              value: (() => {
+                const bs = s?.persona?.activeByScope ?? {}
+                const k = Object.keys(bs).find((x) => String(x).startsWith('private:') && String(bs[x]) === 'close')
+                return k ? k.slice('private:'.length) : ''
+              })(),
+              placeholder: '2129024700',
+              numeric: true,
+              disabled: busy,
+              onCommit: (v) => post('/persona', { ownerQQ: String(v ?? '').trim() })
+                .then(() => status.reload())
+                .catch((error) => setToast({ ok: false, text: String(error?.message ?? error) })),
+            })),
           h('div', { className: 'gd_actions' },
             h('button', {
               className: 'gd_btn',
@@ -4149,7 +4186,35 @@ window.__ModuleLoader__.load({
                 h('div', { className: 'gd_sechead' },
                   h('h3', { className: 'gd_sectitle' }, `${viewing.title || t('mem.summaryTitle')}：${viewing.scope}`),
                   h('button', { className: 'gd_btn', style: { marginLeft: 'auto' }, onClick: () => setViewing(null) }, t('mem.close'))),
-                h('div', { style: { whiteSpace: 'pre-wrap', fontSize: '12.5px', lineHeight: 1.7 } }, viewing.text || '—'))))
+                viewing.title
+                  /* 事件列表：只读 */
+                  ? h('div', { style: { whiteSpace: 'pre-wrap', fontSize: '12.5px', lineHeight: 1.7 } }, viewing.text || '—')
+                  /* 摘要：可编辑（她记错事时直接改，2026-11-10） */
+                  : h('div', null,
+                    h('div', { className: 'gd_note', style: { marginBottom: '6px' } }, t('mem.summaryEditHint')),
+                    h('textarea', {
+                      className: 'gd_input',
+                      id: 'memsum',
+                      defaultValue: viewing.text || '',
+                      style: { width: '100%', minHeight: '220px', fontFamily: 'ui-monospace,Consolas,monospace', fontSize: '12.5px' },
+                    }),
+                    h('div', { className: 'gd_actions', style: { marginTop: '8px' } },
+                      h('button', {
+                        className: 'gd_btn',
+                        onClick: async () => {
+                          const box = document.getElementById('memsum')
+                          const text = String(box?.value ?? '')
+                          try {
+                            await api('/memory/summary', {
+                              method: 'POST',
+                              body: JSON.stringify({ scope: viewing.scope, summary: text }),
+                            })
+                            setToast({ ok: true, text: t('mem.summarySaved') })
+                            setViewing(null)
+                            mem.reload()
+                          } catch (error) { setToast({ ok: false, text: String(error?.message ?? error) }) }
+                        },
+                      }, t('mem.saveSummary')))))))
     }
 
     /**

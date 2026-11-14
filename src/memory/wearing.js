@@ -139,16 +139,51 @@ function writeAll(obj) {
  * @param {string} [o.note] 一句话备注（比如「他让换的」）
  * @returns {{ok:boolean, file?:string, error?:string}}
  */
-export function setWearing(dayKey, { text, kind, note } = {}) {
+export function setWearing(dayKey, { text, kind, note, hair } = {}) {
   const k = String(dayKey ?? '').trim()
   const t = String(text ?? '').trim()
   if (!k || !t) return { ok: false, error: 'dayKey 和 text 都要有' }
   const all = { ...readAll() }
-  all[k] = { text: t, kind: String(kind ?? ''), at: Date.now(), note: String(note ?? '') }
+  const prev = all[k] ?? {}
+  all[k] = {
+    text: t,
+    kind: String(kind ?? ''),
+    at: Date.now(),
+    note: String(note ?? ''),
+    /* 发型一起存：换装时没给头发就沿用当天已有的 */
+    hair: hair !== undefined ? String(hair) : String(prev.hair ?? ''),
+  }
   // 只留最近 7 天，别把文件越攒越大
   const keys = Object.keys(all).sort()
   for (const old of keys.slice(0, Math.max(0, keys.length - 7))) delete all[old]
   return writeAll(all)
+}
+
+/**
+ * 只更新"当前发型"（不换衣服）。2026-11-11：
+ * 她在聊天里说「扎起来 / 扎马尾 / 披着」，出图和后续说说都要跟着变。
+ */
+export function setWearingHair(dayKey, hair) {
+  const k = String(dayKey ?? '').trim()
+  const h = String(hair ?? '').trim()
+  if (!k || !h) return { ok: false, error: 'dayKey 和 hair 都要有' }
+  const all = { ...readAll() }
+  const prev = all[k] ?? {}
+  all[k] = { text: String(prev.text ?? ''), kind: String(prev.kind ?? ''), at: Number(prev.at ?? Date.now()), note: String(prev.note ?? ''), hair: h }
+  const keys = Object.keys(all).sort()
+  for (const old of keys.slice(0, Math.max(0, keys.length - 7))) delete all[old]
+  return writeAll(all)
+}
+
+/** 取今天的当前发型（过期规则同 wearingFor：换日 / 睡眠时段失效）。 */
+export function hairFor(dayKey, slotId = '', now = new Date()) {
+  const k = String(dayKey ?? '').trim()
+  if (!k) return ''
+  const rec = readAll()[k]
+  if (!rec || !String(rec.hair ?? '').trim()) return ''
+  const hour = (now instanceof Date ? now : new Date(now)).getHours()
+  if (SLEEP_SLOTS.includes(String(slotId ?? '')) || hour >= SLEEP_HOUR || hour < WAKE_HOUR) return ''
+  return String(rec.hair).trim()
 }
 
 /**

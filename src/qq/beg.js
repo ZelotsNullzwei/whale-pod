@@ -212,9 +212,12 @@ export class BegState {
     if (!this.file) return
     try {
       fs.mkdirSync(path.dirname(this.file), { recursive: true })
-      fs.writeFileSync(this.file, JSON.stringify({
+      /* 原子写（2026-11-10）：truncate 会让"今天讨了几次/用过哪句"归零 → 可能重复讨钱 */
+      const tmp = `${this.file}.tmp`
+      fs.writeFileSync(tmp, JSON.stringify({
         day: this.day, count: this.count, usedLineIds: this.usedLineIds, lastAt: this.lastAt,
       }, null, 2), 'utf8')
+      fs.renameSync(tmp, this.file)
     } catch { /* 写不进去不该让主流程崩 */ }
   }
 

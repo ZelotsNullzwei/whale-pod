@@ -195,10 +195,18 @@ ok('⚠️ 源码锁：onEvent 里必须挂 _cancelNudge（否则"人回来了�
 
 ok('⚠️ 源码锁：发送漏斗里必须剥标记（每条出站路径都走它）', () => {
   const src = fs.readFileSync(new URL('../src/qq/bridge.js', import.meta.url), 'utf8')
-  const atSend = src.indexOf('async _send(msg, text, cover = null)')
-  const seg = src.slice(atSend, atSend + 1200)
-  assert.match(seg, /stripWaitMarkers\(/, '_send 开头就要剥 [等:N]')
-  assert.match(seg, /_scheduleNudge\(/, '剥出来的分钟数要排上催')
+  /*
+   * ⚠️ 2026-11-10 修：原来写死签名 `async _send(msg, text, cover = null)` 和 1200 字窗口。
+   * 后来签名加了 `target`，且 `_scheduleNudge` 挪到 ~3200 字处 —— 断言假红。
+   * 改成签名无关 + 放宽窗口，只锁**顺序**：先剥标记，再安排催。
+   */
+  const atSend = src.indexOf('async _send(')
+  assert.ok(atSend > 0, '找不到 _send')
+  const seg = src.slice(atSend, atSend + 6000)
+  const atStrip = seg.indexOf('stripWaitMarkers(')
+  const atNudge = seg.indexOf('_scheduleNudge(')
+  assert.ok(atStrip >= 0, '_send 开头就要剥 [等:N]')
+  assert.ok(atNudge > atStrip, '剥出来的分钟数要排上催（且必须在剥之后）')
 })
 
 console.log(`\n通过 ${pass} / 失败 ${fail}`)

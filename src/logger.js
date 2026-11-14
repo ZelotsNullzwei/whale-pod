@@ -37,11 +37,12 @@ const LEVELS = { debug: 10, info: 20, warn: 30, error: 40 }
  *
  * @returns {string|null} 轮转后的新文件名（没轮转返回 null）
  */
-function rotateIfNeeded(file, maxBytes, keep) {
+function rotateIfNeeded(file, maxBytes, keep, force = false) {
   try {
     if (!maxBytes || maxBytes <= 0) return null
     if (!fs.existsSync(file)) return null
-    if (fs.statSync(file).size < maxBytes) return null
+    /* force=true：运行期由**累计字节**判断是否超阈值，此时 stat 可能因缓冲偏小 */
+    if (!force && fs.statSync(file).size < maxBytes) return null
 
     // 时间戳进文件名：`:` 在 Windows 上是非法字符，必须换掉
     const stamp = new Date().toISOString().replace(/[:.]/g, '-')
@@ -153,7 +154,48 @@ export class Logger {
             )
           }
         }
-        this._stream.write(`${localStamp(entry.t)} [${level}] ${entry.msg}\n`)
+        const line = `${localStamp(entry.t)} [${level}] ${entry.msg}\n`
+        /* 正在轮转：先缓存，等新流打开再补写（不丢行、不乱序） */
+        if (this._rotating) {
+          this._pending = this._pending || []
+          this._pending.push(line)
+          return
+        }
+        this._stream.write(line)
+        /*
+         * ★ **运行期轮转**（2026-11-10）。
+         * 原来只在**启动时**检查大小 —— 单次长跑能顶穿 5MB（实测 4.3MB）。
+         * ⚠️ Windows 不能重命名"打开中"的文件，必须等流真正关闭再 rename，
+         *    所以这里是**异步**的：置 `_rotating` → 后续行进 `_pending` →
+         *    关闭后 rename、重开、补写缓存。
+         * ⚠️ 用 `stream.bytesWritten`（含缓冲）判断，不用 stat（缓冲会偏小）。
+         * ⚠️ 任何一步失败都继续写原文件，绝不让日志搞崩主流程。
+         */
+        if (this.maxBytes > 0 && this._stream && this._stream.fd != null
+            && Number(this._stream.bytesWritten ?? 0) >= this.maxBytes) {
+          try {
+            const old = this._stream
+            this._rotating = true
+            this._stream = null
+            try { old.on('error', () => {}) } catch { /* ignore */ }
+            old.end(() => {
+              try {
+                const rotated = rotateIfNeeded(this.file, this.maxBytes, this.keep, true)
+                this._stream = fs.createWriteStream(this.file, { flags: 'a' })
+                if (rotated) {
+                  this._stream.write(
+                    `${localStamp()} [info] 日志已轮转：上一份 = ${path.basename(rotated)}`
+                    + `（阈值 ${Math.round(this.maxBytes / 1024 / 1024)}MB，保留 ${this.keep} 份）\n`,
+                  )
+                }
+                const pend = this._pending || []
+                this._pending = []
+                for (const l of pend) this._stream.write(l)
+              } catch { /* 轮转失败就继续写原文件 */ }
+              this._rotating = false
+            })
+          } catch { this._rotating = false }
+        }
       } catch { /* 落盘失败不影响运行 */ }
     }
 

@@ -1079,6 +1079,21 @@ export function createWebServer(opts) {
           log.info('Web：已保存角色 ' + body.name)
           return json(res, 200, { ok: true, name: body.name })
         }
+        /*
+         * ★ 主人绑定（2026-11-10）：面板上直接填 QQ 号。
+         *   { ownerQQ: '2129024700' } → activeByScope['private:2129024700']='close'
+         *   { ownerQQ: '' }           → 只清除旧的「主人」条目
+         * 为什么单独一个入口：换主人时必须先删旧 key（setActive 只覆盖不删），
+         * 否则旧号还留着 close —— 谁是主人模棱两可，而且说说草稿会发到旧号。
+         */
+        if (body.ownerQQ !== undefined) {
+          const qq = String(body.ownerQQ ?? '').replace(/\D/g, '')
+          if (qq && !/^\d{5,12}$/.test(qq)) return json(res, 400, { error: 'QQ 号格式不对（5–12 位数字）' })
+          const next = persona.setOwner(qq)
+          store.update({ persona: { activeByScope: next } })
+          log.info(qq ? `Web：主人绑定为 ${qq}（close；也是说说草稿接收人）` : 'Web：已清除主人绑定')
+          return json(res, 200, { ok: true, ownerQQ: qq || null, activeByScope: next })
+        }
         if (body.active) {
           /*
            * ★ 可选 `scope`（2026-11-01）：带了就只改**那一个会话/那一类会话**，
@@ -2338,7 +2353,9 @@ async function whalePodCompat(o) {  const { sub, method, url, req, res, json, re
             const pools = W.effectivePools()
             return {
               date: k,
+              season: W.seasonOfDay(k),
               today: {
+                season: W.seasonOfDay(k),
                 outfit: W.outfitForDay(k),
                 outing: W.outingOutfitForDay(k),
                 sleepwear: W.sleepwearForDay(k),
@@ -2700,7 +2717,9 @@ async function whalePodCompat(o) {  const { sub, method, url, req, res, json, re
       return json(res, 200, {
         ok: true,
         date: k,
+        season: W.seasonOfDay(k),
         today: {
+          season: W.seasonOfDay(k),
           outfit: W.outfitForDay(k),
           outing: W.outingOutfitForDay(k),
           sleepwear: W.sleepwearForDay(k),
@@ -2828,6 +2847,21 @@ async function whalePodCompat(o) {  const { sub, method, url, req, res, json, re
       const mem = longMemory?.get?.(scope)
       return json(res, 200, { ok: true, scope, summary: mem?.summary ?? null, summarizedCount: mem?.summarizedCount ?? 0, updatedAt: mem?.updatedAt ?? null })
     }
+    /*
+     * 人工改写长期记忆摘要（2026-11-10）：她记错事时，直接在面板上改。
+     * 旧版会留进 history（和自动摘要一样留底），`updatedAt` 刷新为现在。
+     */
+    if (sub === '/memory/summary' && method === 'POST') {
+      const body = await readJson(req)
+      const scope = String(body.scope ?? '').trim()
+      const summary = String(body.summary ?? '')
+      if (!scope) return json(res, 400, { error: '缺少 scope' })
+      if (summary.trim().length < 10) return json(res, 400, { error: '摘要太短（至少 10 字）' })
+      if (typeof longMemory?.setSummary !== 'function') return json(res, 400, { error: '长期记忆未启用' })
+      const r = longMemory.setSummary(scope, summary)
+      log.info(`[whale-pod] 人工改写摘要 ${scope}（${r.length} 字）`)
+      return json(res, 200, { ok: true, scope, length: r.length })
+    }
 
     // ── 人格 ─────────────────────────────────────────────────────
     if (sub === '/persona' && method === 'GET') {
@@ -2844,6 +2878,18 @@ async function whalePodCompat(o) {  const { sub, method, url, req, res, json, re
     }
     if (sub === '/persona' && method === 'POST') {
       const body = await readJson(req)
+      /*
+       * 主人绑定（2026-11-10）：插件面板走的是这条（/api/whale-pod/persona）。
+       * ⚠️ 老 /api/persona（自带网页面板）有一份同样的，两边都要有。
+       */
+      if (body.ownerQQ !== undefined) {
+        const qq = String(body.ownerQQ ?? '').replace(/\D/g, '')
+        if (qq && !/^\d{5,12}$/.test(qq)) return json(res, 400, { error: 'QQ 号格式不对（5–12 位数字）' })
+        const next = persona?.setOwner?.(qq) ?? {}
+        store.update({ persona: { activeByScope: next } })
+        log.info(qq ? `[whale-pod] 主人绑定为 ${qq}（close；也是说说草稿接收人）` : '[whale-pod] 已清除主人绑定')
+        return json(res, 200, { ok: true, ownerQQ: qq || null, activeByScope: next })
+      }
       const action = String(body.action ?? 'activate')
       const list = persona?.list?.() ?? []
       if (action === 'create' || action === 'save') {

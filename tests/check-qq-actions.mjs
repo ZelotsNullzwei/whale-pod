@@ -162,7 +162,15 @@ await okAsync('关掉的动作不调接口（但标记照样被剥）', async ()
 })
 
 await okAsync('ACTION_KEYS 覆盖四个动作', async () => {
-  assert.deepEqual([...ACTION_KEYS].sort(), ['emojiLike', 'poke', 'recall', 'signature'])
+  /*
+   * ⚠️ 2026-11-10 修：原来断言**恰好**四个（deepEqual）。
+   * 后来加了说说/删说说（qzone / qzoneDel），表就变成了 6 个 —— 那不是功能退化。
+   * 改成"必须包含最初的四个"，允许后续扩展。
+   */
+  for (const k of ['emojiLike', 'poke', 'recall', 'signature']) {
+    assert.ok(ACTION_KEYS.includes(k), `ACTION_KEYS 缺「${k}」`)
+  }
+  assert.equal(new Set(ACTION_KEYS).size, ACTION_KEYS.length, '不许有重复项')
 })
 
 console.log('=== 4. 失败不能影响回复 ===')

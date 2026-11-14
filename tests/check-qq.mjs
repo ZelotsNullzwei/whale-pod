@@ -55,7 +55,9 @@ console.log('\n=== 3. 事件标准化 ===')
   check('scope', n.scope === 'group:999', n.scope)
   check('昵称优先用群名片', n.senderName === '小明', n.senderName)
   check('@我判断', n.isAtMe('222') === true)
-  check('时间转换', n.at === 1700000000000, String(n.at))
+  /* `at` 是本机接收时刻；QQ 秒级原始时间保存在 serverAt。 */
+  check('本地接收时间 + 保留服务器时间', n.at <= Date.now() && n.at > 0 && n.serverAt === 1700000000000,
+    `at=${n.at}, serverAt=${n.serverAt}`)
 }
 
 console.log('\n=== 4. 消息分句 ===')
@@ -399,7 +401,8 @@ console.log('\n=== 12. 重复事件去重 ===')
     const ev = normalizeEvent({
       post_type: 'message', message_type: 'group', group_id: 999, user_id: 111,
       message_id: mid, time: Math.floor(Date.now() / 1000), sender: { card: '小明' },
-      message: [{ type: 'at', data: { qq: '10001' } }, { type: 'text', data: { text: ' 说点啥' } }],
+      /* 新 messageId 用不同正文，避免把桥接去重和决策冷却混在一个断言里。 */
+      message: [{ type: 'at', data: { qq: '10001' } }, { type: 'text', data: { text: ` 说点啥 ${mid}` } }],
     })
     ev.__normalized = ev
     return ev

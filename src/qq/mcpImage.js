@@ -31,8 +31,72 @@ import os from 'node:os'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { Credentials } from '../config/credentials.js'
+import http from 'node:http'
+import https from 'node:https'
 
 const DEFAULT_URL = 'http://127.0.0.1:3425/mcp/magpie/tools/minimax'
+
+/**
+ * 强制直连的 fetch（2026-11-13）。
+ *
+ * 生图网关永远是本机 127.0.0.1:3425，**根本不需要代理**；但 Node 的全局
+ * fetch 会照读 HTTP_PROXY，代理软件一没开就 502/ECONNREFUSED。
+ * 这里用原生 http/https + 全新 Agent，彻底绕开环境代理。
+ *
+ * 支持：method、headers、body（string / Buffer / FormData）。
+ * 返回标准 Response（调用方可以 .text()/.json()/.arrayBuffer()）。
+ */
+function fetchLocal(url, opts = {}) {
+  const u = new URL(url)
+  const mod = u.protocol === 'https:' ? https : http
+  const agent = u.protocol === 'https:' ? new https.Agent({ keepAlive: false }) : new http.Agent({ keepAlive: false })
+  const timeoutMs = Number(opts.timeoutMs ?? 300_000)
+
+  // 组装 body 与 headers
+  let headers = { ...(opts.headers ?? {}) }
+  let bodyBuf = null
+  const b = opts.body
+  if (b != null) {
+    if (typeof FormData !== 'undefined' && b instanceof FormData) {
+      /* 手工序列化 multipart —— 直接拿 undici FormData 的 stream 太麻烦，
+         这里用 Response 把 FormData 转成 ArrayBuffer + content-type 最省事。 */
+      // 走异步分支：在 Promise 里先 await new Response(b).arrayBuffer()
+      return (async () => {
+        const r0 = new Response(b)
+        headers['content-type'] = r0.headers.get('content-type') || ''
+        bodyBuf = Buffer.from(await r0.arrayBuffer())
+        return doRequest(mod, u, headers, bodyBuf, agent, timeoutMs)
+      })()
+    } else if (typeof b === 'string' || Buffer.isBuffer(b)) {
+      bodyBuf = Buffer.isBuffer(b) ? b : Buffer.from(b)
+    } else {
+      bodyBuf = Buffer.from(b)
+    }
+  }
+  return doRequest(mod, u, headers, bodyBuf, agent, timeoutMs)
+}
+
+function doRequest(mod, u, headers, bodyBuf, agent, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    const req = mod.request(u, { method: 'POST', headers, agent, timeout: timeoutMs }, (res) => {
+      const chunks = []
+      res.on('data', (c) => chunks.push(c))
+      res.on('end', () => {
+        const buf = Buffer.concat(chunks)
+        try {
+          resolve(new Response(buf, { status: res.statusCode ?? 0, headers: res.headers }))
+        } catch {
+          resolve({ ok: res.statusCode >= 200 && res.statusCode < 300, status: res.statusCode, headers: res.headers, text: async () => buf.toString('utf8'), arrayBuffer: async () => buf })
+        }
+      })
+      res.on('error', reject)
+    })
+    if (bodyBuf && bodyBuf.length) req.write(bodyBuf)
+    req.on('timeout', () => req.destroy(new Error('timeout')))
+    req.on('error', reject)
+    req.end()
+  })
+}
 
 let credsPromise = null
 /**
@@ -68,7 +132,7 @@ async function rpc(url, key, body, sid) {
     accept: 'application/json, text/event-stream',
   }
   if (sid) headers['mcp-session-id'] = sid
-  const r = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body) })
+  const r = await fetchLocal(url, { method: 'POST', headers, body: JSON.stringify(body) })
   const text = await r.text()
   // SSE 形态：取最后一条 data:
   const line = text.includes('data:') ? text.split('\n').filter((l) => l.startsWith('data:')).pop()?.slice(5) : text
@@ -106,7 +170,7 @@ async function ensureSession(url, key, log) {
  */
 export async function generateImage({
   provider = 'magpie-mcp', prompt, aspect, resolution, refUrls = [], url = DEFAULT_URL,
-  baseUrl, apiKeyEnv, model, size, refImage, home, log = {},
+  baseUrl, apiKeyEnv, model, size, refImage, refImages = [], seed = null, home, log = {},
 } = {}) {
   /*
    * ★ **两条通道并列**（2026-11-05 用户要求「画图 api 应该有单独渠道」）：
@@ -116,7 +180,7 @@ export async function generateImage({
    *   · 'none' / 其他   —— 不画
    */
   if (provider === 'openai-images') {
-    return generateOpenAIImage({ prompt, baseUrl, apiKeyEnv, model, size, aspect, resolution, refImage, home, log })
+    return generateOpenAIImage({ prompt, baseUrl, apiKeyEnv, model, size, aspect, resolution, refImage, refImages, seed, home, log })
   }
   if (provider && provider !== 'magpie-mcp') {
     return { ok: false, error: `未知的生图渠道：${provider}`, ms: 0 }
@@ -380,6 +444,52 @@ export async function cropBottom(buf, ratio = 0.1, log = {}) {
 }
 
 /**
+ * **裁两边去水印**（2026-11-12 用户选定方案）。
+ * 生图用 2:3 竖幅（比目标 9:16 宽），水印在右下角；这里**从右侧裁掉约 14% 宽**，
+ * 再从左侧补足到 9:16 —— 不切底部，脚/裙摆能保住。
+ */
+export async function cropWatermarkSide(buf, { rightCut = 0.14, aspect = 9 / 16 } = {}, log = {}) {
+  if (!Buffer.isBuffer(buf) || buf.length < 1024) return buf
+  const candidates = [
+    process.env.WHALEPOD_PYTHON,
+    path.join(os.homedir(), '.dsh', 'dsh-runtimes', 'dsh-next-primary-runtime', 'dependencies', 'python', 'python.exe'),
+    'python',
+  ].filter(Boolean)
+  const stamp = `${process.pid}-${Date.now()}-s`
+  const tmpIn = path.join(os.tmpdir(), `wp-side-${stamp}.img`)
+  const tmpOut = path.join(os.tmpdir(), `wp-side-${stamp}-out.jpg`)
+  const script = [
+    'import sys',
+    'from PIL import Image',
+    'im = Image.open(sys.argv[1]).convert("RGB")',
+    'w, h = im.size',
+    'rc = int(w * float(sys.argv[3]))',
+    'avail = max(1, w - rc)',
+    'target = min(avail, max(1, int(h * float(sys.argv[4]))))',
+    'left = max(0, avail - target)',
+    'im.crop((left, 0, w - rc, h)).save(sys.argv[2], quality=92)',
+  ].join('\n')
+  try {
+    fs.writeFileSync(tmpIn, buf)
+    for (const py of candidates) {
+      try {
+        execFileSync(py, ['-c', script, tmpIn, tmpOut, String(rightCut), String(aspect)], { timeout: 25000, stdio: 'ignore', windowsHide: true })
+        const out = fs.readFileSync(tmpOut)
+        if (out.length > 2048) {
+          log.info?.(`mcp-image：裁两边去水印（右 ${Math.round(rightCut * 100)}%，保留主体高度），${Math.round(out.length / 1024)}KB`)
+          return out
+        }
+      } catch { /* 换下一个解释器 */ }
+    }
+    log.warn?.('mcp-image：裁两边失败（没找到 python+Pillow），图原样发')
+    return buf
+  } finally {
+    try { fs.unlinkSync(tmpIn) } catch {}
+    try { fs.unlinkSync(tmpOut) } catch {}
+  }
+}
+
+/**
  * 兼容 API 通道的可用性（只看配置是否齐，不打网络）。
  * 真正能不能出图要发一次请求才知道 —— 面板刷新时不该为此花 30 秒。
  */
@@ -437,7 +547,7 @@ export function readMagpieSettings() {
 export async function generateOpenAIImage({
   // ⚠️ 默认必须是**空串**：写了 'gpt-image-1' 这类默认值，`model || ''` 就永远不为空，
   //    下面"跟随 Magpie imageGen"的兜底就永远走不到（实测踩过：发出 gpt-image-1 → 404）。
-  prompt, baseUrl, apiKeyEnv = 'IMAGE_API_KEY', model = '', size, aspect, resolution, refImage, home, log = {},
+  prompt, baseUrl, apiKeyEnv = 'IMAGE_API_KEY', model = '', size, aspect, resolution, refImage, refImages = [], seed = null, home, log = {},
 } = {}) {
   const t0 = Date.now()
   const text = String(prompt ?? '').trim()
@@ -462,7 +572,15 @@ export async function generateOpenAIImage({
   let refPath = refImage ? String(refImage) : ''
   // ★ 三视图只取正面那一幅（2026-11-05）：整张三联画当参考，身形会飘
   if (refPath) refPath = singlePanelRef(refPath, log)
-  const useEdits = refPath && fs.existsSync(refPath)
+  /*
+   * ★ 多参考（2026-11-11 用户：「展示穿搭的时候图片都喂给模型」）：
+   *   脸图锁长相 + 身体图锁身形，一起走 edits 的 image[]。
+   */
+  const refList = (Array.isArray(refImages) && refImages.length ? refImages : (refPath ? [refPath] : []))
+    .map((p) => String(p ?? ''))
+    .filter((p) => p && fs.existsSync(p))
+    .map((p) => singlePanelRef(p, log))
+  const useEdits = refList.length > 0
   const url = String(baseUrl).replace(/\/+$/, '') + (useEdits ? '/images/edits' : '/images/generations')
   try {
     let r
@@ -470,21 +588,24 @@ export async function generateOpenAIImage({
       const fd = new FormData()
       fd.append('model', effModel)
       fd.append('prompt', text)
-      fd.append('image', new Blob([fs.readFileSync(refPath)]), 'ref.png')
+      if (seed != null) fd.append('seed', String(seed))
+    for (const [i, p] of refList.entries()) {
+        fd.append(refList.length > 1 ? 'image[]' : 'image', new Blob([fs.readFileSync(p)]), `ref${i}.png`)
+      }
       fd.append('n', '1')
       if (px) fd.append('size', px)
-      r = await fetch(url, {
+      r = await fetchLocal(url, {
         method: 'POST',
         headers: { authorization: `Bearer ${key}` },
         body: fd,
-        signal: AbortSignal.timeout(300_000),
+        timeoutMs: 300_000,
       })
     } else {
-      r = await fetch(url, {
+      r = await fetchLocal(url, {
         method: 'POST',
         headers: { 'content-type': 'application/json', authorization: `Bearer ${key}` },
-        body: JSON.stringify({ model: effModel, prompt: text, n: 1, size: px, response_format: 'url' }),
-        signal: AbortSignal.timeout(180_000),
+        body: JSON.stringify({ model: effModel, prompt: text, n: 1, size: px, response_format: 'url', ...(seed != null ? { seed } : {}) }),
+        timeoutMs: 180_000,
       })
     }
     const txt = await r.text()

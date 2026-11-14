@@ -16,10 +16,9 @@
  * |---|---|---|
  * | NapCat | Limited Redistribution License（禁止商用；再分发须附完整许可） | ✅ 下载官方 Release |
  * | AstrBot | AGPL-3.0（真开源） | ⚠️ 需要 Python 3.12+，走官方安装器 |
- * | SnowLuma | 源码可见非商业许可（核心是专有二进制，**禁止自动化部署**） | ❌ **不支持** |
+ * | SnowLuma | 源码可见非商业许可（核心是专有二进制，**禁止自动化部署**） | ❌ **已移除（2026-11 上游 404）** |
  *
- * SnowLuma 被刻意排除：它的 EULA 明确要求「并入第三方安装包或通过自动化脚本
- * 部署」须事先取得书面授权。同类项目 qq-bridge 也因此移除过该功能。
+ * SnowLuma 上游仓库已 404（2026-11），其后端支持已从代码中移除；AstrBot / NapCat 不受影响。
  *
  * ## 下载前必须做的事
  *
@@ -192,7 +191,6 @@ export function listProcesses(home, backendId) {
   const NAMES = {
     napcat: ['QQ.exe', 'NapCatWinBootMain.exe'],
     astrbot: ['astrbot.exe', 'python.exe', 'uv.exe'],
-    snowluma: ['SnowLuma.exe'],
   }[backendId] ?? []
   if (NAMES.length === 0) return out
 
@@ -383,29 +381,6 @@ export const BACKENDS = {
     webUrl: 'http://127.0.0.1:6185',
   },
 
-  snowluma: {
-    id: 'snowluma',
-    name: 'SnowLuma',
-    kind: 'protocol',
-    summary: 'NapCat 官方推荐的 GUI 替代品。但许可限制自动化部署，WhalePod 不提供自动下载。',
-    repo: 'https://github.com/SnowLuma/SnowLuma',
-    license: {
-      name: 'SnowLuma Source-Available Non-Commercial License',
-      spdx: null,
-      url: 'https://github.com/SnowLuma/SnowLuma/blob/main/LICENSE',
-      commercialUse: false,
-      redistributable: false,
-      requiresLicenseShip: true,
-      note: '核心为专有二进制；明确禁止通过自动化脚本部署与并入第三方安装包。',
-    },
-    install: {
-      mode: 'manual',          // 只能用户自己装
-      reason: 'EULA 禁止自动化部署（§5.4）。请自行从其官方仓库下载安装，然后在这里填路径。',
-    },
-    requires: ['manual'],
-    homepage: 'https://github.com/SnowLuma/SnowLuma',
-    webUrl: 'http://127.0.0.1:6099/webui',
-  },
 }
 
 /** 列出所有后端（供 Web UI）。 */
@@ -1271,7 +1246,6 @@ export class ProtocolSupervisor {
     const PORTS = {
       napcat: [3001, 6099],
       astrbot: [6185, 6199],
-      snowluma: [],
     }[backendId] ?? []
     if (PORTS.length === 0) return false
     for (const port of PORTS) {
@@ -1317,6 +1291,45 @@ export class ProtocolSupervisor {
       throw new Error(`${b.name} 需手动启动：${b.install.reason}`)
     }
     if (this.running(backendId)) throw new Error(`${b.name} 已在运行`)
+
+    /*
+     * ── 2026-11-14 SnowCat 接管 ────────────────────────────────────
+     * 用户把协议端从独立 NapCat 换成了 SnowCat（跑在官方 QQ 9.9.37 主进程内，
+     * 抗风控）。SnowCat 装在 D:\SnowCat.Portable，启动方式是
+     * tools/build/snowcat-run.ps1（winmm-v8.dll 侧加载 + V8 注入）。
+     *
+     * 这里：napcat 后端若检测到 SnowCat 便携目录存在，就直接走 SnowCat 启动，
+     * 不再去 protocol/napcat 找 QQ.exe。running() 靠 3001/6099 端口探测，
+     * SnowCat 正好监听这两个，所以状态显示天然正确。
+     */
+    const snowcatRoot = process.env.SNOWCAT_ROOT || 'D:\\SnowCat.Portable'
+    const snowcatRun = path.join(snowcatRoot, 'tools', 'build', 'snowcat-run.ps1')
+    if (backendId === 'napcat' && fs.existsSync(snowcatRun)) {
+      const uin = String(this.oneBot?.selfId || process.env.SNOWCAT_UIN || '')
+      const args = ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', snowcatRun]
+      if (uin) args.push('-QqUin', uin)
+      this.log.info?.(`协议端：使用 SnowCat 启动（${snowcatRun}）`)
+      const env = { ...process.env }
+      for (const k of ['HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy', 'ALL_PROXY', 'all_proxy']) delete env[k]
+      env.NO_PROXY = '*'; env.no_proxy = '*'
+      const child = spawn('powershell', args, {
+        cwd: path.join(snowcatRoot, 'tools', 'build'),
+        env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'],
+      })
+      const entry = { child, startedAt: Date.now(), exit: null, lines: [] }
+      this.procs.set(backendId, entry)
+      const push = (stream, buf) => {
+        for (const line of String(buf).split(/\r?\n/)) {
+          if (!line.trim()) continue
+          entry.lines.push({ at: Date.now(), stream, text: line.slice(0, 500) })
+          if (entry.lines.length > 500) entry.lines.shift()
+        }
+      }
+      child.stdout?.on('data', (b) => push('out', b))
+      child.stderr?.on('data', (b) => push('err', b))
+      child.on('exit', (code) => { entry.exit = code ?? 0 })
+      return { ok: true, pid: child.pid, backend: backendId, snowcat: true }
+    }
 
     const dir = path.join(this.home, 'protocol', backendId)
     const exe = this._findExe(backendId, dir)
@@ -1501,6 +1514,28 @@ export class ProtocolSupervisor {
     // 停掉可能还在跑的 OneBot 配置补写轮询（否则它会在进程死后继续写文件）
     const timer = this._provisionTimers.get(backendId)
     if (timer) { clearInterval(timer); this._provisionTimers.delete(backendId) }
+
+    /*
+     * ── 2026-11-14 SnowCat 停止 ────────────────────────────────────
+     * SnowCat 的 QQ.exe 在 D:\SnowCat.Portable 独立进程，不是我们 spawn 的
+     * powershell 子进程，kill 子进程停不掉它。这里优先调 snowcat-run.ps1 -Stop
+     * （它按路径只杀 SnowCat 目录的 QQ，不碰用户主号 QQ），再兜底按端口确认。
+     */
+    if (backendId === 'napcat') {
+      const snowcatRoot = process.env.SNOWCAT_ROOT || 'D:\\SnowCat.Portable'
+      const snowcatRun = path.join(snowcatRoot, 'tools', 'build', 'snowcat-run.ps1')
+      if (fs.existsSync(snowcatRun) && this._portAlive(backendId)) {
+        try {
+          execFileSync('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', snowcatRun, '-Stop'],
+            { timeout: 15000, windowsHide: true, stdio: 'ignore' })
+        } catch (e) { this.log.warn?.(`协议端：snowcat-stop 失败 ${String(e?.message ?? e)}`) }
+        this.procs.delete(backendId)
+        const still = this._portAlive(backendId)
+        this.log.info?.(`协议端：SnowCat 已停止${still ? '（端口仍在，可能另有实例）' : ''}`)
+        return { ok: true, stopped: 'snowcat' }
+      }
+    }
+
     const entry = this.procs.get(backendId)
 
     if (entry && entry.child) {

@@ -298,7 +298,12 @@ ok('★★ 抓回来的注记要留「没看内页画面」这句', () => {
 
 ok('★ 域名缓存是**落盘**的（重启后不用重新趟死域名）', () => {
   const src = fs.readFileSync(new URL('../src/gateway/jm.js', import.meta.url), 'utf8')
-  assert.match(src, /writeFileSync\(this\.file/, '学到域名要写盘')
+  /*
+   * 2026-11-10：写盘改成**原子写**（写 .tmp 再 rename），所以不再匹配
+   * `writeFileSync(this.file`。按语义断言：有落盘 + 有 rename + 启动读回。
+   */
+  assert.match(src, /writeFileSync\((`\$\{this\.file\}\.tmp`|_t)/, '学到域名要写盘')
+  assert.match(src, /renameSync\(_t, this\.file\)/, '落盘应是原子写（tmp+rename）')
   assert.match(src, /readFileSync\(this\.file/, '启动要读回来')
   // 且 bridge 那边确实把数据目录传进去了
   const bridge = fs.readFileSync(new URL('../src/qq/bridge.js', import.meta.url), 'utf8')

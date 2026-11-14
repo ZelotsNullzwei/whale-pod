@@ -264,7 +264,14 @@ export class DayPlanStore {
         const drop = keys.shift()
         delete this.data.plans[drop]
       }
-      fs.writeFileSync(this.file, JSON.stringify(this.data, null, 2), 'utf8')
+      /*
+       * ⚠️ 原子写（2026-11-10）：先写 .tmp 再 rename。
+       * 直接写目标文件时，进程被杀/断电会留下半截 JSON → 下次读取 parse 失败 →
+       * 当天日程整体丢失（要重新生成）。rename 是原子的，最坏只是旧文件还在。
+       */
+      const tmp = `${this.file}.tmp`
+      fs.writeFileSync(tmp, JSON.stringify(this.data, null, 2), 'utf8')
+      fs.renameSync(tmp, this.file)
     } catch (e) {
       // 落盘失败不阻断主流程 —— 最坏情况是每天重新生成一次
       this.log.warn?.(`dayPlan：写入失败 — ${String(e?.message ?? e)}`)

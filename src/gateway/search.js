@@ -931,7 +931,9 @@ export class SearchQuota {
     if (!this.file) return
     try {
       fs.mkdirSync(path.dirname(this.file), { recursive: true })
-      fs.writeFileSync(this.file, JSON.stringify(this.data), 'utf8')
+      const _t = `${this.file}.tmp`
+      fs.writeFileSync(_t, JSON.stringify(this.data), 'utf8')
+      fs.renameSync(_t, this.file)
     } catch (e) {
       this.log.warn?.(`搜索限额：写入失败 — ${String(e?.message ?? e)}`)
     }

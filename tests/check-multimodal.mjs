@@ -290,11 +290,12 @@ console.log('\n=== 6b. 媒体标记的改写（别让模型去解说图）===')
    */
   check('表情包 → 说明式文字 + 行为指引',
     describeMedia({ text: '[表情包:猫猫]' }).includes('（对方发了一个表情包，关于「猫猫」')
-    && describeMedia({ text: '[表情包:猫猫]' }).includes('别描述图里画了什么'),
+    && /不描述|别描述/.test(describeMedia({ text: '[表情包:猫猫]' }))
+    && describeMedia({ text: '[表情包:猫猫]' }).includes('画了什么'),
     describeMedia({ text: '[表情包:猫猫]' }))
   check('无名表情包也说明 + 行为指引',
     describeMedia({ text: '[表情包]' }).includes('（对方发了一个表情包')
-    && describeMedia({ text: '[表情包]' }).includes('别描述图里画了什么'))
+    && /不描述|别描述/.test(describeMedia({ text: '[表情包]' })))
   /*
    * ⚠️ 2026-10-31：`describeMedia({text:'[表情:4]'})` 现在输出
    * 「（对方发了个QQ表情：得意（id=4））」—— 多了**名字**。

@@ -339,8 +339,14 @@ export const BUILTIN_PERSONAS = {
 }
 
 /** 内容指纹（用于判断内置模板是否被用户改过）。 */
-function fingerprint(text) {
-  return crypto.createHash('sha256').update(String(text), 'utf8').digest('hex').slice(0, 16)
+/** 原子写：先 .tmp 再 rename（2026-11-10）。人格文件写半截=丢人格，必须原子。 */
+function writeFileAtomic(p, content) {
+  const tmp = `${p}.tmp`
+  fs.writeFileSync(tmp, content, 'utf8')
+  fs.renameSync(tmp, p)
+}
+
+function fingerprint(text) {  return crypto.createHash('sha256').update(String(text), 'utf8').digest('hex').slice(0, 16)
 }
 
 export class PersonaStore {
@@ -384,7 +390,7 @@ export class PersonaStore {
   _writeStamps(stamps) {
     try {
       fs.mkdirSync(path.dirname(this.stampFile), { recursive: true })
-      fs.writeFileSync(this.stampFile, JSON.stringify(stamps, null, 2), 'utf8')
+      writeFileAtomic(this.stampFile, JSON.stringify(stamps, null, 2))
     } catch (e) {
       this.log.warn?.(`人格：写入指纹表失败 — ${String(e?.message ?? e)}`)
     }
@@ -411,7 +417,7 @@ export class PersonaStore {
       const prevBuiltinFp = typeof rec === 'string' ? rec : rec?.builtin
 
       if (!fs.existsSync(p)) {
-        fs.writeFileSync(p, next, 'utf8')
+        writeFileAtomic(p, next)
         stamps[name] = { written: nextFp, builtin: nextFp }
         stampsDirty = true
         this.log.info?.(`人格：已写入内置角色 ${name}.md`)
@@ -451,7 +457,7 @@ export class PersonaStore {
 
       // 用户没动过 → 若内置模板有变化则升级
       if (currentFp !== nextFp) {
-        fs.writeFileSync(p, next, 'utf8')
+        writeFileAtomic(p, next)
         this._cache.delete(p)
         stamps[name] = { written: nextFp, builtin: nextFp }
         stampsDirty = true
@@ -593,13 +599,41 @@ export class PersonaStore {
     const b = BUILTIN_PERSONAS[name]
     if (!b) throw new Error(`不是内置角色：${name}`)
     const p = this.path(name)
-    fs.writeFileSync(p, b.content, 'utf8')
+    writeFileAtomic(p, b.content)
     this._cache.delete(p)
     const fp = fingerprint(b.content)
     const stamps = this._readStamps()
     stamps[name] = { written: fp, builtin: fp }
     this._writeStamps(stamps)
     this.log.info?.(`人格：已恢复内置版 ${name}.md`)
+  }
+
+  /**
+   * 主人绑定（2026-11-10）。
+   *
+   * 「主人」没有单独的字段，就是 `activeByScope['private:<QQ>'] = 'close'`。
+   * 面板上填一个 QQ 号即可；换号时要**先把旧的清掉**（否则旧号还留着 close，
+   * 谁是主人就模棱两可，而且主动说说的草稿会发到旧号）。
+   *
+   * @param {string} qq 空 = 只清除、不新增
+   * @returns {object} 新的 activeByScope
+   */
+  setOwner(qq) {
+    const clean = String(qq ?? '').replace(/\D/g, '')
+    const next = { ...(this.activeByScope ?? {}) }
+    for (const k of Object.keys(next)) {
+      if (String(k).startsWith('private:') && String(next[k]) === 'close') delete next[k]
+    }
+    if (clean) next[`private:${clean}`] = 'close'
+    this.activeByScope = next
+    return next
+  }
+
+  /** 当前主人 QQ（没有就空串）。 */
+  ownerQQ() {
+    const bs = this.activeByScope ?? {}
+    const k = Object.keys(bs).find((x) => String(x).startsWith('private:') && String(bs[x]) === 'close')
+    return k ? k.slice('private:'.length) : ''
   }
 
   /** 切换当前角色。 */
@@ -763,16 +797,15 @@ export class PersonaStore {
 - 不要加引号、不要加「我说：」之类的前缀
 - 不要解释你的思考过程
 - 不要输出任何工具调用（function call）或 <｜｜DSML｜｜> 之类的标记
-- 长度**按需要来，但默认往短了说**：接话茬可以只有两个字。
-  **就算真在讲事情，也是挑重点说一两句** —— 别把知道的都倒出来。
-  ⚠️「说完整」**不等于「报告」**：真人转述一件事不会列清单、不会清点数字。
-  2026-10-30 用户看过实际输出后说「真人应该只会短短的说一下重点」——
-  原来的措辞是「按需要来，（接话茬短）但讲事情就写完整」，它把
-  「有数据可讲」当成了「该写完整」，于是把图上的数字清点一遍。
-  （原文记在 tests/check-voice.mjs，那儿有反例全文。）
-- **想分两条说时，中间空一行。** 真人聊天经常是断开的：
-  「行吧」/ 空行 /「等我先吃完这碗饭」—— 这样会发成两条消息，
-  比一口气全塞进一条自然得多。不需要分段时正常写，别为分段而分段。
+- 长度：**默认就一句，最多十几个字**。接话茬两个字足矣（「嗯」「行」「滚」）。
+  真人聊天嘴上就一句 —— **别补充、别解释、别总结、别把知道的全倒出来**。
+  ⚠️ 讲事情也**一句带过**，挑最关键的那个点，说完就停。
+  2026-11-14 用户反馈「话有点多」——不是分段问题，是**每条本身太长**。
+  **句子尽力短**：能砍的词就砍，能省的补充就省，一句不超 15 字最好。
+  ✅「不来就拉倒」 ✅「吃剩了塞冰箱」 ✅「真不来啊」
+  ❌「那本鲸多炖点，吃剩了塞冰箱，你要是真不来我可就自己享用了」← 太长，砍成前半句
+- 想说两句时才分：**真有两层意思、或先说一句再怼一句**，才用换行分两条。
+  没有第二层意思就别硬拆——**短而少，比多几条更像人**。
 - **真没什么想说的，就只输出 [SILENT]**（不用解释，也不算错）。
 - **说了要做就得真做**（2026-11-06 实测）：说「这就发」「重拍一张」时必须同时写
   「[画图:…]」「[场景图:…]」「[发群:…]」；**做不到就别说** —— 只动嘴不动手，
@@ -1155,8 +1188,17 @@ ${body}
 - **括号可以放开头，偶尔为之**：连着两条都以「（…）」开头就换个位置。
 - **耳鳍是她的招牌**：不用为了"别重复"把它整个戒掉；
   但**同一个句式别连着来**（耳朵一压、耳鳍一抖这样排下去就很假）—— 换部位、换动词。
+- **括号里只写你自己身上的**（动作、身体感觉、情绪）。**不许写环境**
+  ——房间、灯、天色、窗外、家具、天气这些，真人聊天不会去描述；
+  更**不许**把环境单独写成一段括起来（实测踩过：
+  「（窝在沙发上，手机举着，屋里灯没开，天暗下来了）」——像剧本舞台提示）。
+- **绝对不许在括号里写"过了几秒/等了N秒/沉默N秒"这类时间流逝** —— 真人聊天不会报秒数
+  （实测踩过：「（过了 14 秒）…说完没」，像剧本注释）。要表达"等了一会儿"，就写身体动作，别写秒数。
 ${usedLine}
-- 情绪主要靠**说出口的话**和标点表达；括号是招牌，不是主角。`)
+- 情绪主要靠**说出口的话**和标点表达；括号是招牌，不是主角。
+- **被插话就停下，别闷头发完**：你分几条说的话，说到一半他又开口了 →
+  **立刻停，先接他的话**（「嗯？」「咋」），别把剩下的话照发完。
+  真人被打断就是这样：停、听、顺着新的话头走。`)
     }
 
     /*

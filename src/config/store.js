@@ -373,19 +373,19 @@ export const DEFAULTS = {
       reversePath: '/onebot/v11/ws',
     },
     /**
-     * 协议端托管（NapCat / SnowLuma）—— 只探测与启停，不自动下载。
+     * 协议端托管（NapCat / AstrBot）—— 只探测与启停，不自动下载。
      *
      * ⚠️ enabled 默认 **true**：只要 qq.enabled=true，协议端就是必需的 ——
      *    否则机器人连不上 QQ，用户还得自己去组件页点一次「启动」。
      *    实测踩过：默认 false 时每次重启 WhalePod，NapCat 都是死的，
      *    日志里只有一堆"连接出错"，看不出是"协议端压根没启动"。
-     *    想自己手动管协议端（比如用 SnowLuma 的 GUI）就显式设 false。
+     *    想自己手动管协议端（比如用 AstrBot 的 WebUI）就显式设 false。
      */
     supervisor: {
       enabled: true,
       /** 用户自己安装的协议端目录 */
       homeDir: '',
-      /** napcat | snowluma | custom */
+      /** napcat | astrbot | custom */
       kind: 'napcat',
       autoRestart: true,
     },

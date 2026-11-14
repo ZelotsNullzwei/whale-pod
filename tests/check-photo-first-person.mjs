@@ -22,19 +22,24 @@ const plan = {
 const framing = { framing: '局部', desc: '局部', feet: false, cameraAngle: '俯视', notes: [] }
 const p = composePhotoPrompt({ plan, framing, scene: '她坐在床边低头看手机', hasRef: false })
 
-console.log('=== 第一人称约束 ===')
-ok('★ 明说"这一张没有镜子"', () => {
+console.log('=== 第一人称约束（精简可见提示词）===')
+ok('★ 明说"没有镜子"、没有第二个人', () => {
   assert.match(p, /没有镜子/)
+  assert.match(p, /没有第二个人/)
 })
-ok('★ 不许出现"手机举在她面前"的第三人称画面', () => {
-  assert.match(p, /不要把手机举在她面前|看不见自己/)
+ok('★ 不出现她的脸/身体/头发', () => {
+  assert.match(p, /不出现她的脸、身体和头发/)
 })
-ok('★ 禁止段点名第二个人和镜子', () => {
-  assert.match(p, /第二个人/)
-  assert.match(p, /镜面反射/)
+ok('★ 画面主体是眼前物品和台面', () => {
+  assert.match(p, /只拍她眼前能看到的物品和台面/)
 })
-ok('仍然保留"画面里不能出现她的脸"', () => {
-  assert.match(p, /不能出现她整个人/)
+ok('★ 画面最多一只手', () => {
+  assert.match(p, /最多一只手/)
+})
+ok('★ 不再堆空间/位置模板', () => {
+  assert.doesNotMatch(p, /画面下方\/中央/)
+  assert.doesNotMatch(p, /自然落在画面下半部/)
+  assert.match(p, /场景与动作/)
 })
 
 console.log(`\n通过 ${pass} / 失败 ${fail}`)

@@ -320,6 +320,8 @@ export class ProactiveScheduler {
     this.idleMsOf = opts.idleMsOf ?? (() => this.idleMs())
     /** 随机源（测试可注入，保证"随机冷却"可复现） */
     this._random = opts.random ?? Math.random
+    /* 2026-11-12：重启后不立刻主动发言（否则会把"安静 666 分"当成理由） */
+    this.startedAt = Number(opts.startedAt ?? this._now())
     this._timer = null
     this._busy = false
   }
@@ -408,6 +410,11 @@ export class ProactiveScheduler {
     // ── 时段闸门：两个功能共用 ────────────────────────────────
     if (!inActiveHours(this.cfg.hours, now)) {
       return { beg: false, speak: false, reason: '不在允许的时段' }
+    }
+    /* 2026-11-12：启动保护期（默认 15 分钟）——重启不触发主动发言 */
+    const __grace = Number(this.cfg.startupGraceMs ?? 15 * 60_000)
+    if (__grace > 0 && t - this.startedAt < __grace) {
+      return { beg: false, speak: false, reason: `启动保护期（${Math.ceil((__grace - (t - this.startedAt)) / 60_000)} 分钟）` }
     }
 
     // ── 讨钱 ──────────────────────────────────────────────────

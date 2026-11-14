@@ -276,7 +276,10 @@ export class PeopleStore {
       const day = new Date(this._now()).toDateString()
       const entries = {}
       for (const [k, v] of this._aff) if (v?.day === day) entries[k] = { net: v.net, lastAt: v.lastAt }
-      fs.writeFileSync(this.affFile, JSON.stringify({ day, entries }), 'utf8')
+      /* 原子写（2026-11-10）：先 .tmp 再 rename，避免硬杀留下半截 JSON */
+      const tmp = `${this.affFile}.tmp`
+      fs.writeFileSync(tmp, JSON.stringify({ day, entries }), 'utf8')
+      fs.renameSync(tmp, this.affFile)
     } catch { /* 存不下就算了 —— 也不能因此影响回复 */ }
   }
 

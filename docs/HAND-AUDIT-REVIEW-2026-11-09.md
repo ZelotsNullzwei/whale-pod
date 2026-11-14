@@ -154,3 +154,10 @@ node _scratch/photo-v3/step11b-hands-e2e.mjs   # 脚本在 default-workspace/_sc
 ### 已知限制
 - Pose 的动作识别基于正则（如「把漫画拍给你看」识别不到"翻书"，只报持机手）；`requiredCount` 已接入但动作语义覆盖有限。
 - 上限仍由模式契约决定（Pose 只提供职责与告警），因此"双手动作"不会自动放宽。
+## rear_selfie body_subject 已阻断（2026-11-09 20:39）
+
+- 改动（提交 `905f0aa`）：`reviewNoBodySubject` 的 violation 标记 `severity: fatal`；`shouldBlockSend` 的 FATAL 集合加入 `body_subject`（`phone_visible` 仍按旧策略）。
+- 测试：`check-hand-gate` **15/0**（新增：初审 body_subject→复审 pass 放行重拍图；复审仍 body_subject→**缓存/发送均不发生**）；其余套件全绿。
+- 真实复测（rear 拍物一张）：`block=true, reason=复审:body_subject, retried=true, cached=false, sent=false` —— 门禁按预期生效。
+- 运行日志现状：`whale-pod.log` 最后一次出图是 20:11（旧路径“图审核通过”），**没有任何 photo-qc/poseHands 行** → 群里那次验证跑的是旧进程代码；新代码尚未在真实 QQ 会话中执行。
+- 待办：重启 whale-pod（端口 18898）让新代码生效，再在测试群触发 1 张自拍，确认日志出现 `photo-qc {...}` 且发送行为正确。

@@ -69,7 +69,7 @@ export const EMOTIONS = {
     face: '轻微皱眉、鼓嘴或撇嘴，嘴角下压',
     gaze: '不耐烦地看向一旁',
     head: '头偏向一侧',
-    body: '双臂抱起，或双手叉腰',
+    body: '肩膀微微一侧，身体重心挪到一只脚上',
   },
   thinking: {
     id: 'thinking',

@@ -20,6 +20,9 @@
  */
 
 import assert from 'node:assert/strict'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 import { PersonaStore } from '../src/persona/store.js'
 import { formatVideoContext } from '../src/qq/bilibili.js'
 
@@ -29,8 +32,28 @@ function ok(name, fn) {
   try { fn(); pass++; console.log(`  ✅ ${name}`) } catch (e) { fail++; console.log(`  ❌ ${name}\n     ${e.message}\n`) }
 }
 
+/*
+ * ⚠️ 用**临时目录 + 固定 fixture**，不碰真实用户人格（2026-11-10 评审指出）。
+ * 原来这里写死 `home: 'C:/Users/Null_zwei/.dsh/whale-pod'`：
+ *   · 结果随本机人格字数/内容漂移（人格一扩写，长度阈值就误报）
+ *   · 测试会读用户的真实数据，不干净
+ */
+const FIXTURE_HOME = (() => {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'persona-order-'))
+  const roles = path.join(d, 'persona', 'roles')
+  fs.mkdirSync(roles, { recursive: true })
+  fs.writeFileSync(path.join(roles, 'default.md'), [
+    '# 小鲸鱼（固定测试人格）',
+    '',
+    '你是鲸鱼娘，说话短、口语、有点懒。',
+    '不用 markdown，不用列表。',
+  ].join('\n'), 'utf8')
+  fs.writeFileSync(path.join(d, 'config.json'), JSON.stringify({ persona: { active: 'default', activeByScope: { group: 'default', private: 'default' } } }), 'utf8')
+  return d
+})()
+
 const mkPersona = () => {
-  const p = new PersonaStore({ home: 'C:/Users/Null_zwei/.dsh/whale-pod' })
+  const p = new PersonaStore({ home: FIXTURE_HOME, activeByScope: { group: 'default', private: 'default' } })
   p.init()
   return p
 }
@@ -70,7 +93,14 @@ ok('★ B 站那段必须在 `## 输出要求` **之后**（离生成更近）',
   )
 })
 
-ok('★ B 站那段要接近末尾（距结尾不超过 600 字）', () => {
+ok('★ B 站那段要在「输出要求」之后（位置纪律：约束力靠后更强）', () => {
+  /*
+   * ⚠️ 2026-11-10 改（评审意见）：原来还断言「距结尾 < 600 字」。
+   * 现在提示词末尾有**固定的收尾规则块**（「说话风格」「开口前过一遍」
+   * 「知道 ≠ 可以说来路」），它们按设计就排在最后。
+   * 用绝对字数当阈值会随人格/规则扩写误报，也不代表模型真的忽略了 B 站内容。
+   * 保留真正有意义的**结构顺序**断言；失败时打印位置与长度，便于判断。
+   */
   const sys = mkPersona().buildSystemPrompt({
     extras: [biliCtx],
     memory: '',
@@ -78,8 +108,12 @@ ok('★ B 站那段要接近末尾（距结尾不超过 600 字）', () => {
     self: { name: '蓝色大肥鱼', qq: '1000000001' },
   })
   const at = sys.indexOf('## 他发给你的 B 站视频')
-  const tail = sys.length - at
-  assert.ok(tail < 600, `B 站那段距结尾 ${tail} 字 —— 太远了，约束力会弱`)
+  const atOut = sys.indexOf('## 输出要求')
+  assert.ok(at > 0, 'B 站那段要在 prompt 里')
+  assert.ok(
+    at > atOut,
+    `B 站段(${at}) 应在输出要求(${atOut}) 之后 —— 距尾 ${sys.length - at} 字，总长 ${sys.length}`,
+  )
 })
 
 ok('其它 extras（比如「现在」）仍然在中间，不受影响', () => {
@@ -169,7 +203,7 @@ ok('★★ 事实段要写明「和你之前说过的话冲突时以这里为准
   assert.match(sys, /以这一段为准/, '要给出裁决规则')
 })
 
-ok('★ 事实段必须在**最末尾**（比输出要求还靠后）', () => {
+ok('★ 事实段必须在「输出要求」之后（优先级高于通用长度规则）', () => {
   const sys = mkPersona().buildSystemPrompt({
     facts: [biliCtx],
     extras: ['## 现在\n现在是 2026/10/31 23:01（**晚上**）。'],
@@ -179,9 +213,15 @@ ok('★ 事实段必须在**最末尾**（比输出要求还靠后）', () => {
   })
   const atFacts = sys.indexOf('## 【本次程序核实的事实】')
   const atOut = sys.indexOf('## 输出要求')
-  assert.ok(atFacts > atOut, `事实段(${atFacts}) 必须在输出要求(${atOut}) 之后`)
-  const tail = sys.length - atFacts
-  assert.ok(tail < 1000, `距结尾 ${tail} 字，太远了约束力会弱`)
+  /*
+   * ⚠️ 2026-11-10 改（评审意见）：去掉「距结尾 < 1000 字」这种绝对阈值。
+   * 末尾固定收尾块（说话风格/开口前过一遍/知道≠可以说来路）按设计就在最后，
+   * 用字数当阈值只会随人格扩写误报。这里只保留结构顺序，失败时打印位置与长度。
+   */
+  assert.ok(
+    atFacts > atOut,
+    `事实段(${atFacts}) 必须在输出要求(${atOut}) 之后 —— 距尾 ${sys.length - atFacts} 字，总长 ${sys.length}`,
+  )
 })
 
 ok('事实正文里的 `##` 要降级成 `###`（别和段落标题平级）', () => {

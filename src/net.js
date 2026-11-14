@@ -151,7 +151,21 @@ export async function fetchWithProxyFallback(url, opts = {}) {
   } catch (e) {
     if (!isProxyFailure(e)) throw e
     log(`检测到代理不可用（${e?.cause?.code ?? e?.message}），改直连重试`)
-    return fetchDirect(url, opts)
+    const parsed = await fetchDirect(url, opts)
+    /*
+     * ★ **兜底也必须返回真正的 Response**（2026-11-10）。
+     *
+     * 原来直接 `return fetchDirect(...)`，返回的是 `{ok,status,headers,body:Buffer}` 包装对象。
+     * 调用方习惯写 `await resp.json()` / `resp.arrayBuffer()` → 代理一挂就报
+     * 「res.json is not a function / resp.arrayBuffer is not a function」。
+     * 现场两个：check-search 的 15/5 失败、生成图下载后裁不掉。
+     * 这里包成标准 Response，所有调用方无需改动。
+     */
+    try {
+      return new Response(parsed.body, { status: parsed.status, headers: parsed.headers })
+    } catch {
+      return parsed
+    }
   }
 }
 

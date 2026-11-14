@@ -58,7 +58,7 @@ export const FRAMINGS = {
   },
   局部: {
     label: '局部特写',
-    desc: '手、桌面、食物、裙摆这类局部；人不必完整出现',
+    desc: '主体在画面前景、占主要面积；手/环境作陪衬；人不必完整出现',
     feet: false,
     groundGap: 0,
     showFace: false,

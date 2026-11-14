@@ -73,21 +73,13 @@ ok('第一人称拍食物/手 → 不拦（本来就该第一人称）', () => {
   }
 })
 
-console.log('\n=== 3. 对镜自拍：手机必须在镜子的倒影里 ===')
-ok('★ 提示词里要有一条「手机必须在镜子倒影里」的硬规则', () => {
+console.log('\n=== 3. 对镜自拍：第一版自然语言基线 ===')
+ok('★ 镜自拍只保留自然语言（同一面镜子 + 手持手机），不再堆硬规则', () => {
   const p = String(plan('对着镜子自拍，手里举着手机，穿米白针织连衣裙').prompt ?? '')
-  assert.match(p, /手机必须在镜子的倒影里看得见/)
-  assert.match(p, /不能只在画面里画一个悬空手机/)
-})
-
-ok('★ 「手别悬空→托腮」要带自拍例外，否则手机没手可拿', () => {
-  const p = String(plan('对着镜子自拍').prompt ?? '')
-  assert.match(p, /自拍类除外/, 'SELFIE_RULES 那条手部规则要有例外')
-})
-
-ok('对镜自拍的手是拿来拿手机的（显式一条）', () => {
-  const p = String(plan('对着镜子自拍').prompt ?? '')
-  assert.match(p, /手是拿来拿手机的，不是托腮/)
+  assert.match(p, /同一面镜子/)
+  assert.match(p, /手持手机/)
+  assert.doesNotMatch(p, /手机必须在镜子的倒影里看得见/)
+  assert.doesNotMatch(p, /不能只在画面里画一个悬空手机/)
 })
 
 console.log('\n=== 4. 对镜自拍的构图不能是"坐姿" ===')
@@ -146,6 +138,34 @@ ok('★ 「整理」的宾语是她自己身上东西 → 不判第一人称', (
 ok('真在收拾屋子 → 仍是第一人称（这条不能丢）', () => {
   for (const scene of ['坐在书桌前整理抽屉里的笔', '擦桌上的水', '站在厨房洗碗']) {
     assert.equal(plan(scene).mode, 'first_person', `应该第一人称：${scene}`)
+  }
+})
+
+ok('★ 「站在」+ 具体家务动作 → 第一人称，不被构图词抢走', () => {
+  /*
+   * 2026-11-10 实测：「站在厨房洗碗」被判成 front_selfie ——
+   * 通用构图词「站在」压过了「洗碗」这个动作+对象。
+   * 真人洗碗是在看手上的东西，拍出来应该是第一人称（手 + 水槽）。
+   */
+  for (const scene of ['站在厨房洗碗', '站在阳台晾衣服', '站在水槽边洗菜']) {
+    assert.equal(plan(scene).mode, 'first_person', `应该第一人称：${scene}`)
+  }
+  /* 2026-11-12：炒菜要两只手 → 改拍纯物品照 */
+  assert.equal(plan('站在灶台前炒菜').mode, 'rear_selfie', '炒菜应改拍物')
+})
+
+ok('★ 但「站在便利店拍全身」这类真实自拍场景不能丢', () => {
+  /*
+   * 反例保护：不能为了修上面那条，把「站在 + 全身」的自拍逻辑一起废掉。
+   * 这条里没有任何家务动词，应该仍判 front_selfie。
+   */
+  for (const scene of [
+    '站在便利店门口，手里拿着一瓶饮料，拍张全身',
+    '站在街上，拍个全身',
+    '站在窗前给我看看这身',
+  ]) {
+    const m = plan(scene).mode
+    assert.ok(['front_selfie', 'mirror_selfie'].includes(m), `应该是拍人，实际 ${m}：${scene}`)
   }
 })
 

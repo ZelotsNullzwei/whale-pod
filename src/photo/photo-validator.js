@@ -154,7 +154,7 @@ export function applyFix(plan, fix = {}, modes = {}) {
     out.framing = m.framing
     out.rules = m.rules
     out.needs = m.needs
-    out.needsCharacterRef = m.id !== 'first_person' && m.id !== 'rear_selfie'
+    out.needsCharacterRef = !['first_person', 'rear_selfie', 'tripod'].includes(m.id)
     out.faceVisible = m.id === 'front_selfie' || m.id === 'mirror_selfie'
     out.fixedFrom = plan.mode
     out.fixReason = fix.reason ?? ''

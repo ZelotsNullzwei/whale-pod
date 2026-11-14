@@ -58,33 +58,50 @@ export function shouldAnswerSticker(o = {}) {
   )
   if (atMe || quotedMine) return true
 
+  /*
+   * 私聊：表情只当语气，不在“刚说完话”时接。
+   * （2026-11-12 用户：「私聊回复逻辑是不是有问题」——她连 [表情:182] 都回文字）
+   * 只有明确引用她的消息、或她自己刚回了纯表情（斗图）才接。
+   */
+  const isPrivate = msg?.kind === 'private' || String(msg?.scope ?? '').startsWith('private:')
+  if (isPrivate) {
+    /*
+     * 2026-11-13 用户：「有字的接 + 纯表情也回表情」。
+     *   私聊里表情包**一律放行**：有字的走文字回复，纯表情走"纯表情回应"路径回个表情。
+     *   之前这里（及 bridge 的另一道闸）一律 return false，导致私聊完全不回表情包。
+     */
+    return true
+  }
+
   const mineAll = recent.filter((m) => m?.isMe)
 
-  // 防连发：最近 3 条自己的发言里已有 2 条「只回表情」→ 停
-  // （这是对下面 ③/④ 的上限；@ 和引用不受它限制）
+  // 防连发：最近 3 条自己的发言里已有 2 条「只回表情」→ 停（@ 和引用不受它限制）
   const pureStickerReplies = mineAll.slice(-3).filter((m) => isPureStickerText(m.text)).length
   if (pureStickerReplies >= 2) return false
 
+  /*
+   * 2026-11-13 用户：「适度放宽」（原来群里只有 @/引用/斗图/刚说完话 12s 内才接，几乎不回）。
+   *   现在的口子：
+   *   · 斗图（她上一条也是纯表情）→ 接
+   *   · **群里 30 秒内没人插话** → 也接（表情不是孤立冒出来的，是在当前这波对话里）
+   *   仍保留防刷屏（上面连发 2 条就停）+ @/引用必接。
+   */
   const lastMine = mineAll[mineAll.length - 1]
   if (lastMine) {
     const gap = Number(msg?.at ?? 0) - Number(lastMine.at ?? 0)
-    if (gap >= 0 && gap <= 60_000 && isPureStickerText(lastMine.text)) {
-      return true                                    // ③ 斗图：接它刚发的表情
-    }
-    if (gap >= 0 && gap <= 12_000 && !isPureStickerText(lastMine.text)) {
-      /*
-       * ★ ④ 收紧（2026-11-04）：原来 20 秒内**任何人**发表情都接，而且不看她那句话
-       *   后面有没有别人插话 —— 群里聊得密时几乎每张表情都能中招（用户：
-       *   「群里好像还在读表情」）。
-       *   现在要求：**紧接在她那句话后面**（中间没人说过话）+ 12 秒内。
-       */
-      const between = recent.some((m) => !m?.isMe
-        && Number(m?.at ?? 0) > Number(lastMine.at ?? 0)
-        && Number(m?.at ?? 0) < Number(msg?.at ?? 0))
-      if (!between) return true
-    }
+    if (gap >= 0 && gap <= 60_000 && isPureStickerText(lastMine.text)) return true   // 斗图
   }
 
-  // 没满足任何「明确互动」→ 不接。表情包只是情绪信号，别人互相斗图不关它的事。
+  /* 适度放宽：这条表情**紧挨着的上一条**是别人在说话（30s 内）→ 算当前对话的一部分，接；
+     或者她刚开过口（30s 内）→ 接。避免"群只要有人聊就一直接（等于见表情就回）"。 */
+  const prev = [...recent].reverse().find((m) => Number(m?.at ?? 0) < Number(msg?.at ?? 0))
+  const prevIsOtherTalk = prev && !prev.isMe
+    && !isPureStickerText(prev.text)
+    && Number(msg?.at ?? 0) - Number(prev.at ?? 0) <= 30_000
+  const lastMine2 = mineAll[mineAll.length - 1]
+  const mineRecent = lastMine2 && (Number(msg?.at ?? 0) - Number(lastMine2.at ?? 0) <= 30_000)
+  if (prevIsOtherTalk || mineRecent) return true
+
+  // 其余（群里冷场、孤立的表情）→ 不接，避免见表情就回扰民
   return false
 }

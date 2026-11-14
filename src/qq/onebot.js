@@ -972,6 +972,50 @@ export class OneBotClient {
       } catch { return null }
     }
 
+    /*
+     * 2026-11-14 修「收发图片全 400」：
+     *   新版 QQ 的 gchat.qpic.cn 下载地址带 rkey 且**外部裸请求一律 400**
+     *   （retmsg: download url has expired / 鉴权拒绝）。但 OneBot 的 get_image
+     *   会返回图片在**本机的真实文件路径**（nt_data/Pic/.../xxx.jpg）。
+     *   所以：只要拿到的是**本地存在文件**，直接读盘，不再走 CDN 下载。
+     */
+    const { default: fsMod } = await import('node:fs')
+    const tryReadLocal = (p) => {
+      try {
+        const s = String(p ?? '').trim().replace(/^file:\/\//, '').replace(/^\/([A-Za-z]:)/, '$1')
+        if (!s || /^https?:/i.test(s)) return null
+        if (!fsMod.existsSync(s)) return null
+        const st = fsMod.statSync(s)
+        if (!st.isFile() || st.size === 0 || st.size > maxBytes) return null
+        const buf = fsMod.readFileSync(s)
+        const mime = guessMime(s)
+        return { dataUrl: `data:${mime};base64,${buf.toString('base64')}`, mime, bytes: buf.length }
+      } catch { return null }
+    }
+
+    // target 本身就是本地文件路径 → 直接读
+    const __direct = tryReadLocal(target)
+    if (__direct) return __direct
+
+    /*
+     * 2026-11-14 关键修：QQ 图 URL（gchat.qpic.cn/...）外部裸下载一律 400。
+     *   但消息里同时带 fileid —— 先用 fileid 问 get_image 拿**本地真实文件**，
+     *   拿到就直读，绕开 CDN。
+     */
+    if (/^https?:\/\//i.test(target) && /qpic\.cn|gchat\./i.test(target)) {
+      const fileid = (target.match(/[?&]fileid=([^&]+)/) ?? [])[1]
+      if (fileid) {
+        for (const arg of [{ file: decodeURIComponent(fileid) }, { file_id: decodeURIComponent(fileid) }]) {
+          try {
+            const res = await this.call('get_image', arg, 10000)
+            const d = res?.data ?? {}
+            const __local2 = tryReadLocal(d.file) || tryReadLocal(d.path)
+            if (__local2) return __local2
+          } catch { /* 试下一个参数名 */ }
+        }
+      }
+    }
+
     // 不是 http(s)：当成协议端的文件名/ID，先问 get_image 要 URL
     //
     // ⚠️ 这一步是**图片能不能用**的关键。NapCat 在
@@ -988,6 +1032,12 @@ export class OneBotClient {
         try {
           const res = await this.call('get_image', arg, 10000)
           const d = res?.data ?? {}
+          /*
+           * 2026-11-14：get_image 返回的 d.file 往往是**本机真实图片路径**
+           *（nt_data/Pic/.../xxx.jpg）。直接读它最稳 —— CDN 下载一律 400。
+           */
+          const __local = tryReadLocal(d.file) || tryReadLocal(d.path)
+          if (__local) return __local
           const url = d.url ?? d.file ?? d.path
           if (url && /^https?:\/\//i.test(String(url))) { target = String(url); break }
           // 有些版本返回 base64 直出
@@ -1396,12 +1446,13 @@ export function parseMessage(raw) {
       }
       if (type === 'image') {
         // 图片段可能给的字段：url / file / file_id / path。
-        // ⚠️ NapCat 的 `enableLocalFile2Url=false` 时 url 为空，
-        //    只有本地 file 路径 —— 那时得靠 get_image 兜底（见 fetchImage）。
-        images.push(data.url ?? data.file ?? data.file_id ?? data.path ?? '')
+        // ⚠️ 2026-11-14：**file 优先**。新版 QQ 的 data.url（gchat.qpic.cn）外部下载
+        //    一律 400，而 data.file（协议端原生文件名 98E0...jpg）能经 get_image
+        //    换到本机真实图片路径。所以保存 file 优先、url 兜底。
+        images.push(data.file || data.file_id || data.path || data.url || '')
         // 同数组分支：识别"收藏的表情"（NapCat 把它编码成 image 段）
         if (isMarketFace(data)) {
-          const ref = String(data.url ?? data.file ?? data.file_id ?? data.path ?? '')
+          const ref = String(data.file ?? data.file_id ?? data.path ?? data.url ?? '')
           if (ref) stickerRefs.push(ref)
           const raw = String(data.summary ?? '').trim()
           const meaningful = raw !== '' && !raw.includes('[') && !raw.includes(']') && raw !== '动画表情'
@@ -1487,7 +1538,7 @@ export function parseMessage(raw) {
         //   url       —— enableLocalFile2Url=true 时的 http 地址（最理想）
         //   file      —— 本地路径或文件名
         //   file_id   —— 只有 id，得靠 get_image 换 URL
-        images.push(String(d.url ?? d.file ?? d.file_id ?? d.path ?? ''))
+        images.push(String(d.file ?? d.file_id ?? d.path ?? d.url ?? ''))
         // ⚠️ NapCat 把**收藏的表情 / 商城表情**也编码成 image 段，
         //    但会额外带 emoji_id / emoji_package_id / summary / key。
         //    不识别的话，它和普通图片一样只显示 [图片] —— 用户发的表情包
@@ -1506,7 +1557,7 @@ export function parseMessage(raw) {
             && raw !== '动画表情'
           text += meaningful ? `[表情包:${raw}]` : '[表情包]'
           // 记下"这一张是表情包"，供 bridge 自动收藏
-          const ref = String(d.url ?? d.file ?? d.file_id ?? d.path ?? '')
+          const ref = String(d.file ?? d.file_id ?? d.path ?? d.url ?? '')
           if (ref) stickerRefs.push(ref)
         } else {
           text += '[图片]'

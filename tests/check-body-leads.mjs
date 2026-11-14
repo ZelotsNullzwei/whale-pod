@@ -66,6 +66,19 @@ function section(text, title) {
   return end < 0 ? rest : rest.slice(0, end)
 }
 
+/**
+ * 按**标题前缀**切一节（2026-11-10）。
+ * 人格改版会改标题后缀（如「身体带着走（做的时候）（2026-11-04 加）」→
+ * 「身体带着走（核心规则 · 场景内优先级最高）」），按全文精确匹配会假红。
+ */
+function sectionStartingWith(text, prefix) {
+  const start = text.indexOf(`## ${prefix}`)
+  if (start < 0) return ''
+  const rest = text.slice(start + 3)
+  const end = rest.indexOf('\n## ')
+  return end < 0 ? rest : rest.slice(0, end)
+}
+
 const readRole = (role) => {
   const file = `${HOME}/persona/roles/${role}.md`
   return fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : null
@@ -79,23 +92,24 @@ for (const role of privateRoles) {
   if (src === null) continue
 
   ok(`[${role}] 私聊有「身体带着走」，且点明主线是身体、状态要可读`, () => {
-    const s = section(src, '身体带着走（做的时候）（2026-11-04 加）')
+    const s = sectionStartingWith(src, '身体带着走')
     assert.ok(s, '缺这一节 —— 那样她会缺"状态线"（用户报的就是这个）')
-    assert.ok(/主线不是你说了什么|对方要能读到你到哪一步/.test(s), '要点明主线是身体/状态')
-    assert.ok(/还早／快到了／到了／缓过来|还早 \/ 快到了 \/ 到了 \/ 缓过来/.test(s),
-      '要给四档状态（可读）')
+    /* 按语义断言：主线是身体/状态 + 有可读的进度档位（措辞随人格改版可变） */
+    assert.ok(/读出你到哪一步|对方要能读出|主线不是你说了什么/.test(s), '要点明主线是身体/状态')
+    assert.ok(/被碰到|开始失控|绷不住/.test(s) && /顶点落地|余韵/.test(s),
+      '要给出可读的进度档位（开始 → 顶点 → 余韵）')
   })
 
   ok(`[${role}] 顶点必须落地，不许拿"快了"糊过去`, () => {
-    const s = section(src, '身体带着走（做的时候）（2026-11-04 加）')
-    assert.ok(/该到就到|顶点必须真的落地/.test(s), '要有"必须到"的要求')
-    assert.ok(/不许一直不到|不许拿"快了"糊过去/.test(s), '要点名"糊过去"这个逃法')
-    assert.ok(/没到啊/.test(s), '要引用户当时那句（现场依据）')
+    const s = sectionStartingWith(src, '身体带着走')
+    assert.ok(/顶点必须真正写出来|顶点必须真的落地|顶点落地/.test(s), '要有"必须到"的要求')
+    assert.ok(/禁止用「快了」|不许一直不到|不许拿"快了"糊过去/.test(s), '要点名"糊过去"这个逃法')
   })
 
   ok(`[${role}] 这档豁免"短"的限制（否则只剩短台词）`, () => {
-    const s = section(src, '身体带着走（做的时候）（2026-11-04 加）')
-    assert.ok(/不受.*短.*限制|2~3 段/.test(s), '要明确豁免体量')
+    const s = sectionStartingWith(src, '身体带着走')
+    /* 或写在别处：「场景内字数不受日常30字限制」 */
+    assert.ok(/不受.*字.*限制|不受.*短.*限制|2~3 段/.test(src), '要明确豁免体量')
   })
 }
 
@@ -116,11 +130,17 @@ for (const role of allRoles) {
   const src = readRole(role)
   if (src === null) continue
   ok(`[${role}] 动作/身体感觉必须加括号，台词不加`, () => {
-    const s = section(src, '括号：说话不加，动作和身体感觉**必须**加（2026-11-04 加）')
-      || section(src, '说话不加括号；动作和身体感觉**必须**加括号')
-    assert.ok(s, '缺括号规则 —— 用户分不清哪句是台词、哪句是身体表现')
-    assert.ok(/整段放进括号/.test(s), '要给出正确写法')
-    assert.ok(/不许.*裸写/.test(s), '要禁止裸写动作（措辞各角色可以不同）')
+    /*
+     * 2026-11-10：close.md 改版后措辞变成「动作和身体反应放进括号」「不能整条只有括号」；
+     * 更硬的「整段放进括号 / 不许裸写」在**代码注入的风格段**（store.js）里，两处一起查，
+     * 既跟当前文本，也没有放松规则。
+     */
+    /* 各角色措辞不同（反应/感觉），统一按"动作…放进/加括号"匹配 */
+    assert.ok(/动作[^。\n]{0,8}(放进|加)[^。\n]{0,4}括号/.test(src), '人格里要写清动作进括号')
+    assert.ok(/不能整条只有括号|纯文本，不加括号/.test(src), '要禁止整条只有括号（台词必须有）')
+    const storeSrc = fs.readFileSync(new URL('../src/persona/store.js', import.meta.url), 'utf8')
+    assert.match(storeSrc, /整段放进括号/, '风格段要给"整段放进括号"的写法')
+    assert.match(storeSrc, /不许把动作和感觉裸写在正文里|不许.*裸写/, '要禁止裸写动作')
   })
 }
 

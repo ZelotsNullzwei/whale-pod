@@ -56,28 +56,47 @@ ok('★ 倒序的 at 也要每条都有标签（改前 3/16 条没有）', () =>
   )
 })
 
-ok('不重排 —— 对话顺序必须保持原样', () => {
+ok('★ 按 at 稳定排序（2026-11-07 起就是行为）—— 时间倒挂的要摆正', () => {
+  /*
+   * ⚠️ 2026-11-10 改：本条原叫「不重排 —— 对话顺序必须保持原样」，
+   * 但 2026-11-07 之后的实现**故意**在渲染副本里按 `at` 稳定排序
+   * （见 buildChatMessages 的注释：推送时间导致"我先说、他后说"的倒挂）。
+   * 所以现在的口径是：**按 at 排，同一毫秒保持原顺序**。
+   */
   const history = [
     { text: '甲', at: T0 + 5000, isMe: false, senderName: 'A' },
-    { text: '乙', at: T0 + 1000, isMe: true },   // 时间更早，但顺序在后
+    { text: '乙', at: T0 + 1000, isMe: true },   // 时间更早 → 应排到最前
     { text: '丙', at: T0 + 9000, isMe: false, senderName: 'A' },
   ]
   const out = buildChatMessages({ system: 'S', history }).slice(1)
-  assert.ok(textOf(out[0]).includes('甲'), '第 1 条还是甲')
-  assert.ok(textOf(out[1]).includes('乙'), '★ 第 2 条还是乙 —— 不能按 at 排序把对话打乱')
-  assert.ok(textOf(out[2]).includes('丙'), '第 3 条还是丙')
+  assert.ok(textOf(out[0]).includes('乙'), `按 at 应乙最先：${textOf(out[0])}`)
+  assert.ok(textOf(out[1]).includes('甲'), `第 2 条应是甲：${textOf(out[1])}`)
+  assert.ok(textOf(out[2]).includes('丙'), `第 3 条应是丙：${textOf(out[2])}`)
 })
 
-ok('倒流造成的 1ms 间隔写成「紧接着」，不是「+0 秒」', () => {
+ok('★ 同一毫秒的多条不许打乱（稳定排序）', () => {
+  const history = [
+    { text: '甲', at: T0, isMe: false, senderName: 'A' },
+    { text: '乙', at: T0, isMe: true },
+    { text: '丙', at: T0, isMe: false, senderName: 'A' },
+  ]
+  const out = buildChatMessages({ system: 'S', history }).slice(1)
+  assert.ok(textOf(out[0]).includes('甲'), '同 at 时保持原顺序（甲）')
+  assert.ok(textOf(out[1]).includes('乙'), '同 at 时保持原顺序（乙）')
+  assert.ok(textOf(out[2]).includes('丙'), '同 at 时保持原顺序（丙）')
+})
+
+ok('倒流不会渲染出「+0 秒」这种像 bug 的标签', () => {
   const history = [
     { text: '甲', at: T0 + 9000, isMe: false, senderName: 'A' },
-    { text: '乙', at: T0 + 1000, isMe: true },   // 倒流 → monoAt 压成 +1ms
+    { text: '乙', at: T0 + 1000, isMe: true },   // 倒流
     { text: '丙', at: T0 + 12000, isMe: false, senderName: 'A' },
   ]
   const out = buildChatMessages({ system: 'S', history }).slice(1)
-  const t = textOf(out[0])
-  assert.ok(!/\+0 秒/.test(t), `不该出现「+0 秒」（像 bug）：${t}`)
-  assert.ok(/紧接着/.test(t), `应该是「（紧接着）」：${t}`)
+  const all = out.map(textOf).join(' | ')
+  assert.ok(!/\+0 秒/.test(all), `不该出现「+0 秒」（像 bug）：${all}`)
+  /* 排序后每条都必须带时间标签 */
+  assert.equal(out.filter((m) => !hasStamp(textOf(m))).length, 0, `有消息缺时间标签：${all}`)
 })
 
 ok('正常顺序的时间标签不受影响', () => {
@@ -104,7 +123,7 @@ const SRC = fs.readFileSync(new URL('../src/qq/bridge.js', import.meta.url), 'ut
  *
  * 所以用不含换行的组合锚点。
  */
-const NOW_ANCHOR = '现在是 ${new Date()'
+const NOW_ANCHOR = '## 现在（**唯一准的时钟**）'
 
 ok('★ 源码锁：`## 现在` 要在 extras 里、且在 speakHint 之前', () => {
   const atNow = SRC.indexOf(NOW_ANCHOR)
@@ -141,11 +160,15 @@ ok('★ 源码锁：回复路径的 `## 上下文提示` 已经删掉（避免�
 
 ok('`## 现在` 要带时段标签（早上/中午/下午/晚上）', () => {
   const at = SRC.indexOf(NOW_ANCHOR)
-  // ⚠️ 时段是**先算好再插进模板**的（`slot` 变量在 `## 现在` 之前几行），
-  //    所以窗口要往前也开一段
-  const seg = SRC.slice(Math.max(0, at - 900), at + 700)
-  assert.match(seg, /slot\.label|s\.label/, '要渲染时段标签，不能只给钟点')
-  assert.match(seg, /先看这一行/, '要明确要求它先看时间，别按感觉猜')
+  assert.ok(at > 0, '要有 `## 现在` 这个公共块')
+  /*
+   * 2026-11-10：模板改成 `⏰ **现在就是 ${hh}:${mm}**（${slot || '—'}）`，
+   * 不再有「先看这一行」这句；按当前的时段注入方式断言。
+   */
+  const seg = SRC.slice(Math.max(0, at - 1200), at + 900)
+  assert.match(seg, /slot/, '时段要先算好再插进模板')
+  assert.match(seg, /（\$\{slot \|\| '—'\}）|slot \|\|/, '模板里要真的把时段渲染出来')
+  assert.match(seg, /照 ⏰ 那行念|分钟必须照/, '要明确要求它先看时间、别按感觉猜')
 })
 
 ok('主动发言的 speakHint 本身不写时间（靠公共 extras，避免两套时钟）', () => {

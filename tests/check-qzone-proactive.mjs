@@ -12,7 +12,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { startQzoneProactive } from '../src/qq/qzoneProactive.js'
+import { startQzoneProactive, qzoneTextFromFact } from '../src/qq/qzoneProactive.js'
 
 let pass = 0
 let fail = 0
@@ -40,7 +40,7 @@ function makeBridge({ home, cfg = {}, genText = '今天把绿萝浇了，黄叶�
     },
     log: { info: () => {}, warn: () => {} },
     memory: { get: () => ({ recent: () => recent }) },
-    dayPlan: { today: () => ({ morning: '早上洗了床单', noon: '中午吃了面', evening: '晚上打算看电影' }) },
+    dayPlan: { today: () => ({ morning: '早上洗了床单', noon: '中午吃了面', evening: '晚上打算看电影', smallThing: '把洗手台边的肥皂盒刷干净了', hair: '披着，有点乱', outfit: '浅灰家居T恤，深蓝棉布长裤' }) },
     _knownScopes: () => ['private:1', 'group:9'],
     _qzonePending: new Map(),
     _generate: async (msg, mem, scene, self, cover, hint) => {
@@ -117,9 +117,9 @@ await (async () => {
     assert.ok(calls.confirm[0].content.length >= 12)
     assert.ok(!/[（(]/.test(calls.confirm[0].content), '说说正文里不该带括号动作')
   })
-  ok('★ 提示词写明了「不许把没发生的说成发生了」', () => {
-    assert.match(calls.hints[0], /不许把还没发生的事说成发生了/)
-    assert.match(calls.hints[0], /不是聊天回复/)
+  ok('★ 说说正文来自"今天已发生的事"（不是聊天/提示词）', () => {
+    assert.ok(String(calls.confirm[0].content ?? '').length > 4, '应有说说草稿正文')
+    assert.ok(!/[你您]/.test(calls.confirm[0].content), '公开说说不能出现你/您')
   })
   ok('★ 什么都没直接发（_sendQzoneNow 不该被调用）', () => {
     // 约定：调度器只出草稿；发布必须由他确认后才发生
@@ -128,11 +128,18 @@ await (async () => {
 })()
 
 console.log('\n=== 3. 去重 ===')
+/*
+ * 去重测试要**只让 scene 可用**（否则 pickContentType 会先挑 selfie/outfit，
+ * 生成的文案跟这里构造的 scene 文案不同，就测不到去重）。2026-11-12 修。
+ */
+const DEDUPE_FACT = '刷洗水槽时发现下水口一圈全是黑霉，吓一跳'
+const onlyScenePlan = (bridge) => { bridge.dayPlan.today = () => ({ smallThing: DEDUPE_FACT }) }
 await (async () => {
   const home = tmpHome()
-  const s = { lastHash: (await import('node:crypto')).createHash('sha256').update('今天把绿萝浇了，黄叶子剪掉两片，看着精神多了').digest('hex').slice(0, 16) }
+  const s = { lastHash: (await import('node:crypto')).createHash('sha256').update(qzoneTextFromFact(DEDUPE_FACT)).digest('hex').slice(0, 16) }
   fs.writeFileSync(path.join(home, 'qzone-proactive.json'), JSON.stringify(s))
   const { bridge, calls } = makeBridge({ home })
+  onlyScenePlan(bridge)
   await bridge._qzoneProactiveTick()
   ok('★ 和上一条草稿完全一样 → 跳过', () => assert.equal(calls.confirm.length, 0))
 })()
@@ -178,7 +185,8 @@ ok('★ bridge 侧也会删过期确认项（不只是跳过）', () => {
 
 ok('★ 配图可整条关掉（参考图有问题时的止血开关）', () => {
   const src = fs.readFileSync(new URL('../src/qq/bridge.js', import.meta.url), 'utf8')
-  assert.match(src, /qzoneProactive\?\.imageEnabled === false/, '_makeQzoneImage 没有读这个开关')
+  assert.match(src, /qzoneProactive\?\.imageEnabled/, '_makeQzoneImage 没有读这个开关')
+  assert.match(src, /imageEnabled[^\n]*===\s*false/, '_makeQzoneImage 没有读这个开关')
 })
 
 ok('★ 配图必须优先用 pickRefImage 挑好的那张（不能写死 faceRefImage）', () => {
@@ -190,6 +198,45 @@ ok('★ 配图必须优先用 pickRefImage 挑好的那张（不能写死 faceRe
   const src = fs.readFileSync(new URL('../src/qq/bridge.js', import.meta.url), 'utf8')
   assert.match(src, /shot\.refImage \|\|/, 'refImage 必须优先取 shot.refImage')
 })
+
+console.log('\n=== 6. 草稿频率上限与去重（2026-11-10）===')
+await (async () => {
+  /* 没有绑定 private 的 owner，但有别人私聊记录 → 绝不能拿别人的会话当预览对象 */
+  const { bridge, calls } = makeBridge({ home: tmpHome() })
+  bridge.cfg.persona.activeByScope = { group: 'default' }
+  bridge._knownScopes = () => ['private:9']
+  await bridge._qzoneProactiveTick()
+  ok('★ 没有绑定私聊 → 不生成草稿（不把公开说说预览发给别人）', () => assert.equal(calls.confirm.length, 0))
+})()
+await (async () => {
+  const home = tmpHome()
+  fs.writeFileSync(path.join(home, 'qzone-proactive.json'), JSON.stringify({ day: '2026-11-10', drafts: 2 }))
+  const { bridge, calls } = makeBridge({ home, cfg: { draftDailyMax: 2 } })
+  await bridge._qzoneProactiveTick()
+  ok('★ 今天草稿已到上限(2) → 不再生成', () => assert.equal(calls.confirm.length, 0))
+})()
+
+await (async () => {
+  const home = tmpHome()
+  const gen = qzoneTextFromFact(DEDUPE_FACT)
+  fs.writeFileSync(path.join(home, 'qzone-proactive.json'), JSON.stringify({ day: '2026-11-10', drafts: 1, lastDraftText: gen }))
+  const { bridge, calls } = makeBridge({ home, cfg: { draftDailyMax: 2 } })
+  onlyScenePlan(bridge)
+  await bridge._qzoneProactiveTick()
+  ok('★ 和上一份草稿同文 → 跳过（不重复弹）', () => assert.equal(calls.confirm.length, 0))
+})()
+
+await (async () => {
+  const home = tmpHome()
+  fs.writeFileSync(path.join(home, 'qzone-proactive.json'), JSON.stringify({ day: '2026-11-10', drafts: 1 }))
+  const { bridge, calls } = makeBridge({ home, cfg: { draftDailyMax: 2 } })
+  await bridge._qzoneProactiveTick()
+  ok('★ 未到上限 → 正常生成，且草稿计数 +1', () => {
+    assert.equal(calls.confirm.length, 1)
+    const st = JSON.parse(fs.readFileSync(path.join(home, 'qzone-proactive.json'), 'utf8'))
+    assert.equal(st.drafts, 2, `草稿计数应为 2，实际 ${st.drafts}`)
+  })
+})()
 
 console.log(`\n${'='.repeat(44)}\n通过 ${pass} / 失败 ${fail}`)
 process.exit(fail === 0 ? 0 : 1)

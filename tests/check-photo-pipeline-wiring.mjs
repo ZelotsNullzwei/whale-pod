@@ -16,34 +16,35 @@ function recorder() {
     calls,
     cropRegion: async (b, a, z) => { calls.push(['cropRegion', a, z]); return b },
     cropBottom: async (b, r) => { calls.push(['cropBottom', r]); return b },
+    cropWatermarkSide: async (b, o) => { calls.push(['cropWatermarkSide', o?.rightCut]); return b },
     eraseCornerWatermark: async (b) => { calls.push(['erase']); return b },
   }
 }
 
 console.log('=== processImage ===')
-await ok('普通图：cropBottom(配置值) + 擦水印', async () => {
+await ok('普通图：只裁两边去水印（rightCut 0.14）', async () => {
   const ops = recorder()
   const r = await processImage(BUF, { shot: { framingInfo: {} }, imgCfg: { cropBottom: 0.1 }, ops })
   assert.equal(r.ok, true)
-  assert.deepEqual(ops.calls, [['cropBottom', 0.1], ['erase']])
+  assert.deepEqual(ops.calls, [['cropWatermarkSide', 0.14]])
 })
-await ok('全身图：cropBottom(0.06) + 擦水印', async () => {
+await ok('全身图：也裁两边（不裁底，脚能保住）', async () => {
   const ops = recorder()
   const r = await processImage(BUF, { shot: { framingInfo: { feet: true } }, imgCfg: { cropBottom: 0.1 }, ops })
   assert.equal(r.ok, true)
-  assert.deepEqual(ops.calls, [['cropBottom', 0.06], ['erase']])
+  assert.deepEqual(ops.calls, [['cropWatermarkSide', 0.14]])
 })
-await ok('部位特写（腿）：先 cropRegion(0.42,1.0) 再正常裁底', async () => {
+await ok('部位特写（腿）：先 cropRegion(0.42,1.0) 再裁两边', async () => {
   const ops = recorder()
   const r = await processImage(BUF, { shot: { framingInfo: { bodyPart: '腿' } }, imgCfg: { cropBottom: 0.08 }, ops })
   assert.equal(r.ok, true)
-  assert.deepEqual(ops.calls, [['cropRegion', 0.42, 1], ['cropBottom', 0.08], ['erase']])
+  assert.deepEqual(ops.calls, [['cropRegion', 0.42, 1], ['cropWatermarkSide', 0.14]])
 })
 await ok('锁骨/胸部不裁（表里没有）', async () => {
   const ops = recorder()
   const r = await processImage(BUF, { shot: { framingInfo: { bodyPart: '胸部' } }, imgCfg: {}, ops })
   assert.equal(r.ok, true)
-  assert.equal(ops.calls[0][0], 'cropBottom')
+  assert.equal(ops.calls[0][0], 'cropWatermarkSide')
 })
 await ok('空/过小 → ok:false，不抛', async () => {
   const r = await processImage(Buffer.alloc(10), { shot: {}, imgCfg: {}, ops: recorder() })

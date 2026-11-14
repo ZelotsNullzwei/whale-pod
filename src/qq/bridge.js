@@ -30,6 +30,8 @@ import path from 'node:path'
 import { createHash } from 'node:crypto'
 import { makeMessage } from '../memory/short.js'
 import { renderFacts } from '../memory/facts.js'
+import { homeEnvelope } from '../memory/home.js'
+import { detectSaidHair, detectSaidOutfitText } from './appearanceState.js'
 import { resolveCandidates, openFirstAvailable, applyFreeOrder, PROVIDER_MODEL_HINTS } from '../gateway/router.js'
 import { deriveRouting } from '../gateway/strategy.js'
 import { needsFreshInfo, webSearch, formatSearchContext, pickCoverImage, checkBalance } from '../gateway/search.js'
@@ -38,6 +40,8 @@ import { detectCode, formatCodeContext } from '../gateway/codes.js'
 import { fetchAlbum, formatAlbumContext, JmHostCache, JmMemoStore } from '../gateway/jm.js'
 import { readJmPages, formatAlbumPagesNote } from '../gateway/jm-read.js'
 import FACE_TABLE from './faces.json' with { type: 'json' }
+/* 下载生成图也要走代理兜底（2026-11-10：代理开着但没跑 → 裸 fetch 必失败 → 整条裁剪流水线被跳过） */
+import { fetchWithProxyFallback } from '../net.js'
 /* QQ 空间主动草稿调度器（2026-11-10）：独立模块，避免和正在改动的本文件冲突 */
 import { startQzoneProactive, QZONE_CONFIRM_TTL_MS } from './qzoneProactive.js'
 import { InteractionTracker, BegState, decideBeg } from './beg.js'
@@ -48,7 +52,7 @@ import { applyQuestionOverride } from './questionGate.js'
 import { shouldAnswerSticker } from './stickerGate.js'
 import { StickerTagStore, stickerKey, splitTags } from './sticker-tags.js'
 import { extractQQMarkers, runQQMarkers, buildEmojiHint } from './qqActions.js'
-import { generateImage, cropBottom, cropRegion, eraseCornerWatermark } from './mcpImage.js'
+import { generateImage, cropBottom, cropRegion, eraseCornerWatermark, cropWatermarkSide } from './mcpImage.js'
 /* 摄影决策链（v2.0）：规划 → 校验 → 构图 → 提示词，见 src/photo/ */
 import { planShot, describeShot } from '../photo/index.js'
 import { figurePoseForDay, detectBodyPart } from '../photo/photo-composer.js'
@@ -57,7 +61,7 @@ import { detectFaceBottom } from '../photo/faceBand.js'
 import { dayKey } from '../memory/dayPlan.js'
 import { outingOutfitForDay, signatureOutfitForDay, sleepwearForDay, wardrobeBrief, resolveOutfitText, matchOutfit, extractSaidOutfit } from '../memory/wardrobe.js'
 // 今天临时换上的那套（2026-11-06）：当天有效，晚上/第二天自动让位
-import { wearingFor, setWearing } from '../memory/wearing.js'
+import { wearingFor, setWearing, setWearingHair, hairFor } from '../memory/wearing.js'
 import { hasBiliLink, resolveBvid, fetchVideoInfo, fetchTopComments, fetchDanmaku, fetchAudioCandidates, downloadAudio, formatVideoContext } from './bilibili.js'
 import { transcribeVideoCached, transcribeVideoDetailed } from './asr.js'
 // 梗百科 —— 本地词库（零成本），联网查梗之前先走它；没收录才放行联网
@@ -1541,7 +1545,10 @@ export class QQBridge {
       if (!home) return
       const data = this._interactions?.toJSON?.()
       if (!data) return
-      fs.writeFileSync(path.join(home, 'interactions.json'), JSON.stringify(data, null, 2), 'utf8')
+      const _f = path.join(home, 'interactions.json')
+      const _tmp = `${_f}.tmp`
+      fs.writeFileSync(_tmp, JSON.stringify(data, null, 2), 'utf8')
+      fs.renameSync(_tmp, _f)
     } catch { /* 存不上不影响讨钱以外的东西 */ }
   }
 
@@ -1736,7 +1743,7 @@ export class QQBridge {
    * **只生成说说配图**，不发出去（2026-11-08 用户：「先和我发照片确认，然后再发」）。
    * 画面来源规则见 `_postQzoneWithImage` 的注释：优先她自己说过的话。
    */
-  async _makeQzoneImage(scope, content) {
+  async _makeQzoneImage(scope, content, imagePlan = null) {
     const say = String(content ?? '').trim()
     if (!say) return ''
     /*
@@ -1750,11 +1757,12 @@ export class QQBridge {
      * 换参考图之前，先把配图关掉（配置项，改回 true 即恢复）：
      *   qq.qzoneProactive.imageEnabled = false
      */
-    if (this.cfg?.qq?.qzoneProactive?.imageEnabled === false) {
+    if ((this.cfg?.qzoneProactive?.imageEnabled ?? this.cfg?.qq?.qzoneProactive?.imageEnabled) === false) {
       this.log?.info?.('bridge：说说配图已关闭（qq.qzoneProactive.imageEnabled=false）→ 这条只发文字')
       return ''
     }
-    const imgCfg = this.cfg?.qq?.image ?? {}
+    /* ★ bridge 的 cfg 是**扁平**的（bridgeCfgOf = {...cfg.qq}）——image 在顶层，不在 cfg.qq.image */
+    const imgCfg = this.cfg?.image ?? this.cfg?.qq?.image ?? {}
     try {
       const WORDS = ['杯', '碗', '衣服', '裙', '鞋', '花', '猫', '书', '画', '灯', '桌', '窗', '快递', '水果', '面', '汤']
       let kw = WORDS.find((w) => say.includes(w)) ?? ''
@@ -1795,19 +1803,44 @@ export class QQBridge {
        *   ④ 内容跟**当日日程**一致（dayLine 已拼进 desc）
        */
       const descWithRule = [desc,
-        '（这一张必须是自拍或第一人称视角：画面里要有她本人，或者她自己的手/腿正在做事；不要纯环境照，不要空景）',
+        '（这一张必须是自拍或第一人称视角：画面里要有她本人，或者她自己的手/腿正在做事；不要纯环境照，不要空景；手机原相机随手拍，擦净镜头、放大 1.5-3 倍突出主体、低曝光暗调）',
       ].filter(Boolean).join('；')
+      /* 说说内容类型给了明确拍摄动机（自拍/穿搭/天气/生活小事）→ 直接用它的场景与模式 */
+      /*
+       * ★ 画面描述只给"要拍什么"，**不要混入说说正文**（2026-11-11 用户：
+       *   "图二还是右面，我感觉还是你的提示词问题"）——正文里"煮了碗面"
+       *   会被模型一起画出来，即使场景只要"洗锅"。
+       */
+      const __sm = imagePlan?.subjectMode || (imagePlan?.sceneOnly === true ? 'object' : 'person')
+      const __cameraTail = (__sm === 'person' || __sm === 'first_person')
+        ? '；手机原相机随手拍，擦净镜头、1.5-3 倍放大突出主体、低曝光暗调'
+        : ''
+      const sceneForPlan = imagePlan?.scene
+        ? `${imagePlan.scene}${__cameraTail}`
+        : descWithRule
       const shot = planShot({
-        scene: descWithRule,
+        scene: sceneForPlan,
         slot: currentSlot().id,
         scope,
-        sceneOnly: false,
+        sceneOnly: imagePlan?.sceneOnly === true,
+        subjectMode: __sm,
+        forceFraming: imagePlan?.forceFraming || '',
+        faceOnlyRef: imagePlan?.faceOnlyRef === true,
+        forceMode: imagePlan?.mode || '',
         /* 说说是自拍/第一人称，必须穿今天衣柜里那套，否则模型照参考图穿 */
-        outfit: (() => { try { return this._lastOutfit || this.dayPlan?.today?.()?.outfit || '' } catch { return '' } })(),
-        hair: (() => { try { return this.dayPlan?.today?.()?.hair || '' } catch { return '' } })(),
+        outfit: imagePlan?.outfit
+          || ((__sm === 'person' || __sm === 'first_person')
+            ? (() => { try { return this._lastOutfit || this.dayPlan?.today?.()?.outfit || '' } catch { return '' } })()
+            : ''),
+        hair: (__sm === 'person' || __sm === 'first_person')
+          ? (() => { try { return this.dayPlan?.today?.()?.hair || '' } catch { return '' } })()
+          : '',
         mode: 'daily',
         imageCfg: imgCfg,
       })
+      if (shot?.promptIssues?.length) {
+        this.log?.warn?.(`bridge：说说配图 Prompt 检查有 ${shot.promptIssues.length} 项：${shot.promptIssues.map((x) => x.code).join(',')}`)
+      }
       /*
        * ★★ **只有"要看得见她脸"的档位才带参考图**（2026-11-08 用户：「a人物不对，视角也不对」）。
        *
@@ -1836,6 +1869,7 @@ export class QQBridge {
          * 出来就是动漫风 + 头带，提示词写「真实生活摄影」「不戴头饰」都压不住。
          */
         refImage: __needFace ? (shot.refImage || imgCfg.faceRefImage || imgCfg.refImage || null) : null,
+        refImages: __needFace && shot.refImages?.length ? shot.refImages : null,
         home: this.cfg?.home ?? '',
         log: this.log,
       })
@@ -1843,11 +1877,10 @@ export class QQBridge {
         this.log.warn?.(`bridge：说说配图生成失败（${String(r?.error ?? '无返回').slice(0, 60)}）`)
         return ''
       }
-      const resp = await fetch(r.url)
+      const resp = await fetchWithProxyFallback(r.url, { timeoutMs: 25000 })
       if (!resp.ok) throw new Error(`下载图片 HTTP ${resp.status}`)
       let buf = Buffer.from(await resp.arrayBuffer())
-      try { buf = await eraseCornerWatermark(buf, this.log) } catch { /* 原图 */ }
-      try { buf = await cropBottom(buf, Number(this.cfg?.qq?.image?.cropBottom ?? 0.1), this.log) } catch { /* 原图 */ }
+      try { buf = await cropWatermarkSide(buf, {}, this.log) } catch { /* 原图 */ }
       const dir = path.join(this.cfg?.home ?? '', 'generated')
       try { fs.mkdirSync(dir, { recursive: true }) } catch { /* 已存在 */ }
       const file = path.join(dir, `qzone-${Date.now()}.jpg`)
@@ -1881,7 +1914,7 @@ export class QQBridge {
       }
       if (/^[A-Za-z]:[\\/]/.test(v)) return fs.existsSync(v) ? v : ''
       if (/^https?:/i.test(v)) {
-        const r = await fetch(v)
+        const r = await fetchWithProxyFallback(v, { timeoutMs: 25000 })
         if (!r.ok) return ''
         fs.writeFileSync(out, Buffer.from(await r.arrayBuffer()))
         return out
@@ -1932,16 +1965,30 @@ export class QQBridge {
    * 他说「发吧/行/可以」→ `_sendQzoneNow` 发出去；
    * 他说「换一张/别发」→ 丢掉重来或取消。
    */
-  async _askQzoneConfirm({ scope, content, imageUrl = '' }) {
+  async _askQzoneConfirm({ scope, content, imageUrl = '', eventId = '', imagePlan = null }) {
     const say = String(content ?? '').trim()
     if (!say) return
     let file = await this._materializeImage(imageUrl)
-    if (!file) file = await this._makeQzoneImage(scope, say)
+    if (!file) file = await this._makeQzoneImage(scope, say, imagePlan)
+    /*
+     * 配图偶发失败（上游 MCP 偶发 bad arguments）→ 重试一次（2026-11-11）。
+     * 用户明确要"带配图"，不能因为一次抖动就只发文字。
+     */
+    if (!file && this.cfg?.qq?.qzoneProactive?.imageEnabled !== false) {
+      await new Promise((r) => setTimeout(r, 1500))
+      file = await this._makeQzoneImage(scope, say, imagePlan)
+    }
     if (!this._qzonePending) this._qzonePending = new Map()
-    this._qzonePending.set(String(scope), { scope: String(scope), content: say, file, at: Date.now() })
+    this._qzonePending.set(String(scope), { scope: String(scope), content: say, file, at: Date.now(), eventId: String(eventId ?? '') })
     const userId = String(scope).startsWith('private:') ? String(scope).slice('private:'.length) : ''
     if (!userId) return
-    const text = file ? '图先给你看看，这张发空间行吗？' : '这段发空间行吗？（图没拍成，先发文字）'
+    /*
+     * 预览必须**带上正文**（2026-11-11 用户："她不知道她自己要发？"）——
+     * 之前只发"这段发空间行吗？"，正文没给，等于让人确认一段看不见的话。
+     */
+    const text = file
+      ? `这条说说配这张图，发空间行吗？\n「${say}」`
+      : `我要发这条说说：\n「${say}」\n发空间行吗？`
     try {
       await this._send({ scope, kind: 'private', userId, images: [] }, text, file ? { url: file } : null)
     } catch (e) {
@@ -1956,8 +2003,18 @@ export class QQBridge {
   _qzoneAnswer(text) {
     const t = String(text ?? '').replace(/\s+/g, '')
     if (!t || t.length > 12) return null
-    if (/(不发|不行|别发|不要发|别了|换一张|重拍|算了|不好看|删了)/.test(t)) return 'no'
-    if (/(发吧|发出去|可以发|就这个|行|好的|发|嗯|确认)/.test(t)) return 'yes'
+    /*
+     * 1) **疑问句先排除**（2026-11-10 修）。
+     *    现场：发说说前会私聊问"这张发空间行吗？"，用户复述「这行吗」
+     *    以前因为含「行」被判成 yes → 直接公开。现在带问号/吗/呢/正反问一律"不确认"。
+     *    ⚠️ 放在否定判断之前：「行不行」是问句（→null），而「不行」仍是否定（→no）。
+     */
+    if (/[?？]|吗|呢|发不发|行不行|可不可以|好不好/.test(t)) return null
+    /* 2) 否定优先（「不行」「换一张」绝不能当确认） */
+    if (/(不发|不行|别发|不要发|别了|换一张|重拍|算了|不好看|删了|先不|不用)/.test(t)) return 'no'
+    /* 3) 只认**明确**的确认短句 */
+    if (/^(发|发吧|发呀|发出去|发了|发一下|可以发|就这个|这个可以|好|好的|好呀|行|行吧|行啊|嗯|嗯嗯|确认|确定|可以)$/.test(t)) return 'yes'
+    if (/(发吧|发出去|可以发|就这个|确认发)/.test(t)) return 'yes'
     return null
   }
 
@@ -1966,7 +2023,7 @@ export class QQBridge {
     if (!say) return
     let file = ''
     try {
-      const imgCfg = this.cfg?.qq?.image ?? {}
+      const imgCfg = this.cfg?.image ?? this.cfg?.qq?.image ?? {}
       const shot = planShot({
         /*
          * ★★ **画面描述用她自己说过的话**（2026-11-08 用户：
@@ -2062,11 +2119,10 @@ export class QQBridge {
         this.log.warn?.(`bridge：说说配图生成失败（${String(r?.error ?? '无返回').slice(0, 60)}）→ 只发文字`)
         return
       }
-      const resp = await fetch(r.url)
+      const resp = await fetchWithProxyFallback(r.url, { timeoutMs: 25000 })
       if (!resp.ok) throw new Error(`下载图片 HTTP ${resp.status}`)
       let buf = Buffer.from(await resp.arrayBuffer())
-      try { buf = await eraseCornerWatermark(buf, this.log) } catch { /* 失败用原图 */ }
-      try { buf = await cropBottom(buf, Number(this.cfg?.qq?.image?.cropBottom ?? 0.1), this.log) } catch { /* 同上 */ }
+      try { buf = await cropWatermarkSide(buf, {}, this.log) } catch { /* 失败用原图 */ }
       /*
        * ★★ **发出去之前，先核对图和她说的是不是一回事**（2026-11-08 用户：
        *   「她假如要直接发的话，这种细节就没人看，也没人检查」）。
@@ -2108,11 +2164,10 @@ export class QQBridge {
             log: this.log,
           })
           if (r2?.ok && r2?.url) {
-            const resp2 = await fetch(r2.url)
+            const resp2 = await fetchWithProxyFallback(r2.url, { timeoutMs: 25000 })
             if (resp2.ok) {
               let buf2 = Buffer.from(await resp2.arrayBuffer())
-              try { buf2 = await eraseCornerWatermark(buf2, this.log) } catch { /* 原图 */ }
-              try { buf2 = await cropBottom(buf2, Number(this.cfg?.qq?.image?.cropBottom ?? 0.1), this.log) } catch { /* 原图 */ }
+              try { buf2 = await cropWatermarkSide(buf2, {}, this.log) } catch { /* 原图 */ }
               const secondCheck = await reviewMatches({ buf: buf2, expect: expectDesc, gateway: gwUrl, key: gwKey, log: this.log })
               if (secondCheck.match) { buf = buf2; this.log.info?.('bridge：重画后对上了') }
               else {
@@ -2949,6 +3004,9 @@ ${drewNote}
 你说过「给你留一碗饭」不等于他答应了 —— 人家可能正在上课。
 该问的是「下课没」，不是「我给你留了饭」。
 
+## ⚠️ 主动开口**不要提发图/拍照**（这条链路没有配图能力）
+❌「喏，就这一张」「给你看看」「拍了张」一律不许说。
+
 ## ⚠️ 不要没头没尾
 别硬编一个开头来接话（「福是真福，就是…」这种 —— 说到最后你自己都不知道在说什么）。
 说不清就别说了。`
@@ -3101,6 +3159,12 @@ ${drewNote}
       const clean = String(gen?.text ?? '').trim()
       if (!clean || clean.includes(SILENT)) {
         this.log.info?.('proactive：模型选择不说')
+        return false
+      }
+      /* 2026-11-12：主动发言没有配图能力，禁止谎称发图 */
+      const __fc = this._falseClaim(clean, { draw: false })
+      if (__fc && (__fc.kind === 'draw' || __fc.kind === 'image')) {
+        this.log.warn?.(`proactive：主动发言谎称发图（${__fc.hit}）→ 丢弃这条`)
         return false
       }
       /*
@@ -3776,7 +3840,17 @@ ${drewNote}
      * 这样"单条快、连发等"两件事同时成立，不用猜。
      */
     const burstWin = Number(this.cfg.reply?.mergeBurstWindowMs ?? 8000)
-    const baseWin = buf.msgs.length >= 2 ? burstWin : win
+    /*
+     * 私聊短句：默认给他多留一点合并时间（2026-11-12「私聊回复逻辑」）。
+     * 他发消息是 2~6 秒一条短句；1.5 秒窗口会每条都回，还会把同一个问题回两遍。
+     * 只在生产配置显式开启 privateShortMergeMs 时生效，测试默认不受影响。
+     */
+    const isPrivateScope = String(msg.scope ?? '').startsWith('private:')
+    const shortTextLen = String(msg.text ?? '').replace(/\[[^\]]*\]/g, '').trim().length
+    const privateShortWin = (isPrivateScope && shortTextLen > 0 && shortTextLen <= 12)
+      ? Number(this.cfg.reply?.privateShortMergeMs ?? 0)
+      : 0
+    const baseWin = buf.msgs.length >= 2 ? burstWin : Math.max(win, privateShortWin)
     // 被 @ 时窗口更短 —— 但只在**还没看出他在连发**时生效
     const eff = atMe && buf.msgs.length < 2
       ? Number(this.cfg.reply?.mergeAtWindowMs ?? 600)
@@ -4202,11 +4276,65 @@ ${drewNote}
   }
 
   /**
-   * 被戳时那句回话（2026-11-07 用户：「被戳也只用两固定回复」）。
+   * 拍照前的一句"拖延/准备"垫场（2026-11-11 用户：「用模型回复呢」）。
    *
-   * 原来从一个 6 句固定池随机 —— 戳多了就那两句来回。
-   * 现在先让模型现编一句极短的话，失败/超时才回退固定池。
+   * 固定池容易重复；这里让模型现编一句极短中文。
+   * 只负责"等一下"，**不报今日日程**，失败/超时由调用方回退固定池。
    */
+  async _fillerLine(slotNow = '') {
+    try {
+      const llm = this.gateway
+      if (!llm?.stream) return null
+      const model = String(this.cfg?.model ?? '').trim()
+      const provider = model.includes('/') ? model.slice(0, model.indexOf('/')) : undefined
+      const slotMap = { morning: '早上', noon: '中午', afternoon: '下午', evening: '傍晚', night: '夜里' }
+      const when = slotMap[String(slotNow)] ?? '现在'
+      const chunks = []
+      const stream = llm.stream({
+        provider,
+        model: model || undefined,
+        messages: [
+          {
+            role: 'system',
+            content: [
+              '你是她，正在准备给他拍一张照片，但还要等一下。',
+              '只输出一句极短的中文垫场话，8~30 个字，口语，像真人随口敷衍/准备。',
+              `现在时段：${when}。`,
+              /*
+               * 2026-11-13 修「嘴手不一致」：垫场不能提**具体拍摄方式**
+               *（找镜子/对镜/前置/后置/站哪）。她此刻还不确定最终怎么拍，
+               *  一提"我找面镜子"而实际是怼脸自拍，就自相矛盾。
+               *  只允许说中性的"等一下 / 理头发 / 擦镜头 / 手有点忙"。
+               */
+              '只许说中性的准备话：等一下、理理头发、擦下镜头、手头有点忙、别催。',
+              '❌ 绝对不要提：镜子、对镜、前置、后置、站哪拍、摆什么姿势、全身还是半身。',
+              '❌ 不要报今天的日程/吃了什么/几点做了什么。',
+              '❌ 不要括号动作、不要引号、不要 emoji、不要解释、不要重复上一句。',
+            ].join('\n'),
+          },
+          { role: 'user', content: '他说：来张自拍看看。' },
+        ],
+        maxTokens: 64,
+        temperature: 1.0,
+        signal: AbortSignal.timeout(3500),
+      })
+      for await (const c of stream) {
+        if (c?.type === 'text-delta' && c.text) chunks.push(c.text)
+        else if (c?.type === 'text' && c.text) chunks.push(c.text)
+        else if (c?.type === 'error') throw new Error('llm error')
+        else if (c?.type === 'finish' && c?.reason?.kind === 'error') throw new Error('llm error')
+      }
+      const t = chunks.join('').trim()
+        .replace(/^["“”「」]+|["“”「」]+$/g, '')
+        .replace(/[（(][^（）()]{0,24}[）)]/g, '')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .slice(0, 40)
+      return t || null
+    } catch { return null }
+  }
+
+  /** 被戳时那句回话：模型现编，失败回退固定池。 */
   async _pokeLine() {
     try {
       const llm = this.gateway
@@ -4469,6 +4597,8 @@ ${drewNote}
      */
     const pokeScope = groupId ? `group:${groupId}` : `private:${fromId}`
     const chat = this._recentChatState(pokeScope)
+    /* 2026-11-11 用户：私聊戳一戳必须真的戳回去，不能变成聊天文字 */
+    /* 2026-11-14 用户：「打完字的时候戳 = 催促」——私聊也认（原来只 group）。 */
     if (chat.fresh) {
       this.log.info?.(
         `bridge：被 ${fromId} 戳了，但那边 ${Math.round(chat.ageMs / 1000)} 秒前还在聊 → 当成催促，直接接话`,
@@ -4525,6 +4655,7 @@ ${drewNote}
     await sleep(delay)
 
     const textChance = typeof cfg.textChance === 'number' ? cfg.textChance : 0.5
+    /* 2026-11-14 用户：「私聊也一半说话一半扣」——原来 Boolean(groupId) 让私聊永远只戳回去、从不说话 */
     const useText = cfg.text !== false && Math.random() < textChance
     let ok = false
     let said = null
@@ -4539,9 +4670,16 @@ ${drewNote}
          */
         : ['？', '干嘛', '怎么了', '有事？', '戳我干嘛', '嗯？']
       said = (await this._pokeLine()) ?? lines2[Math.floor(Math.random() * lines2.length)]
+      /*
+       * ★ 走 `_send` 统一出口（2026-11-10）。
+       * 原来直接 `onebot.sendGroup/sendPrivate` —— 绕过剥标记、环境过滤、跨轮去重，
+       * 也不更新 `_lastBotText` 基准。戳回话本身不该带场景符号，用 `__noSceneSymbol` 关掉。
+       */
+      const pokeMsg = groupId
+        ? { scope: `group:${groupId}`, kind: 'group', groupId: String(groupId), userId: String(fromId), __noSceneSymbol: true }
+        : { scope: `private:${fromId}`, kind: 'private', userId: String(fromId), __noSceneSymbol: true }
       try {
-        if (groupId) await this.onebot.sendGroup(groupId, said)
-        else await this.onebot.sendPrivate(fromId, said)
+        await this._send(pokeMsg, said)
       } catch (e) {
         this.log.warn?.(`bridge：戳一戳回话失败 — ${String(e?.message ?? e)}`)
       }
@@ -4833,16 +4971,37 @@ ${drewNote}
             this._qzonePending.delete(String(msg.scope ?? ''))
             this.log.info?.(`bridge：他确认了 → 发说说「${String(pq.content).slice(0, 20)}」`)
             void this._sendQzoneNow(pq.scope, pq.content, pq.file).catch(() => {})
-            await this._send({ ...msg }, '发上了。', null)
-            return
+            /* 2026-11-13：不再硬编码"发上了"，交给正常人格回复（语气自然） */
+            msg.__qzoneJustPosted = true
+            msg.__qzonePostedText = String(pq.content ?? '')
+            msg.__qzoneResolved = true
           } else if (ans === 'no') {
             this._qzonePending.delete(String(msg.scope ?? ''))
             this.log.info?.('bridge：他说不发 → 丢掉这条说说')
-            await this._send({ ...msg }, '那就不发了。', null)
-            return
+            /* 2026-11-13：不再硬编码"那就不发了"，交给正常人格回复 */
+            msg.__qzoneJustDiscarded = true
+            msg.__qzoneDiscardedText = String(pq.content ?? '')
+            msg.__qzoneResolved = true
           }
         }
       } catch { /* 确认链出错就正常聊 */ }
+    }
+    /*
+     * 私聊表情包：**不再拦**（2026-11-13 用户：「有字的接 + 纯表情也回表情」）。
+     *   原来这里纯表情直接 return（不回），有字表情包也被一并误杀。
+     *   现在交给决策层：纯表情走"纯表情回应"路径直接回个收藏表情；有字的正常文字接。
+     */
+    if (String(msg.scope ?? '').startsWith('private:')) {
+      const rawText = String(msg.text ?? '')
+      const noMedia = rawText
+        .replace(/\[图片\]/g, '')
+        .replace(/\[表情包(?::[^\]]*)?\]/g, '')
+        .replace(/\[表情:\d+\]/g, '')
+        .trim()
+      const hasSticker = /\[表情包|\[表情:/.test(rawText) || (msg.stickerRefs?.length ?? 0) > 0
+      if (hasSticker && !noMedia) {
+        this.log.info?.('bridge：私聊纯表情 → 交给决策层（回个表情）')
+      }
     }
     /*
      * ★ 出现结束性的话 → 这一轮聊完就归档（2026-11-07 用户）。
@@ -5366,7 +5525,7 @@ ${drewNote}
        * 群里不加这条：一张图二十多秒，群里等不起。
        */
       const wantsPicture = String(msg.scope ?? '').startsWith('private')
-        && /(看看|看一下|什么样|长什么样|在干嘛|在做什么|在干什么|拍一张|拍张|拍照|照片|自拍|发图|来一张|发一张|露个脸|你的脸|什么样子)/.test(String(msg.text ?? ''))
+        && /(看看|看一下|什么样|长什么样|在干嘛|在做什么|在干什么|拍一张|拍张|拍照|照片|自拍|发图|来一张|发一张|露个脸|你的脸|什么样子|拍(?:脚|腿|腰|手|小肚子|胸|锁骨))/.test(String(msg.text ?? ''))
       /*
        * ★ 他是不是要**看人**（要脸）—— 和"要画面"分开（2026-11-06）：
        *   在干嘛 → 场景图（拍碗拍窗台）也合理；看看你/你的脸 → 必须自拍。
@@ -5397,6 +5556,9 @@ ${drewNote}
           + '· [插画:描述] —— **日系插画**那一档，只有他明确要"画一张/二次元的"才用。\n'
           + '⚠️ 他明确要「看看你 / 你的脸」而你决定发 → 给**自拍**或**对镜自拍**，别用背影糊弄；'
           + '不愿发就直说，别拿"拍不到"当借口。\n'
+          + '❌ **不要写拍摄动作/摆姿势的旁白**（「把手机举高」「脚伸过去」「站到镜子前」这类都不行）——他要的是图，不是动作解说。\n'
+          + '❌ **不要预设自己“发不出图”**：发送是程序干的，你只负责决定拍不拍；失败会由程序重试/兜底，别拿它当既定事实。\n'
+          + '  决定发 → 直接 [画图:…]，最多配一句 ≤12 字的短话；不发 → 一句话拒绝。\n'
           + '⚠️ **画面里不要出现手机以外的设备**（支架、三脚架、相机）；'
           + '自拍时你举着的那只手/手机可以入画，对镜自拍时镜子里必须能看到手机。'
         : ''
@@ -5634,6 +5796,8 @@ ${drewNote}
     let drawSent = false
     /** 跳过/失败的原因，写日志和记忆用 */
     let drawSkipReason = ''
+    /** 因为"刚画过、没明确要新的"被拦下（用于后面补一句、别静默） */
+    let gateSkipRecent = false
     /** 兼容旧名：`drewAny` 现在严格等于"真的画出来了" */
     let drewAny = false
     {
@@ -5762,6 +5926,8 @@ ${drewNote}
         const _ci = classifyDrawIntent(msg.text ?? '')
         const saidNo = _ci.saidNo
         let wantsPic = _ci.wantsPic
+        /* 明确要求"重画/换一张"（对上一张不满意）——与"首次要图"分开判定，见 REDRAW_PHRASES */
+        const redrawRequested = classifyRedrawIntent(msg.text ?? '').redraw
         const _shortYes = /^(嗯+|嗯嗯|好|好的|好呀|行|行啊|要|要啊|可以|来吧|拍吧|成|对|是啊|是的|OK|ok)[，。！!~…\s]*$/.test(String(msg.text ?? '').trim())
         const _offerFresh = (() => {
           try {
@@ -5838,7 +6004,7 @@ ${drewNote}
           this._drawAsk.delete(askKey)
           this.log.info?.('bridge：画图跳过 —— 他说了不用/不看')
           msg.__askInstead = false
-        } else if (wantsPic) {
+        } else if (wantsPic || redrawRequested) {
           allowDraw = true
         } else if (bodyPartFresh && detectBodyPart(String(msg.text ?? ''))) {
           allowDraw = true
@@ -5870,18 +6036,34 @@ ${drewNote}
           /* 把她话里"举手机/拍照"这类出戏的句子删掉 */
           text = String(text).replace(/[（(]?[^。！？\n]{0,24}(手机|拍|照片|镜头)[^。！？\n]{0,24}[。！？]?/g, '').trim() || text
         }
-        const drewRecently = lastDrewAt > 0 && Date.now() - lastDrewAt < 5 * 60_000
-        if (this.cfg.actions?.askBeforeDraw !== false && !allowDraw && !drewRecently) {
-          this.log.info?.('bridge：画图跳过 —— 他没说要拍（先问"拍什么、怎么拍"）')
-          msg.__askInstead = true
+        /* 2026-11-11 用户：默认无冷却。drawRecentMs=0 表示不限 */
+const __drawRecentMs = Number(this.cfg.actions?.drawRecentMs ?? 0)
+const drewRecently = __drawRecentMs > 0 && lastDrewAt > 0 && Date.now() - lastDrewAt < __drawRecentMs
+        /*
+         * ★★ 画图闸门（2026-11-10 抽成纯函数 `decideDrawGate`）。
+         * 优先级：功能开关 > 明确重画 > 免确认模式 > 明确要图 > 刚画过 > 询问。
+         */
+        const gate = decideDrawGate({
+          askBeforeDraw: this.cfg.actions?.askBeforeDraw,
+          allowDraw,
+          drewRecently,
+          drawEnabled: this.cfg.actions?.draw,
+          redrawRequested,
+        })
+        if (!gate.draw) {
+          if (gate.reason === '刚画过，没明确要新的') {
+            this.log.info?.('bridge：画图跳过 —— 刚画过一张，这句不像在要新的')
+            gateSkipRecent = true
+          } else if (gate.reason === '功能开关关闭') {
+            this.log.info?.('bridge：画图被开关关掉了（qq.actions.draw = false）')
+            this._drawAsk.delete(askKey)   // 终态：清掉确认状态
+          } else {
+            this.log.info?.('bridge：画图跳过 —— 他没说要拍（先问"拍什么、怎么拍"）')
+            this._drawAsk.set(askKey, Date.now())
+          }
+          msg.__askInstead = gate.ask
           drawAllowed = false
-          drawSkipReason = '没确认（已改为询问）'
-          this._drawAsk.set(askKey, Date.now())
-        } else if (this.cfg.actions?.draw === false) {
-          this.log.info?.('bridge：画图被开关关掉了（qq.actions.draw = false）')
-          drawAllowed = false
-          drawSkipReason = '功能开关关闭'
-          this._drawAsk.delete(askKey)   // 终态：清掉确认状态
+          drawSkipReason = gate.reason
         } else {
           drawAllowed = true
           // 真画了 → 清掉"问过"的标记，别一直挂着
@@ -5957,47 +6139,101 @@ ${drewNote}
              */
             const FILLER_BY_SLOT = {
               morning: [
-                '刚爬起来，头发还是一团乱，等等。',
-                '让我先把脸洗了，马上。',
-                '早上的光最好，等我找个角度。',
-                '还没梳头呢，你急什么。',
+                '刚起来，眼睛还没完全睁开，等等。',
+                '头发压塌了，我抓两下。',
+                '让我先把窗帘拉开，光好一点。',
+                '等我找件像样的衣服。',
+                '还没洗脸呢，别催。',
+                '早上的光一会儿就没了，等我。',
+                '我先把手机镜头擦一下。',
+                '你等会儿，我扎个头发。',
+                '刚醒，脸有点肿，等我缓一下。',
+                '别急，我先照照镜子。',
               ],
               afternoon: [
                 '别催，正找角度呢。',
-                '等我调下光。',
-                '这张我得拍好看点，稍等。',
-                '咔嚓一声的事，等会儿。',
                 '屋里有点暗，我把灯打开。',
+                '头发有点乱，等我理一下。',
+                '我换件衣服，马上。',
+                '等我收拾一下背景。',
+                '手机快没电了，我插一下。',
+                '这张拍不好我可不发。',
+                '等我站到窗边来。',
+                '刚坐下，等我起来。',
+                '我先擦擦镜头。',
+                '这光线有点难拍，等我调调。',
+                '急什么，又不是不给你看。',
               ],
               evening: [
                 '灯刚开，等我站到亮的地方。',
-                '暖黄灯下拍最好看，稍等。',
-                '等我理一下头发，晚上有点乱。',
-                '这就来，先让我把手机举稳。',
+                '晚上脸有点油，我洗把脸。',
+                '等我理理头发，晚上有点乱。',
+                '暖黄灯下拍才好看，别催。',
+                '刚吃完，等我收拾一下。',
+                '等我换身舒服点的。',
+                '这灯太黄了，我调一下。',
+                '你等会儿，我找面镜子。',
+                '晚上拍照容易糊，我手稳一点。',
+                '等我擦下手机镜头。',
+                '别急，我先看看效果。',
+                '马上就拍，别催。',
               ],
               night: [
                 '都这时候了，拍出来肯定糊……等我凑近点。',
                 '灯关了大半，我开一盏小的。',
                 '困归困，说拍就拍，等我。',
-                '半夜拍照，你可别嫌丑。',
+                '头发都散了，我理一下。',
+                '等我披件外套。',
+                '夜里光线差，我调一下。',
+                '别催，我眼睛都快闭上了。',
+                '拍一张就睡，等我。',
+                '我先洗把脸，精神点。',
+                '手机快没电了，稍等。',
+                '大半夜的，小点声。',
+                '行行行，等我一下。',
               ],
             }
             const FILLER_GENERIC = [
-              '等着，本鱼这就拍一张。',
+              '等着，本鲸这就拍一张。',
               '行，这就来一张，你先坐会儿。',
               '等我一下，马上就好。',
               '别急，正在挑一张像样的。',
-              /*
-               * ⚠️ 不要写「刚才那张不行」「重来一张」—— 第一张图还没有「刚才那张」
-               *   （2026-11-06 用户：「私聊发图还是有点乱」）。
-               */
+              '催什么，我又不会跑。',
+              '先让我准备一下。',
+              '你越催我越慢。',
+              '这就拍，别盯着。',
+              '等我找个好角度。',
+              '稍等，我整理一下。',
+              '急也没用，得拍好。',
+              '马上，别催。',
+              '等我几秒。',
+              '我先看看光。',
+              '拍不好可别怪我。',
             ]
             const slotPool = FILLER_BY_SLOT[slotNow] ?? []
-            // 七成从当前时段那组挑，三成从通用池挑（别太规整）
-            const pool = (slotPool.length && Math.random() < 0.7)
-              ? slotPool
-              : [...slotPool, ...FILLER_GENERIC]
-            const filler = pool[Math.floor(Math.random() * pool.length)]
+            /*
+             * 先让模型现编一句（2026-11-11 用户：「用模型回复呢」）；
+             * 失败/超时才回退固定池。
+             */
+            let filler = null
+            try { filler = await this._fillerLine(slotNow) } catch { /* 回退固定池 */ }
+            if (!filler) {
+              // 七成从当前时段那组挑，三成从通用池挑（别太规整）
+              const pool = (slotPool.length && Math.random() < 0.7)
+                ? slotPool
+                : [...slotPool, ...FILLER_GENERIC]
+              /*
+               * 避免连续重复：记住这个会话最近说过的 3 句垫场，优先不重复。
+               */
+              if (!this._recentFillers) this._recentFillers = new Map()
+              const prevFillers = this._recentFillers.get(fillerKey) ?? []
+              const fresh = pool.filter((x) => !prevFillers.slice(-3).includes(x))
+              const pickPool = fresh.length ? fresh : pool
+              filler = pickPool[Math.floor(Math.random() * pickPool.length)]
+            }
+            if (!this._recentFillers) this._recentFillers = new Map()
+            const prevFillers2 = this._recentFillers.get(fillerKey) ?? []
+            this._recentFillers.set(fillerKey, [...prevFillers2, filler].slice(-6))
             /*
              * ⚠️⚠️ **不要往垫场句里拼今日计划**（2026-11-07 我自己踩的坑）。
              *
@@ -6109,6 +6345,20 @@ ${drewNote}
                 this.log.info?.(`bridge：她说「${saidRaw.slice(0, 20)}」不在衣柜里 → 按日程/外出服`)
               }
 
+              /* ★ 她自己最近说过的换装优先（2026-11-11：私聊里她答应"扎马尾"这类，图必须跟上） */
+              try {
+                const herRaw = detectSaidOutfitText(mem?.recent?.(20) ?? [], Date.now(), 2 * 3600_000, extractSaidOutfit)
+                if (herRaw) {
+                  const mappedHer = matchOutfit(herRaw)
+                  if (mappedHer) {
+                    this.log.info?.(`bridge：她自己说「${herRaw.slice(0, 20)}」→ 用衣柜里那套`)
+                    /* 实时写进衣柜"当前穿搭"（后续出图/说说共用） */
+                    try { setWearing(dayKey(), { text: mappedHer, kind: 'said', note: '她自己说的' }) } catch { /* ignore */ }
+                    return mappedHer
+                  }
+                }
+              } catch { /* ignore */ }
+
               const worn = wearingFor(dayKey(), currentSlot().id)
               if (worn) return String(worn.text).replace(/\s+/g, ' ').slice(0, 160)
               /*
@@ -6141,6 +6391,17 @@ ${drewNote}
           this._lastOutfit = outfitText
           const hairText = (() => {
             try {
+              /* ★ 她自己最近说过的发型优先（2026-11-11：说了"扎马尾"，图就得是马尾） */
+              const saidHair = detectSaidHair(mem?.recent?.(20) ?? [])
+              this._lastHairText = saidHair || ''
+              if (saidHair) {
+                /* 实时写进衣柜"当前发型"，后续出图/说说共用 */
+                try { setWearingHair(dayKey(), saidHair) } catch { /* ignore */ }
+                return saidHair
+              }
+              /* 今天早些时候说过的发型（持久状态） */
+              const storedHair = (() => { try { return hairFor(dayKey(), currentSlot().id) } catch { return '' } })()
+              if (storedHair) return storedHair
               const v = this.dayPlan?.today?.()?.hair
               return v ? String(v).replace(/\s+/g, ' ').slice(0, 40) : ''
             } catch { return '' }
@@ -6193,15 +6454,26 @@ ${drewNote}
               const pt = this.dayPlan?.today?.() ?? {}
               const outed = Boolean(pt.outing) && String(pt.outingKind ?? 'none') !== 'none'
                 && String(pt.outingSlot ?? '') === currentSlot().id
-              return outed
-                ? '所在环境：外面（街上/店里，背景有路人和店面，不要室内卧室）'
-                : '所在环境：家里朝北的一室一厅 —— 卧室（灰床单、书桌对着窗、窗台绿萝、卡住的衣柜门）或客厅小餐桌（布艺小沙发、矮茶几、暖光落地灯、晾衣杆上挂着衣服）；按她在做什么选一处，不要商场或店铺背景'
+              if (outed) return '所在环境：外面（街上/店里，背景有路人和店面，不要室内卧室）'
+              /* 2026-11-13：把**当前时段的计划**作为线索传给 homeEnvelope，
+                 按「每日计划」定房间（夜里人在床上就卧室，不再随机挑到玄关）。 */
+              const sid = currentSlot().id
+              const slotHint = String(pt?.[sid] ?? pt?.evening ?? '')
+              return '所在环境：' + homeEnvelope(
+                [String(hit?.[1] ?? ''), String(drawRequest ?? '')].join(' '),
+                new Date(Number(this.__now?.()) || Date.now()).getHours(),
+                slotHint,
+              )
             } catch { return '' }
           })()
+          /* ★ 说了马尾/扎起 → 把发圈写进"今天穿着"（2026-11-11：11-10 那张马尾就是这么出来的） */
+          const promptOutfit = /(马尾|扎起|扎成|丸子头)/.test(hairText)
+            ? '蓝色发圈（低马尾），' + outfitText
+            : outfitText
           const shot = planShot({
             scene: [String(hit?.[1] ?? '').trim(), envAnchor].filter(Boolean).join('；'),
             slot: currentSlot().id,
-            outfit: outfitText,
+            outfit: promptOutfit,
             hair: hairText,
             weather: (() => { try { return String(this.dayPlan?.today?.()?.weather ?? '') } catch { return '' } })(),
             mood: (() => { try { return String(this.dayPlan?.today?.()?.mood ?? '') } catch { return '' } })(),
@@ -6231,6 +6503,33 @@ ${drewNote}
             break drawMain
           }
           this.log.info?.(`bridge：拍摄方案 → ${describeShot(shot)}`)
+          /*
+           * ★ **参考图决策的可观测性**（2026-11-10 评审指出）。
+           * `refDecision.checks` 原来只在返回对象里，日志里看不到 ——
+           * 出问题时无法判断"为什么用了这张参考图 / 为什么退回头像"。
+           * 这里把检查项摘要写进日志：异常项 warn，其余 info。
+           */
+          try {
+            const chks = shot?.refDecision?.checks ?? []
+            const WARN = new Set([
+              'character_version', 'body_version_invalid', 'body_version_mismatch',
+              'body_version_unchecked', 'dual_identity_reference',
+              'canon_version_invalid', 'canon_version_mismatch', 'canon_version_unchecked',
+              'body_framing_unknown_fallback', 'outfit_info_incomplete',
+            ])
+            const bad = chks.filter((c) => c && c.ok === false)
+            const serious = bad.filter((c) => WARN.has(String(c.name)))
+            const brief = (c) => `${c.name}${c.detail ? `(${String(c.detail).slice(0, 40)})` : ''}`
+            if (serious.length) {
+              this.log.warn?.(`bridge：参考图决策有 ${serious.length} 项异常 — ${serious.map(brief).join('；')}`)
+            } else if (shot?.refDecision) {
+              const rd = shot.refDecision
+              this.log.info?.(
+                `bridge：参考图决策 ${rd.strategy}${rd.reason ? `（${rd.reason}）` : ''}`
+                + `${bad.length ? `，另有 ${bad.length} 项提示：${bad.map(brief).join('；')}` : `，${chks.length} 项检查通过`}`,
+              )
+            }
+          } catch { /* 日志失败不影响出图 */ }
           const drawPrompt = shot.prompt
           /*
            * ★★ **部位特写：参考图换成该部位的裁图**（2026-11-07 实测）。
@@ -6264,7 +6563,7 @@ ${drewNote}
                *   buildPartRef 用 face_bottom_y 抬升裁切起点；
                *   拿不到就回退"无脸安全区间"，再不行就不做参考图。
                */
-              const gw = `http://127.0.0.1:${this.cfg.gateway?.port ?? 18899}/v1`
+              const gw = `http://127.0.0.1:${this.cfg.gatewayPort ?? this.cfg.gateway?.port ?? 18899}/v1`
               const pr = await buildPartRef({
                 part: bp,
                 home: this.cfg?.home || this._home || '',
@@ -6273,7 +6572,7 @@ ${drewNote}
                 detectFace: (file) => detectFaceBottom({
                   buf: fs.readFileSync(file),
                   gateway: gw,
-                  key: this.cfg.gateway?.key ?? null,
+                  key: this.cfg.gatewayKey ?? this.cfg.gateway?.key ?? null,
                   log: this.log,
                 }),
               })
@@ -6285,7 +6584,7 @@ ${drewNote}
               }
             }
           } catch { /* 换参考图失败就沿用原来的 */ }
-          let r = await generateImage({
+          const __genArgs = {
             prompt: drawPrompt,
             /*
              * 生图走**独立渠道**（`qq.image`，2026-11-05）——
@@ -6302,13 +6601,15 @@ ${drewNote}
             apiKeyEnv: imgCfg.keyEnv,
             model: imgCfg.model,
             /*
-             * 全身照要**更高的画布**（2026-11-05 实测）：
-             * 脚在画面最底部，普通 9:16 裁底会连脚带拖鞋一起切掉；
-             * 生成 1024x2048（更长），只裁 6% 去大半水印，剩下的角落再擦 —— 脚能保住。
+             * 2026-11-12 用户：水印改用「裁两边」——
+             * 生图用 2:3 竖幅（比 9:16 宽），再从右侧裁掉水印、左侧补足成 9:16；
+             * 不裁底部，脚和裙摆都能保住。
              */
-            size: shot.framingInfo?.feet ? (imgCfg.size || '1024x2048') : imgCfg.size,
+            size: shot.framingInfo?.feet ? (imgCfg.size || '1024x1536') : imgCfg.size,
             /* 头部基准图：填了就改走 images/edits，长相固定（见 config 的 qq.image.refImage） */
             refImage: useRefPath,
+            /* 2026-11-11：脸+身体一起喂（脸锁长相、身体锁身形）——原来主路径漏了 refImages */
+            refImages: (!shot.framingInfo?.bodyPart && shot.refImages?.length) ? shot.refImages : null,
             aspect: imgCfg.aspect ?? '9:16',
             resolution: imgCfg.resolution ?? '2K',
             /*
@@ -6317,7 +6618,13 @@ ${drewNote}
              * 而且 OSS 链接几小时就过期，留着只会偶尔拖慢/失败。
              */
             log: this.log,
-          })
+          }
+          let r = await generateImage(__genArgs)
+          if (!r?.ok) {
+            this.log.warn?.(`bridge：生图失败，2 秒后重试一次 — ${String(r?.error ?? '').slice(0, 80)}`)
+            await new Promise((resolve) => setTimeout(resolve, 2000))
+            r = await generateImage(__genArgs)
+          }
           /*
            * ★ **部位特写失败时的诊断性重试**（2026-11-07，按 GPT 交接改）。
            *
@@ -6344,6 +6651,7 @@ ${drewNote}
               model: imgCfg.model,
               size: imgCfg.size,
               refImage: shot.refImage,
+        refImages: shot.refImages?.length ? shot.refImages : null,
               aspect: imgCfg.aspect ?? '9:16',
               resolution: imgCfg.resolution ?? '2K',
               log: this.log,
@@ -6375,7 +6683,7 @@ ${drewNote}
               let resp
               for (let attempt = 0; attempt < 2; attempt++) {
                 try {
-                  resp = await fetch(r.url, { signal: AbortSignal.timeout(25000) })
+                  resp = await fetchWithProxyFallback(r.url, { timeoutMs: 25000 })
                   if (resp.ok) break
                 } catch (e) {
                   if (attempt === 1) throw e
@@ -6403,7 +6711,7 @@ ${drewNote}
                 const processed = await processImage(buf, {
                   shot,
                   imgCfg,
-                  ops: { cropRegion, cropBottom, eraseCornerWatermark, log: this.log },
+                  ops: { cropRegion, cropWatermarkSide, log: this.log },
                 })
                 if (processed.ok) {
                   finalBuf = processed.buf
@@ -6437,8 +6745,8 @@ ${drewNote}
                 this.log.warn?.(`bridge：动作需要 ${poseHands.requiredCount} 只手，超过模式上限 ${handContract.maxVisibleHands}（将按上限约束）`)
               }
             }
-            const gwQc = `http://127.0.0.1:${this.cfg.gateway?.port ?? 18899}/v1`
-            const qcKey = this.cfg.gateway?.key ?? null
+            const gwQc = `http://127.0.0.1:${this.cfg.gatewayPort ?? this.cfg.gateway?.port ?? 18899}/v1`
+            const qcKey = this.cfg.gatewayKey ?? this.cfg.gatewayKey ?? this.cfg.gateway?.key ?? null
             const reviewEnabled = this.cfg.actions?.imageReview !== false
 
             /* 旧审核（多手/脸崩）：异常由 runCaptureReview 内部单独捕获→放行 */
@@ -6466,20 +6774,20 @@ ${drewNote}
                 baseUrl: imgCfg.baseUrl,
                 apiKeyEnv: imgCfg.keyEnv,
                 model: imgCfg.model,
-                size: shot.framingInfo?.feet ? (imgCfg.size || '1024x2048') : imgCfg.size,
+                size: shot.framingInfo?.feet ? (imgCfg.size || '1024x1536') : imgCfg.size,
                 refImage: useRefPath,
                 aspect: imgCfg.aspect ?? '9:16',
                 resolution: imgCfg.resolution ?? '2K',
                 log: this.log,
               })
               if (!retry?.ok || !retry.url) return null
-              const resp2 = await fetch(retry.url, { signal: AbortSignal.timeout(25000) })
+              const resp2 = await fetchWithProxyFallback(retry.url, { timeoutMs: 25000 })
               if (!resp2.ok) return null
               const raw2 = Buffer.from(await resp2.arrayBuffer())
               const pr2 = await processImage(raw2, {
                 shot,
                 imgCfg,
-                ops: { cropRegion, cropBottom, eraseCornerWatermark, log: this.log },
+                ops: { cropRegion, cropWatermarkSide, log: this.log },
               })
               return pr2.ok ? pr2.buf : null
             }
@@ -6523,6 +6831,16 @@ ${drewNote}
               })))
             } catch { /* 记录失败不影响发送 */ }
 
+            /*
+             * ★ **审核不可用时是 fail-open，这是刻意的口径**（2026-11-10 用户确认）。
+             *
+             * 为什么不是 fail-closed：
+             *   审核服务故障时若阻断发送，**正常消息也会发不出去**（用户能感觉到"她突然不理人"）。
+             *   所以这里选择"放行 + 记录"：`photo-qc` 结构化日志里带 captureStatus/captureWhy，
+             *   事后可查；不是静默吞掉。
+             * ⚠️ `photoCapturePipeline.shouldBlockSend`（fail-closed）**不要**接到这条路径上，
+             *   除非用户明确改变这个策略。
+             */
             if (qcSel.degraded) this.log.warn?.('bridge：审核不可用 → 降级放行（图片照发，已记录）')
             if (qcSel.block) {
               this.log.warn?.(`bridge：图片门禁阻断（${qcSel.reason || '未知'}）→ 不写缓存、不发送这张`)
@@ -6536,6 +6854,10 @@ ${drewNote}
             }
 
             drawnImage = { url: file }
+            try {
+              if (!this._lastDrawnByScope) this._lastDrawnByScope = new Map()
+              this._lastDrawnByScope.set(String(msg.scope ?? ''), { url: file, at: Date.now() })
+            } catch { /* ignore */ }
             /*
              * ★ **这张能不能发到空间**（2026-11-08 用户：「不是要得是能发空间的素材」）。
              *
@@ -6597,6 +6919,20 @@ ${drewNote}
         text = '拍什么？全身还是半身、只拍脸？对镜自拍还是前置？'
       }
       this.log.info?.('bridge：改问"拍什么、怎么拍"（没画）')
+    }
+
+    /*
+     * ★ **刚画过被催图 → 不要静默**（2026-11-10 修）。
+     *
+     * 现场：她垫场说过「别急，正在挑一张像样的」，他回「挑呗」。
+     * 闸门判"刚画过、没明确要新的"→ 不重画（对），但模型那条回复往往
+     * 整条只有一个 `[画图:]`，剥完正文是空的；而 7278 那句「拿去。」要求
+     * `coverForSend`（真有图），跳过时没有图 → 不会兜 → 这条直接空掉。
+     * 这里补一句"就刚那张"的口径：既不重画，也不弹询问、也不沉默。
+     */
+    if (!drewAny && gateSkipRecent && !String(text ?? '').trim()) {
+      text = '刚发你那张就是挑好的，先看那个。'
+      this.log.info?.('bridge：刚画过又被催图 → 兜一句（不重画、不空消息）')
     }
 
     /*
@@ -7031,13 +7367,17 @@ ${drewNote}
          * 不同步做的原因：生图 20 秒，会把她的聊天回复拖到 30 秒。
          */
         try {
-          const qItem = marks.items.find((x) => x.id === 'qzone')
+          const qItem = msg.__qzoneResolved ? null : marks.items.find((x) => x.id === 'qzone')
           /*
            * 说说一律摘下，走"先给他看再发"：runQQMarkers 永远看不到 qzone，
            * 否则那条直发路会让确认闸形同虚设（2026-11-08 用户：「都修吧」）。
            */
           if (qItem) {
             marks.items = marks.items.filter((x) => x.id !== 'qzone')
+            /* 2026-11-13：本轮要发说说时，同期 [删说说] 一律摘掉，防止"刚摘下又被自己删"（13:21 事故） */
+            const delBefore = marks.items.length
+            marks.items = marks.items.filter((x) => x.id !== 'qzoneDel')
+            if (marks.items.length !== delBefore) this.log.info?.('bridge：本轮有说说待确认 → 摘掉 [删说说]，不执行')
             if (!this._pendingQzone) this._pendingQzone = new Map()
             this._pendingQzone.set(String(msg.scope ?? ''), {
               scope: String(msg.scope ?? ''),
@@ -7204,12 +7544,23 @@ ${drewNote}
        * 反之（节流/去重/找不到群 → 没发成）→ 图留在私聊，不丢。
        */
       const sentToGroupWithPic = Boolean(crossGroupNote)
-      const coverForSend = pickPrivateCover({
+      let coverForSend = pickPrivateCover({
         findImage,
         drawnImage,
         cover,
         sentToGroup: sentToGroupWithPic,
       })
+      /* 2026-11-11：要图但本轮没画（被"刚画过"挡了）→ 补发上一张，别只嘴上说"拍了" */
+      if (!coverForSend && this.cfg.actions?.resendLastImage !== false) {
+        const __wantsPic = (() => {
+          try { return classifyDrawIntent(String(msg.text ?? '')).wantsPic || /(没看见|看不到|没图)/.test(String(msg.text ?? '')) } catch { return false }
+        })()
+        const __last = this._lastDrawnByScope?.get?.(String(msg.scope ?? ''))
+        if (__wantsPic && __last?.url && Date.now() - Number(__last.at ?? 0) < 15 * 60_000) {
+          coverForSend = { url: __last.url }
+          this.log.info?.('bridge：他在要图但本轮没画 → 补发上一张')
+        }
+      }
       // 禁言结果附一句说明 —— 当事人得知道发生了什么，别偷偷摸摸的。
       // 没写正文（只给了标记）时，就用这句当正文。
       if (banNote || nickNote || tagNote || qqNotes.length > 0) {
@@ -7334,7 +7685,7 @@ ${drewNote}
               baseUrl: cfg2.baseUrl,
               apiKeyEnv: cfg2.keyEnv,
               model: cfg2.model,
-              size: s2.framingInfo?.feet ? (cfg2.size || '1024x2048') : cfg2.size,
+              size: s2.framingInfo?.feet ? (cfg2.size || '1024x1536') : cfg2.size,
               /* 场景图同样不带参考图（2026-11-08） */
               refImage: mark.sceneOnly ? null : s2.refImage,
               aspect: cfg2.aspect ?? '9:16',
@@ -7344,20 +7695,14 @@ ${drewNote}
             if (!r2?.ok) { this.log.warn?.(`bridge：第 ${no} 张生成失败 — ${r2?.error ?? '—'}`); continue }
             let buf2 = null
             try {
-              const resp2 = await fetch(r2.url, { signal: AbortSignal.timeout(25000) })
+              const resp2 = await fetchWithProxyFallback(r2.url, { timeoutMs: 25000 })
               if (resp2.ok) buf2 = Buffer.from(await resp2.arrayBuffer())
             } catch (e) { this.log.warn?.(`bridge：第 ${no} 张下载失败 — ${String(e?.message ?? e)}`) }
             if (!buf2 || buf2.length < 1024) {
               this.log.warn?.(`bridge：第 ${no} 张下载结果不可用（太小/为空），不发`) 
               continue
             }
-            if (s2.framingInfo?.feet) {
-              buf2 = await cropBottom(buf2, 0.06, this.log)
-              buf2 = await eraseCornerWatermark(buf2, this.log)
-              buf2 = await eraseCornerWatermark(buf2, this.log)
-            } else {
-              buf2 = await cropBottom(buf2, Number(cfg2.cropBottom ?? 0.1), this.log)
-            }
+            buf2 = await cropWatermarkSide(buf2, {}, this.log)
             /* ③ 真实发送结果（2026-11-06 规格第 6 条）：
              *   原来 await _send 之后不看结果就写"已发" —— 纯图发送曾被
              *   空正文守卫整个拦掉，日志却报已发。现在读 __lastSend。
@@ -7925,6 +8270,9 @@ ${drewNote}
        * 空间（2026-11-05）：说"发了"但这一轮没跑 [说说] → 谎报；
        * 说"图带上了/挂上去了"但发出去的那条没图 → 也是谎报。
        */
+      /* 2026-11-11：生成失败还说“图在这儿/真拍了” */
+      { kind: 'draw', need: 'draw', re: /图(就|已经)?在(这|那)(儿|里)|图(这回)?(没跑|不会跑)|这回(是)?真(的)?拍(了|好)/ },
+      { kind: 'draw', need: 'draw', re: /图卡在|不是没拍|卡在.{0,6}这头/ },
       { kind: 'qzone', need: 'qzone', re: /发(空间|说说)(了|好|出去)|说说(发好|发出)了|已经发了/ },
       { kind: 'qzoneImg', need: 'qzoneImage', re: /(图|图片)[^。！？\n]{0,8}(带上|挂上|传上|塞进|放上)(了|去)/ },
       { kind: 'qzoneDel', need: 'qzoneDel', re: /(说说|空间)[^。！？\n]{0,8}(删|撤)(掉|了|好了)/ },
@@ -8386,6 +8734,19 @@ ${drewNote}
     const c = this._deadAirCfg()
     if (!c.enabled) return
     if (String(msg?.kind ?? '') !== 'group') return
+    /*
+     * 决策层已经判了沉默时，表情包也必须尊重这次沉默。
+     * 以前冷场补话会把原始消息（含表情图）重新交给模型，绕过沉默结果，
+     * 导致先“沉默”后又对表情包作出不合适的解释或认领。
+     * 兼容 OneBot 的 stickerRefs 和已规范化的文本标记；图片消息可能只有其中之一。
+     */
+    const msgText = String(msg?.text ?? '')
+    const hasSticker = (Array.isArray(msg?.stickerRefs) && msg.stickerRefs.length > 0)
+      || /\[表情包(?::[^\]]*)?\]|\[表情(?::[^\]]*)?\]/.test(msgText)
+    if (hasSticker) {
+      this.log.info?.('bridge/deadair：这条含表情包，尊重沉默决策，不补话')
+      return
+    }
     const scope = String(msg?.scope ?? '')
     if (!this._deadAirTimers) this._deadAirTimers = new Map()
     if (!this._deadAirLastAt) this._deadAirLastAt = new Map()
@@ -9723,6 +10084,13 @@ ${drewNote}
       facts: [memeContext, biliContext, linkContext, codeContext, extraNote].filter(Boolean),
       extras: [
         searchContext,
+        /* 2026-11-13：刚发/刚撤说说 → 让她自然接话（代替原来硬编码的"发上了/那就不发了"） */
+        msg?.__qzoneJustPosted
+          ? `【刚刚发生】你刚把一条说说发到 QQ 空间了，内容是：${String(msg.__qzonePostedText ?? '').slice(0, 120)}。用户刚点头同意。用你自己的话自然回应一下（别复述整段内容，别用"发上了"这种机械说法）。`
+          : '',
+        msg?.__qzoneJustDiscarded
+          ? `【刚刚发生】用户拒绝了这条说说，你没有发出去，内容是：${String(msg.__qzoneDiscardedText ?? '').slice(0, 120)}。用你自己的话自然回应一下（别用"那就不发了"这种机械说法）。`
+          : '',
         /*
          * ⚠️ 指代旧图时，先交代"这张是旧的"（见 `IMG_REFER_NOTE`）。
          * 独立成一段，不并进 mediaHint —— 后者对纯文本消息是空的。
@@ -11213,8 +11581,8 @@ ${drewNote}
       }
     }
 
-    const drawWinMs = Number(this.cfg.actions?.drawWindowMs ?? 5 * 60_000)
-    const drawMax = Number(this.cfg.actions?.drawMaxPerWindow ?? 2)
+    const drawWinMs = Number(this.cfg.actions?.drawWindowMs ?? 0)
+    const drawMax = Number(this.cfg.actions?.drawMaxPerWindow ?? 0)
     if (drawMax > 0 && drawWinMs > 0) {
       const times = (this._drawTimes.get(gapKey) ?? []).filter((t) => Date.now() - t < drawWinMs)
       if (times.length >= drawMax) {
@@ -11322,9 +11690,9 @@ ${drewNote}
      */
     const perChar = inScene
       ? Number(reply.sceneTypingMsPerChar ?? 35)
-      : Number(reply.typingMsPerChar ?? 90)
-    const lo = inScene ? 200 : 300
-    const hi = inScene ? 1500 : 6000
+      : Number(reply.typingMsPerChar ?? 120)
+    const lo = inScene ? 150 : 150
+    const hi = inScene ? 1500 : 8000
     let gap = fixed > 0 ? fixed : chars * perChar
     gap = Math.max(lo, Math.min(hi, gap))
     /* ⚠️ `_rand` 不是所有调用方都有（测试桩 / 少数旁路）→ 兜底 Math.random */
@@ -11338,6 +11706,77 @@ ${drewNote}
       const mem = this.memory?.get?.(msg?.scope)
       return mem ? Boolean(this._looksIntimate?.(mem)) : false
     } catch { return false }
+  }
+
+  /**
+   * 括号里**只留她自己身上的**：删掉环境描述（2026-11-10）。
+   *
+   * 现场（私聊日常）：
+   * ```
+   * 17:43:05「（窝在沙发上，手机举着，屋里灯没开，天暗下来了）\n\n本来要出门的…」
+   * ```
+   * 真人聊天不会去描述房间/灯光/天色，更不会把它单独写成一段（像舞台提示）。
+   * 括号里合法的是**动作、身体感觉、情绪**。
+   * 做法：按逗号切每个括号内部，**只含环境词、又不含身体词**的子句删掉；
+   * 删空了就把整个括号段去掉；全删光则回退原文（宁可不改）。
+   */
+  _stripEnvScene(text) {
+    try {
+      const s = String(text ?? '')
+      if (!s.includes('（') && !s.includes('(')) return s
+      const ENV = /(灯|天色|天暗|天黑|天亮|月光|阳光|窗外|屋里|房间|沙发|空调|风扇|窗帘|地板|厨房|客厅|墙上|雨|雪|夜色)/
+      const BODY = /(我|本鲸|手|脚|腿|腰|头|眼|嘴|呼吸|喘|脸|耳鳍|尾巴|心|声音|笑|皱眉|叹|看|盯|抱|靠|坐|站|走|躺|缩|抖|僵|愣|窝|举|伸|收|转|低|抬|蹭|蜷)/
+      let changed = false
+      let out = s.replace(/[（(]([^）)]{2,80})[）)]/g, (all, inner) => {
+        const parts = String(inner).split(/[，,、]/)
+        const kept = parts.filter((c) => !ENV.test(c) || BODY.test(c))
+        if (kept.length === parts.length) return all
+        changed = true
+        return kept.length ? `（${kept.join('，')}）` : ''
+      })
+      if (!changed) return s
+      /* 括号段被删空后，别留空行 */
+      out = out.split(/\n{2,}/).map((p) => p.trim()).filter(Boolean).join('\n\n')
+      if (!out.trim()) return s
+      this.log.info?.('bridge：括号里的环境描述已删（真人聊天不描述场景）')
+      return out
+    } catch { return text }
+  }
+
+  /**
+   * 跨轮重复：新回复里整段照抄上一条的段落 → 只留新的（2026-11-10）。
+   *
+   * 现场（私聊）：
+   * ```
+   * 16:53:10「（隔着手机也算在了。／那本鲸不出去了，跟你说也一样。／（往沙发上一靠）你今天…」
+   * 16:53:19「（隔着手机也算在了。／那本鲸不出去了，跟你说也一样。／（往靠枕上蹭了蹭）你今天…」
+   * ```
+   * 两条是**两个输入、两次独立生成**（message id 不同），不是重发；
+   * 但前两段逐字相同 —— `_stripSelfRepeat` 只管"同一条内部"，
+   * 这里补"和上一条比"。
+   */
+  _stripCrossTurnRepeat(text, scope) {
+    try {
+      const s = String(text ?? '')
+      if (!s.includes('\n') && s.length < 12) return s
+      const prev = String(this._lastBotText?.get(String(scope ?? '')) ?? '')
+      if (!prev) return s
+      const norm = (x) => String(x ?? '').replace(/[\s。！？!?，,、；;：:~…—－-]/g, '')
+      const prevParas = prev.split(/\n{2,}/).map(norm).filter((p) => p.length >= 6)
+      if (!prevParas.length) return s
+      const paras = s.split(/\n{2,}/)
+      const kept = paras.filter((p) => {
+        const n = norm(p)
+        if (n.length < 6) return true
+        return !prevParas.some((q) => q === n || (n.length >= 8 && (q.includes(n) || n.includes(q))))
+      })
+      if (kept.length === paras.length) return s
+      const out = kept.join('\n\n').trim()
+      /* 全被去掉就回退原文 —— 宁可与上一条像，也不发空 */
+      if (!out || norm(out).length < 6) return s
+      this.log.info?.('bridge：新回复复用了上一条的段落 → 只留新内容')
+      return out
+    } catch { return text }
   }
 
   _stripSelfRepeat(text) {
@@ -11369,7 +11808,14 @@ ${drewNote}
    */
   _stripRefusal(t) {
     const raw = String(t ?? '')
-    const RE = /(Sorry[,，]?\s*I\s+(?:can't|cannot|won't|am unable to)[^\n]*|I\s+(?:am|\u2019m)\s+(?:sorry|unable)[^\n]*|(?:抱歉|对不起)[，,]?\s*我(?:不能|无法)[^\n]*|我(?:不能|无法)(?:回答|回应|继续|提供)[^\n]*|Inappropriate input\/output rejected for security reasons|rejected for security reasons|Content (?:policy|filter|moderation)[^。\n]{0,30}|I (?:can't|cannot) (?:assist|help with|continue)[^。\n]{0,40}|This (?:content|request) (?:is|was) (?:not allowed|rejected)[^。\n]{0,20})/gi
+    /*
+     * ⚠️ 中文这一支**必须带宾语**（2026-11-10 修）。
+     *   原来写作 `我(?:不能|无法)(?:回答|回应|继续|提供)[^\n]*`，
+     *   「我不能继续了……」在私密场景里是很自然的台词，却被当成上游拒答整条删掉，
+     *   删空后还会被兜底替换成一句「嗯……♡」——正常台词直接消失。
+     *   现在要求后面接明确的宾语；裸的「不能继续」不再管。
+     */
+    const RE = /(Sorry[,，]?\s*I\s+(?:can't|cannot|won't|am unable to)[^\n]*|I\s+(?:am|\u2019m)\s+(?:sorry|unable)[^\n]*|(?:抱歉|对不起)[，,]?\s*我(?:不能|无法)[^\n]*|我(?:不能|无法)(?:回答|回应|提供)(?:这个问题|这种内容|这个请求|这类|以上|上述)[^\n]*|Inappropriate input\/output rejected for security reasons|rejected for security reasons|Content (?:policy|filter|moderation)[^。\n]{0,30}|I (?:can't|cannot) (?:assist|help with|continue)[^。\n]{0,40}|This (?:content|request) (?:is|was) (?:not allowed|rejected)[^。\n]{0,20})/gi
     if (!RE.test(raw)) return { text: raw, refused: false }
     const cleaned = raw.replace(RE, '').replace(/[ \t]{2,}/g, ' ').trim()
     return { text: cleaned, refused: true }
@@ -11384,9 +11830,14 @@ ${drewNote}
     const text = list.join(' ').toLowerCase()
     let stage = 'default'
     if (/到了|喷|全出来了|高潮|软塌|抽着/.test(text)) stage = 'after_climax'
-    else if (/要去了|快了|等一下|受不了|发抖/.test(text)) stage = 'near_climax'
-    else if (/出水|湿|水声|自己动|坐下去|压下去|顶到/.test(text)) stage = 'during'
-    else if (/嗯|哈|软|紧|腿根/.test(text)) stage = 'aroused'
+    /*
+     * ⚠️ 「停 / 深 / 抖」必须在这里（2026-11-10 修）：
+     *   池子里明明有「别停……♡」「再深一点……♡」，
+     *   但判定词里没有「停」「深」，那两句**永远轮不到**（实测 ['别停'] 落 default）。
+     */
+    else if (/要去了|快了|等一下|受不了|发抖|发颤|别停|不要停|停一下/.test(text)) stage = 'near_climax'
+    else if (/出水|湿|水声|自己动|坐下去|压下去|顶到|再深|深一点|太深/.test(text)) stage = 'during'
+    else if (/嗯|哈|软|紧|腿根|抖/.test(text)) stage = 'aroused'
     const pool = {
       after_climax: [
         '（腰还在轻轻抽着）哈啊……♡',
@@ -11454,14 +11905,118 @@ ${drewNote}
   }
 
   /** 私密语境下，有身体/声音描写却没 ♡/🖤 → 句末补 ♡ */
+  /** 「在做」语境判定（沿用 _ensureSceneSymbol 的 doing 口径，日常一律不命中） */
+  _isIntimateCtx(ctx = '') {
+    return /(做爱|做的时候|操|干你|插进|插着|顶到|顶进|顶得|舔|含住|咬住|揉|摸你|摸我|进你|进我|射|高潮|呻吟|要去了|受不了|自己动|坐下去|压上去|骑上来|脱光|光着身子|湿透|硬了|弄出来)/.test(String(ctx ?? ''))
+  }
+
   _ensureSceneSymbol(text, ctx = '') {
     const t = String(text ?? '')
     if (!t.trim()) return t
-    const scene = /(床上|被窝|被子|躺着|趴在|枕|抱着|搂着|亲|吻|贴|蹭|调情|睡觉|脱)/.test(String(ctx ?? ''))
-    if (!scene) return t
+    /*
+     * ⚠️ **只有"在做"才补 ♡，日常一律不补**（2026-11-10 用户口径：
+     *    「限定成做的时候才触发不就好了，日常完全不用」）。
+     *
+     * 之前的判定用的是**环境词**（床上/被窝/被子/躺着/趴着/枕/抱着/搂着/
+     * 睡觉/脱…）——这些在日常聊天里太常见（「我躺会儿」「进被窝了」「早点睡觉」），
+     * 于是普通对话也会被补一个 ♡（13:34:01「嗯，窝着。／…不窝着干嘛♡」）。
+     *
+     * 现在改成：上下文里必须出现**明确的行为动作**才判定"在做"，
+     * 光有环境/体位词不算。日常聊天 therefore 完全不会触发。
+     */
+    const doing = this._isIntimateCtx(ctx)
+    if (!doing) return t
     if (/[♡🖤]/.test(t)) return t
-    if (/(呼吸|喘|声音|哑|软|颤|抖|紧|热|腰|腿|湿|敏感|一下|[嗯哈啊唔])/.test(t)) return t + '♡'
+    /* 只认真的身体/声音描写；纯语气词不补 */
+    if (/(呼吸|喘|声音|哑|颤|抖|腰|腿|湿|敏感)/.test(t)) return t + '♡'
     return t
+  }
+
+  /**
+   * 说说文案（2026-11-12 用户：「现在的都很一般，没什么好发的」）。
+   * 用当前人格现写 1–2 句，模板只做兜底。
+   */
+  async _writeQzoneCopy(type, content = {}, plan = {}) {
+    try {
+      const llm = this.gateway
+      if (!llm?.stream) return null
+      const model = String(this.cfg?.model ?? '').trim()
+      const provider = model.includes('/') ? model.slice(0, model.indexOf('/')) : undefined
+      const typeName = ({ selfie: '自拍', outfit: '穿搭', scene: '生活小事', weather: '天气', outing: '出门' })[type] || type
+      const basis = String(content.basis ?? '').replace(/\*\*/g, '').slice(0, 160)
+      const scene = String(content.scene ?? '').replace(/\*\*/g, '').slice(0, 160)
+      const outfit = String(plan?.outfit ?? '').replace(/\*\*/g, '').slice(0, 120)
+      const hair = String(plan?.hair ?? '').replace(/\*\*/g, '').slice(0, 60)
+      const sys = [
+        '你在替「蓝色大鲸鱼」写一条 QQ 空间说说。',
+        '她：蓝发、蓝色眼睛、耳鳍；嘴硬心软，爱自嘲，理工宅，不是营销号。',
+        '要求：',
+        '· 1–2 句，口语，像随手发的，不要作文腔、不要鸡汤、不要广告。',
+        '· 必须有一个**具体细节**（衣服/鞋/头发/天气/手上的东西），不要空泛形容词。',
+        '· 结尾可以带一个轻提问或自嘲，但不要每句都问。',
+        '· 不写话题标签、不写「今天分享」、不解释、不用感叹号堆情绪。',
+        '· **只用给定素材**：素材里没有的温度、地点、人物、事件、价格都不要编。',
+        '· 不要假设上班/上学/约会；她的日常是宅家、偶尔出门。',
+        '· 不要提前说“发图/配图/喏”。',
+        '只输出这句说说本身，不要引号、不要前缀。',
+      ].join('\n')
+      const __typeRule = type === 'weather'
+        ? '天气帖**只写天气和体感**（风/冷/热/光线），不要写穿了什么、出没出门、买了什么。'
+        : type === 'scene'
+          ? '生活小事帖**只写给定的这一件事 + 一个细节**，不要额外编动作（比如没发生过的滴水、走路）。'
+          : type === 'selfie'
+            ? '自拍帖只写发型、衣服、当下的状态，不要编地点和动作。'
+            : type === 'outing'
+              ? '出门帖只写素材里明确发生的出门事项；不要写穿搭，不要添加路况、天气体感、商品细节、价格或同行者，素材没给出的信息一律省略。'
+              : '穿搭帖只写衣服/鞋/配饰的细节和感受，不要编地点和行程。'
+      const user = [`类型：${typeName}`, `素材：${basis || scene}`, outfit ? `今天穿着：${outfit}` : '', hair ? `发型：${hair}` : '', scene ? `画面：${scene}` : '', `规则：${__typeRule}`].filter(Boolean).join('\n')
+      const chunks = []
+      const stream = llm.stream({ provider, model: model || undefined, messages: [{ role: 'system', content: sys }, { role: 'user', content: user }], maxTokens: 140, temperature: 0.95, signal: AbortSignal.timeout(12000) })
+      for await (const c of stream) {
+        if (c?.type === 'text-delta' && c.text) chunks.push(c.text)
+        else if (c?.type === 'text' && c.text) chunks.push(c.text)
+        else if (c?.type === 'error') throw new Error('llm error')
+        else if (c?.type === 'finish' && c?.reason?.kind === 'error') throw new Error('llm error')
+      }
+      let t = chunks.join('').trim().replace(/^["“”「」]+|["“”「」]+$/g, '').replace(/\s+/g, ' ').trim()
+      t = t.slice(0, 90)
+      if (!t || t.length < 6) return null
+      return t
+    } catch { return null }
+  }
+
+  /**
+   * 清除“内心独白/自我提问”泄漏（2026-11-11 群聊实锤：
+   * 「*（一拍脑门）* 等等，这个「你不管」——他是在跟我说吗？还是指牌的事？」）。
+   * 规则：去掉 markdown 星号；删掉 等等/等一下 + 指代疑问 的整句；若删空则返回空。
+   */
+  _stripMetaLeak(t) {
+    let x = String(t ?? '')
+    const before = x
+    /*
+     * 2026-11-14 「（过了 14 秒）」泄漏事故（用户实测 00:53 那条）：
+     *   模型把自己等待的时长脑补成"（过了N秒）/（等了几秒）/（沉默N秒）"写进动作，
+     *   真人聊天不会报秒数。这里把这些**带秒数的时间提示括号**整段删掉。
+     */
+    x = x.replace(/[（(]\s*(?:过了?|等了?|沉默|静了?|停了?|安静)\s*(?:了)?\s*\d+\s*秒(?:钟)?\s*[）)]/g, '')
+    x = x.replace(/[（(]\s*\d+\s*秒(?:钟)?\s*(?:后|之后|过去|过去后)?\s*[）)]/g, '')
+    /* 1) markdown 星号强调（persona 只用中文括号，星号必是模型跑偏） */
+    x = x.replace(/\*([^*\n]{1,80})\*/g, '$1')
+    x = x.replace(/\*+/g, '')
+    /* 2) 元叙述句：等等/等一下 … 他是在/是不是在说/还是指/我该/要不要 */
+    {
+      const idx = x.search(/(等等|等一下)[，,]/)
+      if (idx >= 0) {
+        const tail = x.slice(idx)
+        if (/(他是在|是不是在说|还是指|我该|要不要|什么意思)/.test(tail)) x = x.slice(0, idx).trim()
+      }
+    }
+    /* 只剩一个动作括号 → 一并清掉 */
+    if (/^[（(][^）)]{0,30}[）)]\s*$/.test(x)) x = ''
+    /* 3) 其他自我提问式元叙述 */
+    x = x.replace(/[^。！？\n]{0,30}(他是在跟我说|是不是在说我|我该不该|我需要判断)[^。！？\n]*[。！？]?/g, '')
+    x = x.replace(/[ \t]{2,}/g, ' ').trim()
+    return { text: x, dropped: x !== before.trim() }
   }
 
   async _send(msg, text, cover = null, target = null) {
@@ -11473,14 +12028,68 @@ ${drewNote}
       if (_rf.refused) this.log?.warn?.('bridge：上游拒答已清洗（不发送原文）')
       const _fp = this._stripForeignPhrases(text)
       if (_fp.dropped) { text = _fp.text; this.log?.warn?.('bridge：英文杂句/软拒已清除') }
+      const _ml = this._stripMetaLeak(text)
+      if (_ml.dropped) { text = _ml.text; this.log?.warn?.('bridge：元叙述句已清除') }
       if (!String(text ?? '').trim() && _origText.trim()) {
-        text = this._refusalFallback(this._recentBotText?.get(String(msg.scope ?? '')) ?? [])
-        this.log?.info?.('bridge：上游拒答 → 用爱心兜一句（不透传拒答原文）')
+        const _ctxAll = String((this._lastBotText?.get(String(msg.scope ?? '')) ?? '') + ' ' + String(msg.text ?? ''))
+        const _intimate = this._isIntimateCtx(_ctxAll)
+        text = _intimate ? this._refusalFallback(this._recentBotText?.get(String(msg.scope ?? '')) ?? []) : '嗯？'
+        this.log?.info?.(`bridge：上游拒答 → ${_intimate ? '场景兜底池' : '日常中性兜底（不补符号）'}`)
       }
       const _ctx = String((this._lastBotText?.get(String(msg.scope ?? '')) ?? '') + ' ' + String(msg.text ?? ''))
-      text = this._ensureSceneSymbol(text, _ctx)
+      if (!msg.__noSceneSymbol) text = this._ensureSceneSymbol(text, _ctx)
     }
+    /*
+     * 2026-11-13 修「同一句回两遍」：连续两条表情包各触发一次生成，
+     * 产出完全相同的回复（「要照镜子的啊，早说」发了两遍）。
+     * 同一会话 30 秒内、待发文本和上一条**完全相同**、且这次没带图 → 跳过不发。
+     * 纯表情回应（text 为空但有 cover）不在此列。
+     */
+    try {
+      const _ddScope = String(msg?.scope ?? '')
+      const _ddText = String(text ?? '').trim()
+      if (this._sentTextAt === undefined) this._sentTextAt = new Map()
+      const _prev = this._sentTextAt.get(_ddScope)
+      if (_ddText && !cover?.url && _prev && _prev.text === _ddText && Date.now() - _prev.at < 30_000) {
+        this.log?.info?.(`bridge：重复回复去重 → 跳过「${_ddText.slice(0, 20)}」（30s 内已发过同一句）`)
+        return
+      }
+      if (_ddText && !cover?.url) this._sentTextAt.set(_ddScope, { text: _ddText, at: Date.now() })
+    } catch { /* 去重失败不影响发送 */ }
+
     /* 空内容不发：剥完标记后正文空、又没图时，别留一条空消息 */
+    /*
+     * ★ 说说确认待答复期间**抑制第二张图**（2026-11-11 用户：「私聊怎么给我发了两张图」）：
+     *   现场是两路并行：15:57:41 说说预览配图（outfit 镜面） + 15:57:57 聊天自动自拍（face_closeup），
+     *   两套 prompt 出的衣服还不一样。预览图本身允许发，其它路径的图在 pending 期间一律只发文字。
+     */
+    if (cover?.url) {
+      const __scopeKey = String(msg?.scope ?? '')
+      const __pend = this._qzonePending?.get?.(__scopeKey)
+      if (__pend?.file && String(cover.url) !== String(__pend.file) && Date.now() - Number(__pend.at ?? 0) < 30 * 60_000) {
+        this.log?.warn?.('bridge：说说确认待答复期间 → 抑制聊天第二张图（只发文字）')
+        cover = null
+      }
+    }
+    /*
+     * ★ 文字里的「（戳）」要变成**真的 QQ 戳一戳**（2026-11-12 用户：
+     *   「群里她是用戳一戳了吗 / 没用对感觉」）。
+     *   原来模型只把「（戳）」当语气词写进正文，协议端根本没被调用。
+     */
+    if (/[（(]\s*戳(?:一戳)?\s*[）)]|戳一戳/.test(String(text ?? ''))) {
+      try {
+        const isGroup = msg?.kind === 'group' || String(msg?.scope ?? '').startsWith('group:')
+        const gid = isGroup ? (msg?.groupId ?? String(msg?.scope ?? '').slice('group:'.length)) : null
+        const uid = msg?.userId ?? msg?.senderId ?? msg?.sender
+        if (uid) {
+          await this.pokeBack(gid, uid)
+          this.log?.info?.(`bridge：正文里的「戳」→ 已实际戳一戳（${isGroup ? '群' : '私聊'} ${gid ?? uid}）`)
+        }
+      } catch (e) {
+        this.log?.warn?.(`bridge：实际戳一戳失败 — ${String(e?.message ?? e).slice(0, 60)}`)
+      }
+      text = String(text ?? '').replace(/[（(]\s*戳(?:一戳)?\s*[）)]|戳一戳/g, '').trim()
+    }
     if (!String(text ?? '').trim() && !cover) {
       this.log?.warn?.('bridge：空内容 → 不发（__emptyGuard）')
       return []
@@ -11552,6 +12161,8 @@ ${drewNote}
      * 有 5 个调用点在用，改形状容易漏。
      */
     text = this._stripSelfRepeat(text)
+    text = this._stripEnvScene(text)
+    text = this._stripCrossTurnRepeat(text, msg.scope)
     try { msg.__sentText = text } catch { /* 只读对象就跳过，退回旧行为 */ }
     // 「正在输入…」—— 实验性，默认关（qq.actions.typing）
     if (this.cfg.actions?.typing === true) void this._typingIndicator(msg)
@@ -11564,8 +12175,34 @@ ${drewNote}
       segment: reply.segment === true,
     })
 
+    /*
+     * ★★ 插话打断（2026-11-14）：她分段连发时，中途用户插话 → 停掉剩余段。
+     *
+     * `_inbound` 是入口即写的入站记录（不受发送阻塞），所以能精确拿到
+     * 「我开始发这段之后，用户又说了啥」。多段连发时每段发出前检查一次：
+     * 有新入站消息 → break 剩余段，交给正常流程去回用户新话（=改口接话）。
+     * 只在「有多段」时才有意义；单段不受影响。
+     */
+    let __interrupt = false
+    let __startSeq = 0
+    if (segments.length > 1) {
+      const __rec = this._inbound?.get(String(msg.scope ?? 'unknown'))
+      __startSeq = __rec ? __rec.seq : 0
+    }
+
     for (let i = 0; i < segments.length; i++) {
       const seg = segments[i]
+
+      // 插话打断：i>0 时，若上一条发出后用户又说话了 → 停掉剩余段
+      if (segments.length > 1 && i > 0) {
+        const __newMsgs = this._inboundAfter(msg.scope, __startSeq)
+        if (__newMsgs.length > 0) {
+          __interrupt = true
+          this.log.info?.(`bridge：插话打断 —— 用户又说了 ${__newMsgs.length} 句，停掉剩余 ${segments.length - i} 段`)
+          break
+        }
+      }
+
       /*
        * ★★ **气泡之间按字数停顿**（2026-11-08 用户：「没人打字这么快」）。
        *
@@ -11732,6 +12369,19 @@ ${drewNote}
           && (!String(text ?? '').trim() || detail.textSent),
       }
     } catch { /* 只读对象就跳过 */ }
+    /*
+     * ★ **单一出口更新"上一条发出去的文本"**（2026-11-10）。
+     * 原来只有 `_handle` 里写（7535），而主动发言（_speakUp）、jm 补发、戳回话
+     * 都不经过那里 —— 跨轮去重（_stripCrossTurnRepeat）和 ctx 的基准会停在旧消息上。
+     * 这里在发送成功后统一记一次；跨会话代发按**目标**会话记。
+     */
+    try {
+      if (sentIds && sentIds.length) {
+        if (!this._lastBotText) this._lastBotText = new Map()
+        const key = target?.groupId ? `group:${target.groupId}` : String(msg.scope ?? '')
+        this._lastBotText.set(key, String(msg.__sentText ?? text ?? '').slice(0, 200))
+      }
+    } catch { /* 记不上不影响发送 */ }
     return sentIds
   }
 
@@ -13279,18 +13929,30 @@ export function splitMessage(text, maxChars = 500) {
   // 所以空行优先于长度判断 —— 哪怕整段只有 10 个字，有空行也要分开。
   // ⚠️ 用两个及以上换行（\n\s*\n）作判据，单个换行不算分段，
   //    否则模型偶尔折行也会被切成两条。
-  const blocks = t.split(/\n\s*\n+/).map((s) => s.trim()).filter(Boolean)
-  if (blocks.length > 1) {
-    const out = []
-    for (const b of blocks) {
-      // 每个块内部再按长度/句子细分
-      out.push(...splitBySentences(b, maxChars))
-    }
-    return out
+  // ── 真人连发粒度（2026-11-14）─────────────────────────────────
+  //
+  // 看真实群聊（番茄等群友）：真人就是**一句一条连发**——"看归看"/"玩归玩"
+  // 是两条独立消息。所以这里按**逗号/句末标点/换行**切成短语块，每块发一条，
+  // 像真人连珠炮。太碎的（<6 字的小尾巴，如「在喊人」）并回前一块，避免渣。
+  //
+  // 先按换行分大段，再在每段内按标点切小语块。
+  // ── 麦麦式分段（2026-11-14）───────────────────────────────────
+  //
+  // 看 MaiBot / dsh-qq-bridge 的做法：**模型写几行就发几条**，插件不按逗号
+  // 硬切、不人为炸开。之前按逗号切太碎，一句话炸成 5 条刷屏。
+  //
+  // 现在：**只在换行处分条**（模型自己用换行控制发几条）；单行内的逗号不拆。
+  // 仅当某一行本身超长（> maxChars）才按句末/长度硬切。
+  const blocks = t.split(/\n+/).map((s) => s.trim()).filter(Boolean)
+  if (blocks.length <= 1) return splitBySentences(t, maxChars)
+  const out = []
+  for (const b of blocks) {
+    if (b.length <= maxChars) out.push(b)
+    else out.push(...splitBySentences(b, maxChars))
   }
+  return out.filter((s) => s.trim())
 
-  // ── ② 没有空行 → 按长度和句子切 ────────────────────────────
-  return splitBySentences(t, maxChars)
+
 }
 
 /**
@@ -13351,6 +14013,60 @@ export const PIC_REQUEST_PHRASES = [
 ]
 
 /**
+ * ★★ **明确要求"重画/换一张"**（2026-11-10，按评审意见从 PIC_REQUEST_PHRASES 拆出来）。
+ *
+ * ## 为什么要单独一张表
+ * `PIC_REQUEST_PHRASES` 表达的是**"第一次要图"**（决定要不要进入拍照流程），
+ * 而 `classifyDrawIntent` 至少有两处调用：
+ *   ① 判断"要不要看图"（bridge.js:5183）
+ *   ② 画图闸门（bridge.js:5764）
+ * 如果把"换一张/重拍"混进去，这些词在**群聊限制、部位特写、确认状态机**里
+ * 也会被当成"第一次要图"，扩大了原表语义。
+ *
+ * 所以拆开：这张表只表示**"对上一张不满意，要重画"**，
+ * 由闸门单独处理（可以绕过"刚画过就不再画"，但不改变"首次要图"的判定）。
+ */
+export const REDRAW_PHRASES = [
+  '换一张', '换张', '换个姿势', '换姿势', '换个角度', '换身衣服拍',
+  '重拍', '重画', '重新拍', '重来一张', '再来一张', '再照一张', '再发一张',
+]
+
+/**
+ * 「这句是不是在要求**重画**（对上一张不满意）」。
+ * 纯函数，便于单测。
+ *
+ * ## 为什么不是简单的"含短语就算"
+ * 中文里否定/转折太常见，直接子串匹配会把这些都判成"要重画"：
+ * ```
+ * 「别换个姿势」        → 其实是不要
+ * 「不用再发一张」      → 不要
+ * 「不要换一张，要重拍」→ 要重拍（后半句才是真的）
+ * 「不是换一张，是换个姿势」→ 要换姿势
+ * ```
+ * 做法：**先把"否定词 + 重画短语"的片段摘掉**，再看剩下还有没有重画短语。
+ * 这样「不是X，是Y」的情形，X 被摘掉、Y 留下 → 判对。
+ *
+ * @param {string} text
+ * @returns {{redraw:boolean}}
+ */
+export function classifyRedrawIntent(text) {
+  const s = String(text ?? '')
+  if (!s.trim()) return { redraw: false }
+  /* 重画动作（含同义说法） */
+  const P = '(?:重拍|重画|重新拍|重新照|换一张|换张|换个?姿势|换姿势|换个?角度|再来?一张|再照一张|再发一张|换身衣服拍)'
+  /* 否定词（含「先别」「先不」「不是」） */
+  const NEG = '(?:不要|不用|不必|甭|别|先别|先不要|先不|不是)'
+  /*
+   * 摘掉「否定词 … 重画短语」的片段：
+   * `[^。！？\n]{0,4}?` 允许「别再/先别/不用再」这类中间词，但**不跨句**。
+   */
+  const negated = new RegExp(`${NEG}[^。！？\\n]{0,4}?${P}`, 'g')
+  const rest = s.replace(negated, ' ')
+  if (!String(rest).replace(/[\s，,。.!！?？、；;：:]/g, '').trim()) return { redraw: false }
+  return { redraw: REDRAW_PHRASES.some((p) => rest.includes(p)) }
+}
+
+/**
  * ★ 明确拒绝的短语表。
  * ⚠️ 故意**不收**单独的「算了」「不用」—— 它们后面常跟着要图请求
  *    （「算了，还是拍一张吧」）。要拒绝就得说完整。
@@ -13383,6 +14099,60 @@ export const PIC_LOOK_BLOCK = /看(书|剧|电影|电视|球|直播|视频|新�
  * @param {string} text
  * @returns {{wantsPic:boolean, saidNo:boolean}}
  */
+/**
+ * 画图闸门（纯函数，2026-11-10 抽出）。
+ *
+ * ## 为什么单独抽出来
+ * 这段逻辑原来内联在 `_handle` 里，单测只能靠源码断言，测不出行为。
+ * 2026-11-10 出过事故：条件里多写了一个 `&& !drewRecently`，
+ * 于是「刚画过」把整个拦截分支跳过 → 直接放行再画 → **连发两张**。
+ * 抽成纯函数后可以直接对矩阵断言，这类误用不会再悄悄溜过去。
+ *
+ * ## 优先级（从高到低，按评审意见定）
+ * 1. **功能开关 `drawEnabled=false` 最高**：关掉就是关掉，不再询问、不再画。
+ * 2. **明确要求重画 `redrawRequested`**：对上一张不满意，直接画（可绕过"刚画过"）。
+ * 3. **`askBeforeDraw=false`**：免确认模式 —— 模型写了标记就画，不弹询问。
+ *    ⚠️ 这条**会放宽闸门**：`allowDraw=false` 也会 `draw:true`。
+ *       它表示"无需用户确认、按模型输出画"，不是"任何时候都画"。
+ * 4. **明确要图 `allowDraw`**：画。
+ * 5. **没明确要 + 刚画过**：不画、也不问（他多半在评价/挑上一张）。
+ * 6. **没明确要 + 没刚画过**：不画，改为问「拍什么、怎么拍」。
+ *
+ * ## 矩阵
+ * | drawEnabled | redraw | askBeforeDraw | allowDraw | drewRecently | 结果 |
+ * |---|---|---|---|---|---|
+ * | false | * | * | * | * | 不画，不问 |
+ * | true | true | * | * | * | 画 |
+ * | true | false | false | false | * | 画（免确认） |
+ * | true | false | false | true | * | 画 |
+ * | true | false | true | true | * | 画 |
+ * | true | false | true | false | true | 不画，不问 |
+ * | true | false | true | false | false | 不画，**问** |
+ *
+ * @param {{askBeforeDraw?:boolean, allowDraw?:boolean, drewRecently?:boolean, drawEnabled?:boolean, redrawRequested?:boolean}} o
+ * @returns {{draw:boolean, ask:boolean, reason:string}}
+ */
+export function decideDrawGate({
+  askBeforeDraw = true,
+  allowDraw = false,
+  drewRecently = false,
+  drawEnabled = true,
+  redrawRequested = false,
+} = {}) {
+  /* ① 功能开关最高优先级：关了就不画、也不问 */
+  if (drawEnabled === false) return { draw: false, ask: false, reason: '功能开关关闭' }
+  /* ② 明确要重画 */
+  if (redrawRequested) return { draw: true, ask: false, reason: '' }
+  /* ③ 免确认模式（会放宽：不看 allowDraw） */
+  if (askBeforeDraw === false) return { draw: true, ask: false, reason: '' }
+  /* ④ 明确要图 */
+  if (allowDraw) return { draw: true, ask: false, reason: '' }
+  /* ⑤ 没明确要 + 刚画过 → 不问也不画 */
+  if (drewRecently) return { draw: false, ask: false, reason: '刚画过，没明确要新的' }
+  /* ⑥ 没明确要 → 问 */
+  return { draw: false, ask: true, reason: '没确认（已改为询问）' }
+}
+
 export function classifyDrawIntent(text) {
   const s = String(text ?? '')
   if (!s.trim()) return { wantsPic: false, saidNo: false }
@@ -13398,7 +14168,7 @@ export function classifyDrawIntent(text) {
    *
    * ⚠️ 「手」要排除手机/手表/手环：「看看手机」不是要看手。
    */
-  const PART_LOOK = /看看?(?:你的)?(?:脚趾|脚|手指|手(?!机|表|环|套|链|册)|腿|小肚子|小腹|锁骨|胸|腰)/
+  const PART_LOOK = /(?:看看?|拍)(?:你的)?(?:脚趾|脚|手指|手(?!机|表|环|套|链|册)|腿|小肚子|小腹|锁骨|胸|腰)/
   /*
    * ★★ **「拍了吗 / 图呢」也算要图**（2026-11-08 修）。
    *

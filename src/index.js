@@ -662,6 +662,9 @@ export async function main(argv = process.argv.slice(2)) {
           catalog: llm.catalog,
           selfModels: llm.defaultModels?.() ?? {},
           fallback: cfg.gateway?.fallback,
+    /* 审核要用网关 key/port（原来漏了，导致 reviewHands 一直“缺少 gateway/key”） */
+    gatewayKey: cfg.gateway?.key,
+    gatewayPort: cfg.gateway?.port,
         })
         if (candidates.length === 0) return ''
         const opened = await openFirstAvailable({
@@ -1078,11 +1081,19 @@ export async function main(argv = process.argv.slice(2)) {
      */
     proactive: cfg.proactive,
     beg: cfg.beg,
+    /*
+     * ★ 人格绑定：说说的草稿只发给 `persona.activeByScope` 里的 private:*（2026-11-11）。
+     *   之前这里漏了 persona，qzone 调度器读不到绑定 → 每次都"没有绑定的私聊"静默跳过。
+     */
+    persona: cfg.persona,
     fallback: cfg.gateway?.fallback,
     /*
      * ★ 路由策略：由 `deriveRouting()` 翻译成两个真开关
      * （fallback 开不开、哪些渠道排除）。
      */
+    /* 审核要用网关 key/port（bridge.cfg 是 qq 段，必须显式带上） */
+    gatewayKey: cfg.gateway?.key,
+    gatewayPort: cfg.gateway?.port,
     strategy: cfg.gateway?.strategy,
     /*
      * ★ 数据目录：bridge 要落盘禁漫可用域名的缓存（`jm-host.json`）。
@@ -1243,7 +1254,7 @@ export async function main(argv = process.argv.slice(2)) {
       state.gateway = gw
       shutdown.push(() => gw.close())
       log.info(`LLM 网关：http://${cfg.gateway.host}:${cfg.gateway.port}/v1`)
-      log.info(`网关 key：${cfg.gateway.key}`)
+      log.info(`网关鉴权：${cfg.gateway.key ? '已配置' : '未配置'}（密钥不写入日志）`)
       if (mode === 'astrbot') {
         log.info(`→ AstrBot 里把 API Base 填：http://${cfg.gateway.host}:${cfg.gateway.port}/v1`)
       }
@@ -1275,7 +1286,7 @@ export async function main(argv = process.argv.slice(2)) {
       await web.listen()
       state.web = web
       shutdown.push(() => web.close())
-      log.info(`管理界面：http://${cfg.web.host}:${cfg.web.port}?token=${cfg.web.token}`)
+      log.info(`管理界面：http://${cfg.web.host}:${cfg.web.port}（登录凭据不写入日志）`)
     }
 
     // ── 11. 托盘（可选）───────────────────────────────────────

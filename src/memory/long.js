@@ -60,8 +60,6 @@ export class LongTermMemory {
    */
   toPrompt() {
     if (!this.summary) return ''
-    const text = clipForPrompt(this.summary, this.limits.inject)
-    if (!text) return ''
     /*
      * ★ **摘要要带上「写于哪天」**（2026-11-07 修「卫的日子记岔」）。
      *
@@ -83,13 +81,28 @@ export class LongTermMemory {
           + `都是**那天的口径** —— 换算成今天再开口，别把「明天」当今天。）`
       } catch { dateLine = '' }
     }
-    const base = `【关于这个会话你已经知道的】\n${text}${dateLine}`
+    const head = '【关于这个会话你已经知道的】\n'
+    const glossNote = '\n⚠️ 上面【梗】只是帮你听懂这些词，**不是聊天素材**：除非对方刚说到，否则不要主动提。'
+    const budget = Number(this.limits.inject)
+    if (!Number.isFinite(budget) || budget <= head.length) return ''
+    /*
+     * `injectChars` 限制整段实际注入长度。小预算时按优先级让位：
+     * 先省梗提示，再省日期行；连标题和正文都放不下就不注入。
+     */
+    let tail = `${dateLine}${glossNote}`
+    if (head.length + tail.length >= budget) tail = dateLine
+    if (head.length + tail.length >= budget) tail = ''
+    const bodyBudget = budget - head.length - tail.length
+    if (bodyBudget <= 0) return ''
+    const text = clipForPrompt(this.summary, bodyBudget)
+    if (!text) return ''
+    const base = `${head}${text}${tail}`
     /*
      * ★ 梗表是「词典」不是「素材」（2026-11-07 实测）：
      *   群里那套【梗】被当成话题来源 —— 她反复提「青蛙」，群友直接说
      *   「别老是看那青蛙了行吗」「你一直提青蛙」。梗看懂就行，不该主动当谈资。
      */
-    return base + '\n⚠️ 上面【梗】只是帮你听懂这些词，**不是聊天素材**：除非对方刚说到，否则不要主动提。'
+    return base
   }
 
   /**
@@ -115,6 +128,28 @@ export class LongTermMemory {
    * 昵称会变，用来比对必然对不上。
    *
    * @param {string} newSummary LLM 输出的「【人】…【事】…」格式
+   */
+  /**
+   * 人工改写摘要（2026-11-10）：用于**修正记错的事**。
+   * 旧版会留进 history（和自动摘要一样留底），方便回滚/翻旧账。
+   * @param {string} text
+   * @returns {boolean}
+   */
+  setSummary(text) {
+    const next = String(text ?? '').trim()
+    if (!next) return false
+    try {
+      if (this.summary && this.summary !== next) {
+        this.history = [this.summary, ...(Array.isArray(this.history) ? this.history : [])].slice(0, 5)
+      }
+    } catch { /* ignore */ }
+    this.summary = next
+    this.updatedAt = Date.now()
+    return true
+  }
+
+  /**
+   * 合并新摘要（旧的滚出窗口时调用）。
    */
   merge(newSummary) {
     let incoming = newSummary
@@ -676,6 +711,19 @@ export class LongTermStore {
     let m = this.memories.get(scope)
     if (!m) { m = new LongTermMemory(scope, this.limits); this.memories.set(scope, m) }
     return m
+  }
+
+  /**
+   * 人工改写某个会话的摘要（2026-11-10）。改完立刻落盘（原子写）。
+   * @param {string} scope
+   * @param {string} text
+   * @returns {{ok:boolean, scope:string, length:number}}
+   */
+  setSummary(scope, text) {
+    const m = this.get(scope)
+    const ok = m.setSummary(text)
+    if (ok) this.save()
+    return { ok, scope, length: String(m.summary ?? '').length }
   }
 
   /**

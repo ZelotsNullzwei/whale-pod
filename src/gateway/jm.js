@@ -90,7 +90,7 @@ export class JmHostCache {
     if (!host || host === this.host) { this.at = Date.now(); return }
     this.host = host
     this.at = Date.now()
-    try { fs.writeFileSync(this.file, JSON.stringify({ host, at: this.at }), 'utf8') } catch { /* 存不下就算了 */ }
+    try { const _t = `${this.file}.tmp`; fs.writeFileSync(_t, JSON.stringify({ host, at: this.at }), 'utf8'); fs.renameSync(_t, this.file) } catch { /* 存不下就算了 */ }
   }
 }
 
@@ -370,7 +370,9 @@ export class JmMemoStore {
     try {
       const memos = {}
       for (const [k, v] of this.map) memos[k] = v
-      fs.writeFileSync(this.file, JSON.stringify({ version: 1, memos }), 'utf8')
+      const _t = `${this.file}.tmp`
+      fs.writeFileSync(_t, JSON.stringify({ version: 1, memos }), 'utf8')
+      fs.renameSync(_t, this.file)
     } catch { /* 存不下就算了 —— 缓存是加分项，不该拖垮回复 */ }
   }
 }

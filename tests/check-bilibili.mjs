@@ -146,7 +146,8 @@ await ok('没有 title → 空串（别硬拼一段空的）', () => {
 await ok('超长简介会截断', () => {
   const t = formatVideoContext({ ...base, desc: 'x'.repeat(500) }, 50)
   assert.match(t, /…/, '要加省略号')
-  assert.ok(t.length < 400, '不能把 500 字全塞进去')
+  /* 2026-11-10：原来断言整段 <400 字；现在其它说明变长了，改成断言"简介本身被截" */
+  assert.ok(!t.includes('x'.repeat(120)), '不能把 500 字简介全塞进去')
 })
 
 console.log('\n=== 评论（用户说：评论和弹幕才是重点）===')
@@ -320,16 +321,17 @@ await ok('★★ 明确禁止「这个有印象 / 我记得 / 以前看过」', 
 
 await ok('★ 转写太短（<30 字）→ 判为"没有可用台词"，别让它拿拟声词瞎猜', () => {
   const t = formatVideoContext({ ...base, transcript: 'Hit-o-watt-dada-dada' })
-  assert.match(t, /没有台词/, '要明说没有台词')
-  assert.match(t, /唱歌 \/ 纯音乐 \/ 没配音/, '要给出可能的原因')
-  assert.match(t, /别拿那串拟声词当内容/, '要禁止拿拟声词当内容')
+  /* 2026-11-10：文案改成「转不出词 … 唱歌 / 纯音乐 / 只有音效 … 别拿那串拟声当歌词」，按语义断言 */
+  assert.match(t, /转不出词|没有台词/, '要明说没有可用台词')
+  assert.match(t, /唱歌 \/ 纯音乐/, '要给出可能的原因')
+  assert.match(t, /别拿那串拟声/, '要禁止拿拟声词当内容')
   assert.ok(!/## 视频里说了什么/.test(t), '太短就不该开"视频里说了什么"这一节')
 })
 
 await ok('短转写的结尾也不能说"知道它讲了什么"', () => {
   const t = formatVideoContext({ ...base, transcript: 'Hit-o-watt-dada-dada' })
   assert.ok(!/知道它讲了什么/.test(t), '没有台词就不能说知道内容')
-  assert.match(t, /从弹幕和评论里挑/, '要说清只听到声音')
+  assert.match(t, /弹幕和评论/, '要说清只听到声音、只能靠弹幕和评论')
 })
 
 await ok('★★ 有转写时**不能**再说「你没看过这个视频本身」', () => {
@@ -350,8 +352,18 @@ await ok('★★ 有转写时**不能**再说「你没看过这个视频本身�
 })
 
 await ok('有转写时，优先级要指向转写内容（不是评论）', () => {
-  const t = formatVideoContext({ ...base, transcript: TRANSCRIPT })
-  assert.match(t, /从\*\*听写\*\*里挑一件事说/, '要先从转写里挑（再叠弹幕/评论）')
+  /*
+   * 需要「转写 + 评论/弹幕」同时存在才会渲染「上面这几块怎么用」的优先级段，
+   * 且转写要够长 —— 两个条件都补上，才测得到真正的优先级措辞。
+   */
+  const t = formatVideoContext({
+    ...base,
+    comments: [{ like: 10, text: '这期有用' }],
+    danmaku: [{ text: '学到了', count: 3 }],
+    transcript: TRANSCRIPT.repeat(2),
+  })
+  assert.match(t, /音频转写/, '要把"音频转写"标成内容来源')
+  assert.match(t, /视频本身讲了什么/, '要明确转写=内容，优先级不是评论')
 })
 
 await ok('⚠️ 转写要标注「机器听写可能有错字」（别当精确引文）', () => {

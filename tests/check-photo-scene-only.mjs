@@ -44,8 +44,8 @@ function ok(name, fn) {
 }
 
 console.log('=== 1. 场景图：不许有人 ===')
-ok('★ 明确写了「画面里没有人」', () => {
-  assert.match(String(scene.prompt), /画面里没有人/)
+ok('★ 明确写了「画面里没有人 / 不出现人物」', () => {
+  assert.match(String(scene.prompt), /不出现人物|画面里没有人/)
 })
 ok('★ 没有「只出现手/手臂/腿」这种放行句', () => {
   assert.doesNotMatch(String(scene.prompt), /只出现手\/手臂\/腿/)
@@ -53,13 +53,13 @@ ok('★ 没有「只出现手/手臂/腿」这种放行句', () => {
 ok('★ 没有「画面里只有她」这种矛盾句', () => {
   assert.doesNotMatch(String(scene.prompt), /画面里只有她/)
 })
-ok('★ 禁止项改成「画面里出现任何人物」', () => {
-  assert.match(String(scene.prompt), /画面里出现任何人物/)
+ok('★ 明确写「画面里没有人和手」', () => {
+  assert.match(String(scene.prompt), /没有人和手/)
 })
 
 console.log('\n=== 2. 普通照片：该有的人还在 ===')
 ok('★ 普通照仍允许"她本人"', () => {
-  assert.doesNotMatch(String(withPerson.prompt), /画面里没有人/)
+  assert.doesNotMatch(String(withPerson.prompt), /不出现人物|画面里没有人/)
 })
 ok('★ 普通照仍写清楚长相（避免画成路人）', () => {
   assert.match(String(withPerson.prompt), /蓝色长卷发|蓝发/)

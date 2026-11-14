@@ -120,13 +120,16 @@ ok('isPureStickerText 不把「表情+文字」当纯表情', () => {
   assert.equal(isPureStickerText(''), false)
 })
 
-ok('★ 「刚说完话」必须紧接在她那句后面（中间有人插话就不接）', () => {
+ok('群聊适度放宽：她刚说过话 / 前一条是别人说话（30s内）→ 接；冷场孤立表情 → 不接', () => {
   const mine = (at) => ({ isMe: true, text: '行', at, id: 'm' })
   const sticker = (at) => ({ isMe: false, text: '[表情包]', at, id: 's', sender: '9' })
-  assert.equal(shouldAnswerSticker({ selfId: '1', msg: sticker(5000), recent: [mine(0)] }), true, '紧接 5s → 接')
+  assert.equal(shouldAnswerSticker({ selfId: '1', msg: sticker(5000), recent: [mine(0)] }), true, '她刚说完话 5s → 接')
   const someone = { isMe: false, text: '哈哈', at: 3000, id: 'x', sender: '8' }
-  assert.equal(shouldAnswerSticker({ selfId: '1', msg: sticker(5000), recent: [mine(0), someone] }), false, '中间有人插话 → 不接')
-  assert.equal(shouldAnswerSticker({ selfId: '1', msg: sticker(16000), recent: [mine(0)] }), false, '16s 超过 12s 窗口 → 不接')
+  // 2026-11-13 适度放宽：中间有人插话，但前一条就是别人在说话（30s内）→ 也算当前对话，接
+  assert.equal(shouldAnswerSticker({ selfId: '1', msg: sticker(5000), recent: [mine(0), someone] }), true, '有人插话但紧邻在聊天 → 接')
+  assert.equal(shouldAnswerSticker({ selfId: '1', msg: sticker(16000), recent: [mine(0)] }), true, '她 16s 前说过话（30s内）→ 接')
+  // 冷场：最近没有任何人说过话、她也没开口 → 不接
+  assert.equal(shouldAnswerSticker({ selfId: '1', msg: sticker(500000), recent: [] }), false, '冷场孤立表情 → 不接')
 })
 
 

@@ -14,7 +14,7 @@
  *    非法值直接产生 `invalid_character_version` 冲突。
  */
 
-const NO_PERSON_MODES = new Set(['first_person', 'rear_object', 'scene_only'])
+const NO_PERSON_MODES = new Set(['first_person', 'rear_selfie', 'rear_object', 'scene_only'])
 
 /** 版本解析：区分 未声明 / 显式 A / 显式 B / 非法 */
 export function parseVersion(v) {
@@ -98,6 +98,8 @@ export function resolveReference({
   characterVersion = '',
   bodyRef = '',
   bodyRefVersion = '',
+  /** 构图档（半身/全身/头肩/面部特写…）—— 决定该喂全身图还是头像 */
+  framing = '',
 } = {}) {
   const checks = []
 
@@ -229,6 +231,55 @@ export function resolveReference({
     }
   }
 
+  /*
+   * ★★ **B 版「素体」身体参考**（2026-11-10 用户实测：B 图被拒，最后只选了脸）。
+   *
+   * ## 为什么只有 B 走 body
+   * - A 版那张三视图**穿的是女仆装**：拿它当身体参考会把衣服带错，
+   *   所以 A 版只锁脸（下面 `headOk` 分支）是对的。
+   * - B 版是用户新给的**无头饰素体**（白背心 + 深灰短裤，正/侧/背）：
+   *   它只提供身材与比例、不携带当天服装，正是身体基准该用的东西。
+   *
+   * ## 什么时候用
+   * 只有「画面里会有身体」的模式才需要；第一人称/局部不需要，纯场景在上面已经返回 none。
+   * ⚠️ 版本必须**双方都等于 B**且身体图哈希校验通过；UNKNOWN 走不到这里。
+   */
+  // rear_selfie 在当前相机契约中是拍向环境/物品，入口也会归一成 rear_object。
+  // 不允许身体参考图让人物意外出现在后置拍物构图里。
+  const BODY_VISIBLE_MODES = new Set(['front_selfie', 'mirror_selfie', 'video_call'])
+  /*
+   * ⚠️ **还要看构图**（2026-11-10 修）：头肩/面部特写喂全身图，脸和耳鳍细节会被拉糊。
+   * 现场：12:47「来张自拍看看」→ 前置自拍｜头肩｜参考图=her-body-front.png，
+   *      生成图的脸/耳朵细节跟参考图对不上。头肩就该用头像参考。
+   */
+  const BODY_VISIBLE_FRAMINGS = new Set(['半身', '三分之二身', '全身'])
+  /** 明确只该用头像的构图（正常退化，不算异常） */
+  const FACE_ONLY_FRAMINGS = new Set(['头肩', '面部特写', '局部'])
+  /*
+   * 未来新增身体构图名时，容易悄悄落回头像参考。这里显式记一笔，
+   * 便于排查「为什么这张用了头像」。不属于上面两组的构图 = 未知。
+   */
+  if (BODY_VISIBLE_MODES.has(String(mode))
+      && !BODY_VISIBLE_FRAMINGS.has(String(framing))
+      && !FACE_ONLY_FRAMINGS.has(String(framing))) {
+    checks.push({ name: 'body_framing_unknown_fallback', ok: false, detail: String(framing || '(空)') })
+  }
+  if (bodyRef && bodyV === 'B' && cur === 'B'
+      && BODY_VISIBLE_MODES.has(String(mode))
+      && BODY_VISIBLE_FRAMINGS.has(String(framing))) {
+    checks.push({ name: 'body_ref_used', ok: true, detail: 'B 素体（无头饰）' })
+    return {
+      strategy: 'body',
+      refImage: bodyRef,
+      identityRef: bodyRef,
+      humanPartsAllowed: true,
+      conflict,
+      reason: 'body_ref_b_plain',
+      version,
+      checks,
+    }
+  }
+
   const headOk = Boolean(faceRef) && faceRefKind === 'head'
   if (headOk) {
     return {
@@ -261,4 +312,4 @@ export function resolveReference({
   }
 }
 
-export const REFERENCE_STRATEGIES = ['canon', 'face', 'fallback', 'none']
+export const REFERENCE_STRATEGIES = ['canon', 'body', 'face', 'fallback', 'none']
