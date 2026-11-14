@@ -215,6 +215,7 @@ window.__ModuleLoader__.load({
 
         // 设置页
         'section.napcat': '协议端',
+        'status.napcat': '协议端',
         'section.napcatHint': '下载、启停与运行日志',
         'section.startup': '启动行为',
     'section.startupHint': 'DSH 启动时要不要自动拉起 WhalePod',
@@ -259,8 +260,8 @@ window.__ModuleLoader__.load({
         'qq.reply.imagesEnabled': '允许发送图片',
         'qq.poke.enabled': '允许戳一戳',
         'qq.poke.chance': '戳一戳概率',
-        'qq.supervisor': '自动托管 NapCat',
-        'qq.supervisor.start': '启动 NapCat',
+        'qq.supervisor': '自动托管协议端',
+        'qq.supervisor.start': '启动协议端',
         'qq.supervisor.stop': '停止协议端',
         'qq.start': '一键启动',
         'qq.stop': '完全关闭',
@@ -274,7 +275,7 @@ window.__ModuleLoader__.load({
         'qq.resumeHint': '恢复响应消息',
         // 后端进程窗口
         'proc.title': '后端进程',
-        'proc.empty': '当前没有 WhalePod / NapCat 进程',
+        'proc.empty': '当前没有 WhalePod / 协议端 进程',
         'proc.other': '其它',
 
         // ── 模型卡片（侧栏）──────────────────────────────────────────
@@ -409,15 +410,15 @@ window.__ModuleLoader__.load({
         'model.effortLevel.max': '最高',
         'model.effortLevel.tiered': '分级',
 
-        'napcat.install': '安装 NapCat（内置运行）',
+        'napcat.install': '获取 SnowCat（见说明）',
         'napcat.installing': '安装中…',
         'napcat.logs': '协议端运行日志',
         'napcat.logsEmpty': '暂无日志',
         'napcat.webui': '打开管理面板',
-        'napcat.webuiStopped': 'NapCat 未运行，先启动它',
+        'napcat.webuiStopped': '协议端未运行，先启动',
         'napcat.webuiNoToken': '未读到登录令牌，面板打开后需手动输入（首次登录后会生成）',
         'napcat.webuiAt': '管理面板：',
-        'napcat.accept': '我已阅读 NapCat 的许可（Limited Redistribution License）与《QQ 用户协议》，同意从官方 Release 下载到本机',
+        'napcat.accept': 'SnowCat 是第三方 QQ 客户端（见上游仓库许可），需自行从 GitHub 获取并按说明部署。点确定打开仓库地址。',
         'napcat.progress': '安装进度',
         'napcat.builtIn': '内置托管：协议端由 DSH 自动拉起，无需手动开窗口',
 
@@ -457,7 +458,7 @@ window.__ModuleLoader__.load({
       en: {
         nav: 'WhalePod',
         title: 'WhalePod',
-        sub: 'A QQ chat bot inside DSH: NapCat protocol side plus a free-first LLM gateway.',
+        sub: 'A QQ chat bot inside DSH: protocol side plus a free-first LLM gateway.',
         loading: 'Loading…',
         loadFailed: 'Cannot reach the WhalePod backend',
         retry: 'Retry',
@@ -579,7 +580,8 @@ window.__ModuleLoader__.load({
         'persona.restoreWarn': 'Current content will be replaced by the builtin version and your edits will be lost.',
         'persona.restored': 'Restored to builtin version',
 
-        'section.napcat': 'NapCat protocol side',
+        'section.napcat': 'Protocol side',
+        'status.napcat': 'Protocol',
         'section.napcatHint': 'Install, start/stop, and its run log',
         'section.startup': 'Startup',
     'section.startupHint': 'Whether DSH should launch WhalePod on start',
@@ -624,13 +626,13 @@ window.__ModuleLoader__.load({
         'qq.reply.imagesEnabled': 'Allow sending images',
         'qq.poke.enabled': 'Allow pokes',
         'qq.poke.chance': 'Poke probability',
-        'qq.supervisor': 'Supervise NapCat automatically',
-        'qq.supervisor.start': 'Start NapCat',
-        'qq.supervisor.stop': 'Stop NapCat',
+        'qq.supervisor': 'Supervise protocol automatically',
+        'qq.supervisor.start': 'Start protocol',
+        'qq.supervisor.stop': 'Stop protocol',
         'qq.start': 'Start',
         'qq.stop': 'Shut down',
-        'qq.startHint': 'Start the WhalePod process, NapCat and the QQ bridge',
-        'qq.stopHint': 'Stop the bridge, NapCat and the WhalePod process (settings kept)',
+        'qq.startHint': 'Start the WhalePod process, protocol side and the QQ bridge',
+        'qq.stopHint': 'Stop the bridge, protocol side and the WhalePod process (settings kept)',
         'actionRestarting': 'Command sent, refreshing…',
         'qq.paused': 'Paused',
         'qq.pause': 'Pause',
@@ -639,7 +641,7 @@ window.__ModuleLoader__.load({
         'qq.resumeHint': 'Resume replying',
         // Backend process panel
         'proc.title': 'Backend processes',
-        'proc.empty': 'No WhalePod / NapCat process running',
+        'proc.empty': 'No WhalePod / protocol process running',
         'proc.other': 'Other',
 
         // ── Model card (sidebar) ─────────────────────────────────────
@@ -744,17 +746,17 @@ window.__ModuleLoader__.load({
         'model.effortLevel.max': 'Max',
         'model.effortLevel.tiered': 'Tiered',
 
-        'napcat.install': 'Install NapCat (built-in)',
+        'napcat.install': 'Get SnowCat (see notes)',
         'napcat.installing': 'Installing…',
-        'napcat.logs': 'NapCat run log',
+        'napcat.logs': 'Protocol run log',
         'napcat.logsEmpty': 'No log entries yet',
         'napcat.webui': 'Open web panel',
-        'napcat.webuiStopped': 'NapCat is not running; start it first',
+        'napcat.webuiStopped': 'Protocol side is not running; start it first',
         'napcat.webuiNoToken': 'No login token found; enter it manually in the panel (generated after first login)',
         'napcat.webuiAt': 'Web panel:',
-        'napcat.accept': 'I have read NapCat\'s license (Limited Redistribution License) and the QQ Terms of Service, and agree to download from the official Release to this machine',
+        'napcat.accept': 'SnowCat is a third-party QQ client; get it from GitHub and follow its setup. OK opens the repo.',
         'napcat.progress': 'Install progress',
-        'napcat.builtIn': 'Built-in hosting: DSH starts NapCat automatically; no manual window needed',
+        'napcat.builtIn': 'Built-in hosting: DSH starts the protocol side automatically; no manual window needed',
         'napcat.webuiAt': 'Web panel:',
 
         'decision.provider': 'Decision provider',
@@ -3211,7 +3213,7 @@ window.__ModuleLoader__.load({
                   // 下载前必须让用户明确同意（合规要求，不可省略）。
                   if (!window.confirm?.(t('napcat.accept'))) return
                   setBusy(true)
-                  try { await post('/backends/install', { acceptLicense: true }) }
+                  try { window.open('https://github.com/DandanLLab/SnowCatQQ', '_blank') }
                   catch (error) { setToast({ ok: false, text: String(error?.message ?? error) }) }
                   finally { setBusy(false) }
                 },
@@ -3296,7 +3298,7 @@ window.__ModuleLoader__.load({
         h(Section, { title: t('section.qq'), hint: t('section.qqHint') },
           h(Row, { label: t('qq.enabled') },
             h(Toggle, { checked: qq.enabled === true, disabled: busy, onChange: (v) => apply({ 'qq.enabled': v }) })),
-          h(Row, { label: t('qq.supervisor'), hint: 'NapCat' },
+          h(Row, { label: t('qq.supervisor'), hint: '协议端（SnowCat）' },
             h(Toggle, {
               checked: qq.supervisor?.enabled === true,
               disabled: busy,

@@ -69,7 +69,7 @@ WhalePod **依附于 [DSH Desktop](https://github.com/deepseek-ai/deepseek-harne
 **❌ 不适合，如果**
 
 - 你**没有 DSH** —— 先去把 DSH 装上，这里没有替代方案
-- 你以为是一键脚本 —— 还要自备 QQ 协议端（NapCat 上游已终止）、配 QQ 号、扫码登录
+- 你以为是一键脚本 —— 还要自备 QQ 协议端（推荐 SnowCat）、配 QQ 号、扫码登录
 - 你想要开箱即用的成品 —— 现在还在 beta
 - 你想要「自动回复机器人」—— 它**经常故意不说话**，这是设计
 
@@ -99,7 +99,7 @@ WhalePod **依附于 [DSH Desktop](https://github.com/deepseek-ai/deepseek-harne
 │  ├─ 决策层    Jev / 规则 / 自定义（可插拔）                 │
 │  ├─ 记忆层    短期上下文 + 长期摘要                        │
 │  ├─ 人格层    角色提示词（可编辑）                          │
-│  ├─ 组件管理  协议端托管（NapCat 上游已终止，需自备）       │
+│  ├─ 组件管理  协议端托管（推荐 SnowCat，需自备）            │
 │  └─ 管理界面  Web UI（10 个页面，可折叠侧栏 + 线性图标）    │
 └──────────────────────────────────────────────────────────┘
 ```
@@ -180,7 +180,7 @@ QQ 机器人常见的两个痛点，WhalePod 各解决一个：
 | **要开一堆窗口** | NapCat + 框架 + 桥接，2-3 个 cmd/node 挂着 | **一个托盘进程**，Web 管所有 |
 | **烧钱** | 每条消息都调付费 API | **免费渠道优先**，付费仅兜底 |
 | **说话很呆** | 逢消息必回 | **决策层**先判断该不该说 |
-| **装组件要自己折腾** | 去 GitHub 找 Release、装 Python、配环境 | **一键启停 + 托管**；自动下载随 NapCat 上游终止失效 |
+| **装组件要自己折腾** | 去 GitHub 找 Release、装 Python、配环境 | **一键启停 + 托管**；协议端自备（推荐 SnowCat） |
 
 第三点是关键。真人不会每条消息都回 —— 他们会判断「这是在问我吗」
 「我刚说过话要不要歇会」「现在插话合适吗」。WhalePod 把这件事拆成两层：
@@ -196,13 +196,18 @@ QQ 机器人常见的两个痛点，WhalePod 各解决一个：
 
 ## 组件与协议端
 
-WhalePod 负责**托管**协议端（启停、日志、扫码登录）；**自动下载**原本也有，但 NapCat 上游 2026-11 终止后这条路已经走不通：
+WhalePod 通过 OneBot v11 连接协议端（启停、日志、扫码登录）。**协议端本体需自备**，WhalePod 不再内置下载。
 
-| 组件 | 许可 | 自动安装 | 说明 |
+推荐协议端：**SnowCat（雪猫）** —— NapCat + SnowLuma 融合的第三方 QQ 客户端，跑在官方 QQ 9.9.37 主进程内，抗风控较好。
+
+| 组件 | 许可 | 获取方式 | 说明 |
 |---|---|---|---|
-| **NapCat** | Limited Redistribution License | ❌ **上游已终止** | 2026-11-12 仓库被清空、Release 全删；已装的照常跑，新装需自备 |
+| **SnowCat** | 见上游仓库 | 自备（GitHub 源码 + 打包） | https://github.com/DandanLLab/SnowCatQQ ，仅适配 QQ 9.9.37-54395；解包官方 QQ 后 V8 注入启动 |
+| **NapCat** | Limited Redistribution License | ❌ 上游已终止 | 2026-11-12 仓库被清空、Release 全删；已装的照常跑 |
 | **AstrBot** | AGPL-3.0 | ⚠️ 框架已有，**未完善** | 见上文说明，当前不可用 |
-| **SnowLuma** | 源码可见非商业许可 | ❌ **已移除** | 上游已于 2026-11 变为 404，支持已从代码删除 |
+
+> SnowCat 的部署：下载官方 QQ 9.9.37 安装包 → 用 SnowCat 的 `snowcat-qq-unpack.ps1` 解包成便携结构 → `snowcat-run.ps1` 启动（V8 注入 + WebUI 6099）。启动后监听 OneBot ws 3001，WhalePod 直连即可。详见上游仓库。
+
 
 ### 自带运行时（为 AstrBot 预留）
 
@@ -294,7 +299,7 @@ dsh plugin --profile desktop add link:<解压目录>/plugin
 侧栏会出现「鲸舱」。第一次点「一键启动」，它会：
 
 - 自己拉 WhalePod 进程
-- 托管你自己准备的 NapCat（上游已终止，不能再自动下载 —— 见 [上游变化](#上游变化snowluma-与-napcat)）
+- 托管你自己准备的协议端（推荐 SnowCat：https://github.com/DandanLLab/SnowCatQQ）
 - 弹二维码让你扫码登录
 
 **④ 扫码登录 QQ**
@@ -956,7 +961,7 @@ See the Chinese sections above for configuration details, the full CLI reference
 
 ## 合规
 
-- WhalePod **不修改** QQ 客户端或协议端，也**不在发行包里附带**它们；协议端由用户自己获取（「组件」页只在上游可用时代为下载）。
+- WhalePod **不修改** QQ 客户端或协议端，也**不在发行包里附带**它们；协议端由用户自己获取（「组件」页提供 SnowCat 获取入口）。
 - 使用第三方协议端（NapCat 及其社区分支等）请自行阅读其许可与
   《QQ 用户协议》。**建议使用小号**，账号风险自负。
 - WhalePod 本身 MIT 许可，不含任何腾讯专有代码。
