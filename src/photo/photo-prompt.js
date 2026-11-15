@@ -125,8 +125,23 @@ function composeMirrorSelfiePrompt(o = {}) {
   const { plan = {}, framing = {}, scene = '', outfit = '', hair = '', slot = '' } = o
   /* 统一走 extractLook：按景别决定是否只写上装（看不见的不写） */
   const { clothing, hairText } = extractLook(o)
+  /*
+   * 2026-11-15：对镜全身动作总被压成"另一只手自然垂放"（用户「动作好呆」）。
+   * 原因：actClause 只从 actionSpec.scene 取，而调用方写在 scene 里的具体动作（打哈欠/伸懒腰/回头抓拍）从没进到 prompt。
+   * 现在**优先用 scene 里的动作**：去掉"对镜全身自拍/站在镜子前"和含环境词的片段，剩下的就当动作描写。
+   */
   const rawAct = String(plan?.actionSpec?.scene ?? '')
-  const actClause = rawAct.includes('对镜自拍，') ? rawAct.split('对镜自拍，').pop() : '另一只手自然垂放'
+  const sceneAct = (() => {
+    const parts = String(scene).split(/[，,]/).map((x) => x.trim()).filter(Boolean)
+    const actParts = parts.filter((x) => {
+      if (/对镜|镜子|站在镜|全身自拍|自拍$/.test(x)) return false
+      if (/晨光|灯光|阳光|背景|室内|窗外|窗帘|街道|白天|傍晚|夜里|暖黄|安静|氛围|环境/.test(x)) return false
+      return true
+    })
+    return actParts.join('，')
+  })()
+  const actClause = sceneAct
+    || (rawAct.includes('对镜自拍，') ? rawAct.split('对镜自拍，').pop() : '另一只手自然垂放')
   /* 2026-11-13：镜子类型按景别决定 —— 全身用落地穿衣镜（全身镜），其余用梳妆台化妆镜 */
   const isFull = String(framing?.framing ?? '') === '全身'
   const mirrorDesc = isFull
