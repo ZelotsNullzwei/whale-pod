@@ -233,19 +233,27 @@ function lightShortOf(slot = '') {
 function composeFrontSelfiePrompt(o = {}) {
   const { plan = {}, scene = '', slot = '' } = o
   const { clothing, hairText } = extractLook(o)
-  const clean = String(scene).replace(/不(?:出门|出去)|没(?:出门|出去)|不用(?:出门|出去)/g, '')
+  const clean = String(scene)
+    .replace(/不(?:出门|出去)|没(?:出门|出去)|不用(?:出门|出去)/g, '')
+    /* 2026-11-15：前置自拍不该出现手机（用户「前置自拍为啥还有一个手机」）。
+       场景里常被写成「手机前置自拍」，这些字样会被模型当成"画面里要画个手机"，全部清掉。 */
+    .replace(/手机前置(?:半身)?自拍[，,]?/g, '')
+    .replace(/手机前置/g, '')
+    .replace(/对镜(?:全身)?自拍[，,]?/g, '')
+    .replace(/对镜/g, '')
+    .replace(/^[，,、\s]+/, '')
   const OUTSIDE = /(出门|在外面|外面|街上|街边|路边|店里|小店|便利店|超市|餐厅|饭馆|食堂|夜市|路边摊|公园|地铁|公交|商场|咖啡店|奶茶店|步行街|摊子|车上|窗口前|小区|楼道|电梯|车库|楼下|门口|单元门|院子里|巷子|快递柜|驿站)/.test(clean)
   const looksHome = /(家居|睡裙|睡衣|吊带|短裤|光脚|拖鞋)/.test(clothing)
   const temp = OUTSIDE && looksHome ? '；临时出门：外面套一件外套、换帆布鞋，别换成整套外出服' : ''
   const locationWho = OUTSIDE ? '她在外面' : '她在自己家'
   return [
-    '一张柔和明亮的手机前置自拍照片。',
+    '一张柔和明亮的生活自拍照片，第一人称手机前置视角，画面里看不到手机和持机的手。',
     '',
     '一位成年女性，蓝色长卷发（发尾靛蓝渐变）、蓝色瞳孔、头顶一缕呆毛、耳侧蓝白鲸鱼鳍形耳饰；脸和身形以人物参考图为准。',
     '',
     `今天穿着：${clothing}${hairText ? `，发型：${hairText}` : ''}${temp}。`,
     '',
-    `地点：${locationWho}。她${/洗手台|浴室|刷牙|洗脸/.test(String(scene)) ? '站在洗手台前' : '在室内'}，一只手举着手机自拍，手机在画面外。${scene ? `画面：${scene}。` : ''}`,
+    `地点：${locationWho}。她${/洗手台|浴室|刷牙|洗脸/.test(String(scene)) ? '站在洗手台前' : '在室内'}。${clean ? `画面：${clean}。` : ''}`,
     '',
     `环境与质感：${lightShortOf(slot)}真实手机前置镜头拍摄，自然生活质感，画面干净温暖，不要插画感和 3D 渲染感。`,
     '',
