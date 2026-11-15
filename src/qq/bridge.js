@@ -4353,12 +4353,23 @@ ${drewNote}
   }
 
   /** 被戳时那句回话：模型现编，失败回退固定池。 */
-  async _pokeLine() {
+  async _pokeLine(scope = '') {
     try {
       const llm = this.gateway
       if (!llm?.stream) return null
       const model = String(this.cfg?.model ?? '').trim()
       const provider = model.includes('/') ? model.slice(0, model.indexOf('/')) : undefined
+      /* 2026-11-15：戳一戳要**看上文**——把最近几句拿给模型，接着上面说，而不是干巴巴独立问"干嘛"。 */
+      let recent = '他戳了你一下。'
+      try {
+        const mem = this._memOf?.(scope) ?? this.memory?.get?.(scope) ?? null
+        const msgs = (mem?.messages ?? mem?.items ?? []).slice(-6)
+        const lines = msgs.map((m) => {
+          const who = m.isMe ? '你' : (m.senderName || '他')
+          return `${who}：${String(m.text ?? '').slice(0, 40)}`
+        }).filter((x) => x && !/^\S：$/.test(x))
+        if (lines.length) recent = '最近的对话：\n' + lines.join('\n') + '\n\n（他刚戳了你一下——结合上面聊的，接一句。如果是催/等你回，就直接接话，别问"干嘛"。）'
+      } catch { /* 取不到就退原来的 */ }
       const chunks = []
       const stream = llm.stream({
         provider,
@@ -4367,16 +4378,18 @@ ${drewNote}
           {
             role: 'system',
             content: [
-              '你刚在 QQ 上被戳了一下。',
-              '⚠️ 真人的第一反应是**问对方要干嘛**，不是汇报自己在干什么。',
-              '只输出一句极短的中文，可以就是一个「？」。像这样：',
-              '？ / 干嘛 / 怎么了 / 有事？ / 嗯？ / 戳我干嘛',
-              '1~8 个字，口语。',
-              '❌ 不许描述自己正在做什么（在睡觉、困着呢、在吃饭、刷手机、发呆…都不行）。',
+              '你刚在 QQ 上被戳了一下。用一句话回应，1~15 字，口语。',
+              '**每次都要换个说法，别老用"？""干嘛""怎么了""嗯？"这几句——听腻了。**',
+              '可以的反应（挑一种，每次不同）：',
+              '· 假娇嗔/赖一下：别戳了/痒/哎哟你别闹',
+              '· 嘴硬反将一句：有事说事/戳什么戳/干嘛呀你',
+              '· 卖乖/卖惨：在呢在呢/干嘛啦/人家在忙',
+              '· 直接催他：说/讲/有事快说',
+              '❌ 但**不要**汇报自己正在做什么（在睡觉、吃饭、刷手机…都不行）。',
               '❌ 不要括号动作、不要引号、不要解释、不要 emoji。',
             ].join('\n'),
           },
-          { role: 'user', content: '他戳了你一下。' },
+          { role: 'user', content: recent, },
         ],
         maxTokens: 48,
         temperature: 0.9,
@@ -4689,7 +4702,8 @@ ${drewNote}
          * 原来的「在的在的」「哎哟」属于"报状态/感叹"，已换成问句。
          */
         : ['？', '干嘛', '怎么了', '有事？', '戳我干嘛', '嗯？']
-      said = (await this._pokeLine()) ?? lines2[Math.floor(Math.random() * lines2.length)]
+      const __pokeScope = groupId ? `group:${groupId}` : `private:${fromId}`
+      said = (await this._pokeLine(__pokeScope)) ?? lines2[Math.floor(Math.random() * lines2.length)]
       /*
        * ★ 走 `_send` 统一出口（2026-11-10）。
        * 原来直接 `onebot.sendGroup/sendPrivate` —— 绕过剥标记、环境过滤、跨轮去重，
