@@ -1310,6 +1310,13 @@ export function stripWaitMarkers(text) {
    */
   const MARKER_RE = /[\[［]\s*(画图|场景图|插画|签名|改标签|改签名|戳一戳|戳|撤回|禁言|改名|发群|换装|换衣服|等)\s*[:：][^\]］]*[\]］]/g
   s = s.replace(MARKER_RE, '')
+  // 2026-11-15：兜底剥掉模型**自己编的伪标记**（如 [motion:这张]）——
+  // 任何 [词:内容] 里首词不在白名单（表情/找图/画图/场景图/插画/换装/换衣服）
+  // 的一律剥掉，别让未注册的标记原样漏进正文。
+  s = s.replace(/[\[［]\s*([A-Za-z_][A-Za-z0-9_]*)\s*[:：][^\]］]*[\]］]/g, (m, tag) => {
+    const keep = ['biaoqing','zhaotu']
+    return /^(表情|找图|画图|场景图|插画|换装|换衣服)$/.test(tag) ? m : ''
+  })
   // 没有内容的控制标记（无冒号的裸写法）
   s = s.replace(/[\[［]\s*(?:SILENT|戳|撤回|禁言|改名|发群|换装|换衣服)\s*[\]］]/gi, '')
   // 残缺的（没有右括号）也从标记处截断
@@ -3004,8 +3011,10 @@ ${drewNote}
 你说过「给你留一碗饭」不等于他答应了 —— 人家可能正在上课。
 该问的是「下课没」，不是「我给你留了饭」。
 
-## ⚠️ 主动开口**不要提发图/拍照**（这条链路没有配图能力）
-❌「喏，就这一张」「给你看看」「拍了张」一律不许说。
+## ⚠️ 主动开口**绝对不能提发图/拍照**（这条链路没有配图能力，写了也发不出去）
+❌ 不要写任何画图标记（[画图:…] [场景图:…] [插画:…]）—— 主动消息不会执行它们，只会显得你说了没做。
+❌「喏，就这一张」「给你看看」「拍了张」「这张够近了吧」这类**暗示发了图**的话，一律不许说。
+✅ 主动就说**纯文字**：问问他在干嘛、聊聊天气心情、提个共同回忆，别沾图片的事。
 
 ## ⚠️ 不要没头没尾
 别硬编一个开头来接话（「福是真福，就是…」这种 —— 说到最后你自己都不知道在说什么）。
@@ -3161,6 +3170,14 @@ ${drewNote}
         this.log.info?.('proactive：模型选择不说')
         return false
       }
+      /* 2026-11-15：主动发言硬兜底——就算模型写了画图标记也剥掉（主动不执行画图，
+         留着只会"说了没图"）。剥完若没内容就当 SILENT。 */
+      let clean2 = clean.replace(/[\[［]\s*(画图|场景图|插画)\s*[:：][^\]］]*[\]］]/g, '').replace(/[ \t]{2,}/g, ' ').trim()
+      if (!clean2 || clean2.includes(SILENT)) {
+        this.log.info?.('proactive：主动发言剥掉画图标记后为空 → 不说')
+        return false
+      }
+      clean = clean2
       /* 2026-11-12：主动发言没有配图能力，禁止谎称发图 */
       const __fc = this._falseClaim(clean, { draw: false })
       if (__fc && (__fc.kind === 'draw' || __fc.kind === 'image')) {
@@ -4306,7 +4323,8 @@ ${drewNote}
                *  一提"我找面镜子"而实际是怼脸自拍，就自相矛盾。
                *  只允许说中性的"等一下 / 理头发 / 擦镜头 / 手有点忙"。
                */
-              '只许说中性的准备话：等一下、理理头发、擦下镜头、手头有点忙、别催。',
+              '说一句中性的准备/敷衍话，但**每次都要换个说法**：可以是不耐烦、嘟嘴抱怨、反将一句、打岔、说手边正忙的事、或者单纯一句"等等"。',
+              '❌ 严禁反复用这几句用滥的：「等一下」「理理头发」「擦下镜头」「别急」「这就来」——听到烂了，换别的。',
               '❌ 绝对不要提：镜子、对镜、前置、后置、站哪拍、摆什么姿势、全身还是半身。',
               '❌ 不要报今天的日程/吃了什么/几点做了什么。',
               '❌ 不要括号动作、不要引号、不要 emoji、不要解释、不要重复上一句。',
@@ -5545,6 +5563,7 @@ ${drewNote}
           + '**发不发由你定**，没人逼你：'
           + '· **别秒给。你要傲娇、要拿捏**（本鲸的招牌）：先损他一句、摆架子、讨点好话、欲迎还拒一下，再发；'
           + '  愿意给就用 [画图:一句话描述画面]，但**前面最好带一句不情愿/挑逗/要好处的话**，别干巴巴"给。"；'
+          + '  （**只有 [画图:描述] 这一个发图标签**；不存在 [motion:]/[照片:]/[image:] 之类的，别编号外标签，否则发不出去还漏字）'
           + '· 不想给，就正常说话拒绝（嫌他烦、觉得自己现在不好看、就是不想拍，都可以）；'
           + '· 想先弄清楚，就反问他「要这个干嘛 / 想看什么」，**等他回话再决定**，别自问自答。\n'
           + '⚠️ 一旦决定要发，画面内容就按他说的来：他点了具体的东西/情境'
@@ -6888,6 +6907,10 @@ const drewRecently = __drawRecentMs > 0 && lastDrewAt > 0 && Date.now() - lastDr
             this._lastDrewAt[String(msg.scope ?? '')] = Date.now()
             drewAny = true   // 兼容旧名：真的画出来了
             try { this._photoOfferAt?.delete(String(msg.scope ?? '')) } catch { /* ignore */ }
+            // 2026-11-15：图已经发出去了，"要约/已问拍什么/问过部位"状态全部清掉，
+            // 否则用户回个"嗯嗯"会被当成"答应再拍一张"，又追问"拍什么"或再画一张。
+            try { this._drawAsk?.delete(String(msg.scope ?? '')) } catch { /* ignore */ }
+            try { this._bodyPartAsk?.delete(String(msg.scope ?? '')) } catch { /* ignore */ }
             this.log.info?.(`bridge：画好了（${Math.round(r.ms / 1000)}s）`)
             }
           } else {
@@ -7669,7 +7692,7 @@ const drewRecently = __drawRecentMs > 0 && lastDrewAt > 0 && Date.now() - lastDr
               hair: (() => { try { return String(this.dayPlan?.today?.()?.hair ?? '') } catch { return '' } })(),
               request: (() => { try { return String(msg.text ?? '') } catch { return '' } })(),
               scope: msg.scope ?? '',
-              mode: photoMode,
+              mode: (typeof photoMode !== 'undefined' ? photoMode : 'daily'),
               sceneOnly: Boolean(mark.sceneOnly),
               anime: Boolean(mark.anime) || String(this.cfg?.actions?.drawStyle ?? '') === 'anime',
               imageCfg: (this.cfg?.image ?? {}),

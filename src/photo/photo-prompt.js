@@ -509,7 +509,14 @@ ${bodyOverride ? `${bodyOverride}、` : ''}
       const upper = String(outfitPrompt ?? '')
         .split(/[，,]/)
         .map((s) => s.trim())
-        .filter((s) => s && !/(裤|裙|袜|鞋|拖鞋|靴)/.test(s.replace(/（[^）]*）|\([^)]*\)/g, '')))
+        .filter((s) => {
+          if (!s) return false
+          const bare = s.replace(/（[^）]*）|\([^)]*\)/g, '')
+          // 2026-11-15：主体是上装（T恤/上衣/衬衫/吊带/卫衣/毛衣）就保留，
+          // 别因为"当睡裙穿"里的"裙"字把它当下去掉（那会导致面部特写没上衣）。
+          if (/(T恤|上衣|衬衫|吊带|卫衣|毛衣|针织|背心|睡衣)/.test(bare)) return true
+          return !/(裤|裙|袜|鞋|拖鞋|靴)/.test(bare)
+        })
         .slice(0, 2)
         .join('，')
       life.push(`今天穿着：${upper}（**只拍领口以上**，下半身不入镜，不要画裤子/袜子/鞋）`)

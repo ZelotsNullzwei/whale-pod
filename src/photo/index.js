@@ -165,8 +165,11 @@ export function planShot(o = {}) {
     }
   }
 
+  /* 2026-11-15：给 planner 的 scene 先剔除"不要出现镜子/别拍到镜子"这类否定语境，
+     否则 planner 看到"镜子"二字就把前置自拍判成镜子自拍（图文对不上的根因）。 */
+  const sceneForPlan = String(scene).replace(/不(?:要|用|出现|拍|带)[^，。；,\n]{0,6}镜[子面]?/g, '')
   /* ② 规划拍摄方式 */
-  let plan = planPhoto({ scene, slot, sceneOnly, anime })
+  let plan = planPhoto({ scene: sceneForPlan, slot, sceneOnly, anime })
   if (actionSpec) plan.actionSpec = actionSpec
 
   /*
@@ -194,7 +197,11 @@ export function planShot(o = {}) {
 
   /* ③ 物理可行性检查 + 自动修正 */
   const loc = detectLocation(scene)
-  const hasMirror = /(镜子|照镜子|穿衣镜|镜前|对着镜子|镜子里|对镜自拍)/.test(scene) || loc.id === 'mirror'
+  // 2026-11-15：先剔除"不要出现镜子/别拍到镜子/不要镜子"这类否定语境，
+  // 否则 homeEnvelope 给前置自拍加的"画面里不要出现镜子"里的"镜子"会被误判成"要照镜子"，
+  // 把前置自拍硬掰成镜子自拍·全身（图文对不上的根因）。
+  const sceneNoNegMirror = String(scene).replace(/不(?:要|用|出现|拍|带)[^，。；,\n]{0,6}镜[子面]?/g, '')
+  const hasMirror = /(镜子|照镜子|穿衣镜|镜前|对着镜子|镜子里|对镜自拍)/.test(sceneNoNegMirror) || loc.id === 'mirror'
   const check = validatePhotoPlan(plan, {
     scene, hasMirror, timeOfDay: slot,
     /* ★ 2026-11-07：判断"他想看身形"要看那句请求，光看场景不够 */
