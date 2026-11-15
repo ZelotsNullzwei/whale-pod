@@ -371,9 +371,10 @@ console.log('\n=== 9. 顺序：三条消息串行处理，回复顺序不乱 ===
   ]
   await Promise.all(ps)
 
-  // 三条都该回复（都被 @，且过时检测因 @ 而不拦）
-  check('三条都被处理并回复', b.sent.length === 3, String(b.sent.length))
-  check('统计 replied=3', b.bridge.stats.replied === 3, String(b.bridge.stats.replied))
+  // 2026-11-15：三条并发 @ 现在走合并（连发合并成 1 次回复，像真人），不再各回 3 次。
+  // 要保证的是：都处理了、没有因过时/掉线被吞。sent 1~3 次都合理，replied 与之对应。
+  check('三条都被处理（合并后 1~3 条回复、无丢弃）', b.sent.length >= 1 && b.sent.length <= 3, String(b.sent.length))
+  check('统计 replied 与发送条数一致', b.bridge.stats.replied === b.sent.length, `replied=${b.bridge.stats.replied} sent=${b.sent.length}`)
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -463,7 +464,9 @@ console.log('\n=== 11. 私聊：连发多条也不能判过时 ===')
   gate.release()
   await Promise.all([p1, p2, p3])
 
-  check('私聊 3 条都回复了（一条都没丢）', sent.length === 3, `${sent.length} 条：${JSON.stringify(sent)}`)
+  // 2026-11-15：私聊连发 3 条现在是**合并成 1 次回复**（麦麦式，像真人不会你说3次她回3次），
+  // 不是丢消息。真正要保证的是：至少回 1 次、且 superseded==0（没被过时判定吞掉）。
+  check('私聊连发 3 条 → 合并回复（至少1条、不漏、无superseded）', sent.length >= 1 && sent.length <= 3, `${sent.length} 条：${JSON.stringify(sent)}`)
   check('私聊 superseded 计数为 0', (bridge.stats.superseded ?? 0) === 0, String(bridge.stats.superseded))
 }
 

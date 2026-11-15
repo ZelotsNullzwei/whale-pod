@@ -105,6 +105,9 @@ const mkScheduler = (over = {}) => {
     begCfgSource: () => begCfg,
     state,
     now: () => at(10).getTime(),
+    // 2026-11-15：调度器 2026-11-12 加了「启动保护期」（默认15分，重启不主动发言）。
+    // 测试要把 startedAt 设成很久以前，否则全被保护期挡下、所有 tick 用例假红。
+    startedAt: at(10).getTime() - 60 * 60_000,
     checkBalance: over.checkBalance ?? (async () => true),
     onBeg: async () => { calls.beg++; return true },
     onSpeak: async () => { calls.speak++; return true },
@@ -242,6 +245,9 @@ await ok('讨钱失败 → 同一轮里发言顶上', async () => {
     begCfg: { enabled: true, checkIntervalMinutes: 60, maxPerDay: 3 },
     state,
     now: () => at(10).getTime(),
+    // 2026-11-15：调度器 2026-11-12 加了「启动保护期」（默认15分，重启不主动发言）。
+    // 测试要把 startedAt 设成很久以前，否则全被保护期挡下、所有 tick 用例假红。
+    startedAt: at(10).getTime() - 60 * 60_000,
     checkBalance: async () => false,          // 余额查不到 / 正常
     onBeg: async () => { calls.beg++; return false },
     onSpeak: async () => { calls.speak++; return true },
@@ -261,6 +267,9 @@ await ok('讨钱真的发出去了 → 同一轮不再发言', async () => {
     begCfg: { enabled: true, checkIntervalMinutes: 60, maxPerDay: 3 },
     state,
     now: () => at(10).getTime(),
+    // 2026-11-15：调度器 2026-11-12 加了「启动保护期」（默认15分，重启不主动发言）。
+    // 测试要把 startedAt 设成很久以前，否则全被保护期挡下、所有 tick 用例假红。
+    startedAt: at(10).getTime() - 60 * 60_000,
     checkBalance: async () => true,
     onBeg: async () => { calls.beg++; return true },
     onSpeak: async () => { calls.speak++; return true },
@@ -697,6 +706,9 @@ const mkQuietSched = (groupIdleMin, privIdleMin, cfgOver = {}) => {
     idleMsOf: (scope) => (String(scope).startsWith('group:') ? groupIdleMin : privIdleMin) * 60_000,
     onSpeak: async (scope) => { sent.push(scope); return true },
     now: () => at(10).getTime(),
+    // 2026-11-15：调度器 2026-11-12 加了「启动保护期」（默认15分，重启不主动发言）。
+    // 测试要把 startedAt 设成很久以前，否则全被保护期挡下、所有 tick 用例假红。
+    startedAt: at(10).getTime() - 60 * 60_000,
     log: {},
   })
   return { state, sched, sent }

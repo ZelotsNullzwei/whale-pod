@@ -107,7 +107,7 @@ export function checkQzoneText(text, fact, opts = {}) {
   if (/[；;]/.test(s)) reasons.push('不止一件事')
   if (QZONE_BANNED.test(s)) reasons.push('含内部词/第二人称/标签/营业腔')
   if (s.split('\n').length > 2) reasons.push('超过两行')
-  if (s.replace(/\s/g, '').length > 40) reasons.push('超过 40 字')
+  if (s.replace(/\s/g, '').length > 60) reasons.push('超过 60 字')
   return { ok: reasons.length === 0, reasons }
 }
 
@@ -639,6 +639,13 @@ export function startQzoneProactive(bridge, opts = {}) {
     }
     if (state.lastDraftText && text === state.lastDraftText) {
       bridge.log?.info?.('qzone-proactive：和上一份草稿一样，跳过')
+      // 2026-11-15：重复文案别每分钟重试（会刷屏死循环）。重置冷却，等下一轮再来。
+      // 同时给这个 type 计数 +1 → 下轮 pickContentType 会避开它、换别的内容类型/素材。
+      ensureDay()
+      state.typeCounts = { ...(state.typeCounts ?? {}) }
+      state.typeCounts[content.type] = Number(state.typeCounts[content.type] ?? 0) + 1
+      state.lastDraftAt = clock()
+      writeState(state)
       return
     }
 

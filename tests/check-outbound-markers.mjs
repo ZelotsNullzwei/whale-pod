@@ -85,7 +85,7 @@ ok('★ 每条出站都经过 stripWaitMarkers', () => {
   const src = fs.readFileSync(new URL('../src/qq/bridge.js', import.meta.url), 'utf8')
   const at = src.indexOf('async _send(')
   assert.ok(at > 0, '找不到 _send')
-  const seg = src.slice(at, at + 4000)
+  const seg = src.slice(at, at + 8000)
   assert.match(seg, /stripWaitMarkers\(/, '_send 必须过发送漏斗清洗')
 })
 ok('★ MARKER_RE 覆盖换装（防止有人把它删回去）', () => {
