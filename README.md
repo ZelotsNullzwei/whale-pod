@@ -345,7 +345,7 @@ node src/index.js
 |---|---|
 | **DSH Desktop** | 装成插件时必需（复用它的 `channel-pack` 和凭据）；独立跑时可选 |
 | **Node 22+** | 独立跑必需；用 DSH 自带的运行时也行 |
-| **QQ 协议端** | 自备一份 NapCat 放进 `~/.whale-pod/protocol/napcat/`（上游 2026-11 终止，Release 已全删）；SnowLuma 已随上游 404 移除 |
+| **QQ 协议端** | 自备一份 —— 推荐 **SnowCat**（[DandanLLab/SnowCatQQ](https://github.com/DandanLLab/SnowCatQQ)，仅适配 QQ 9.9.37-54395）；NapCat 上游 2026-11 终止、Release 全删，已装的那份仍可托管 |
 
 ### 立刻用起来（任何 OpenAI 客户端）
 
@@ -898,7 +898,7 @@ looking things up. Point it at a local model and cost drops to zero.
 
 - **LLM gateway (OpenAI-compatible).** Ships with DeepSeek account credentials; any OpenAI-compatible endpoint can be added as a custom provider.
 - **QQ bridge.** OneBot v11 in and out. A decision layer first asks *should I speak at all*, then the model decides *what to say* — which is both cheaper and more human than replying to everything.
-- **Protocol host.** Starts, stops and supervises NapCat (logs, QR-less quick login). Upstream NapCat was wiped in 2026-11 — its releases are gone, so the built-in downloader can no longer work; drop your own copy under `~/.whale-pod/protocol/napcat/`.
+- **Protocol host.** Starts, stops and supervises your own protocol side (logs, QR-less quick login). **SnowCat** is what we run now ([DandanLLab/SnowCatQQ](https://github.com/DandanLLab/SnowCatQQ)); NapCat upstream was wiped in 2026-11, so the built-in downloader no longer works.
 
 **Modes**
 
@@ -938,7 +938,7 @@ layer already filters out most messages.
 - Decision and expression are separate layers — that separation is what makes it feel less like a bot.
 - Data lives in `~/.whale-pod`; deleting that directory uninstalls everything.
 
-**Requirements:** DSH Desktop · Node 22.19+ · a QQ protocol host of your own (NapCat upstream ended in 2026-11; put a copy under `~/.whale-pod/protocol/napcat/`)
+**Requirements:** DSH Desktop · Node 22.19+ · a QQ protocol host of your own — **SnowCat** recommended ([DandanLLab/SnowCatQQ](https://github.com/DandanLLab/SnowCatQQ))
 
 See the Chinese sections above for configuration details, the full CLI reference, and the API surface.
 
@@ -947,10 +947,10 @@ See the Chinese sections above for configuration details, the full CLI reference
 ## 已知限制
 
 - **reverse WS 未实现** —— 只支持 WhalePod 主动连协议端（forward）。
-  NapCat 支持正向 WS，够用。
+  SnowCat / NapCat 都支持正向 WS，够用。
 - **协议端自动下载已失效** —— NapCat 上游 2026-11-12 清空仓库、Release 全删，
-  「组件」页的一键装会报 `HTTP 404`。已装好的照常跑，新装需自备一份放进
-  `~/.whale-pod/protocol/napcat/`。
+  「组件」页的一键装会报 `HTTP 404`。已装好的照常跑；新装**推荐直接用 SnowCat**
+  （外部目录 + `SNOWCAT_ROOT` 指过去）；仍想用 NapCat 的，把一份放进 `~/.whale-pod/protocol/napcat/`。
 - **图片只记占位** —— 收到图片存 `[图片]`，不送多模态（可扩展）。
 - **托盘需要额外包** —— 未装 `systray2` 时回退控制台模式，核心功能不受影响。
 - **长期记忆用摘要而非向量检索** —— 见上文取舍说明。
