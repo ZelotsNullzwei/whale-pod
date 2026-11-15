@@ -13585,16 +13585,12 @@ const drewRecently = __drawRecentMs > 0 && lastDrewAt > 0 && Date.now() - lastDr
       }
     }
 
-    // ② QQ 内置表情表按名字查（"本地搜索"）—— 收藏库里没有像的才走这里
-    if (key) {
-      const hit = lookupFace(key)
-      if (hit) {
-        this.log.info?.(`bridge：表情「${key}」→ ${hit.by === 'exact' ? '精确' : '近似'}匹配「${hit.name}」(${hit.kind} ${hit.id ?? hit.ani})`)
-        if (hit.kind === 'face') return [{ type: 'face', data: { id: String(hit.id) } }]
-        // 动画表情要 mface 段；拿不到必需编号就退成收藏表情/兜底，
-        // 不要发一个坏段出去（那会在群里显示成一条错误消息）
-      }
-    }
+    /*
+     * ② 原「QQ 内置表情表按名字查」—— 2026-11-15 用户「怎么又开始疯狂用 QQ 自带表情」后**移除**。
+     *    原因：模型写 `[表情包:白眼]` 这类词，收藏库里没有对应标签 → 原来退到 QQ 内置小黄脸，
+     *    发出来一眼就是"QQ 自带表情"。现在改成**不发内置**：标签没命中就落到下面 ③ 随机发一张收藏，
+     *    始终只用她自己的收藏表情。（显式 `[表情:数字]` 点名的内置表情不受影响——那条在 splitFaceMarkers 已处理成 kind:face，不进这里）
+     */
 
     /*
      * ③ 收藏表情（前面已经取过 `faces` 了，这里继续用它）。
