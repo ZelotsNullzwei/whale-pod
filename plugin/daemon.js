@@ -138,10 +138,11 @@ export async function listProcesses() {
   try {
     const { execFileSync } = await import('node:child_process')
     // 用 -EncodedCommand 太绕；这里只查 node 进程 + 命令行 + 启动时间 + 内存
+    // 2026-11-15: also list SnowCat QQ.exe (protocol side), not only node whale-pod
     const raw = execFileSync('powershell', ['-NoProfile', '-Command',
-      "Get-CimInstance Win32_Process -Filter \"Name='node.exe'\" | " +
-      "Where-Object { $_.CommandLine -match 'whale-pod' } | " +
-      "Select-Object ProcessId,CommandLine,CreationDate,WorkingSetSize | " +
+      "Get-CimInstance Win32_Process | " +
+      "Where-Object { ($_.Name -eq 'node.exe' -and $_.CommandLine -match 'whale-pod') -or ($_.Name -eq 'QQ.exe' -and $_.ExecutablePath -match 'SnowCat') } | " +
+      "Select-Object ProcessId,CommandLine,ExecutablePath,CreationDate,WorkingSetSize | " +
       'ConvertTo-Json -Compress',
     ], { encoding: 'utf8', timeout: 15_000 }).trim()
 
@@ -164,6 +165,7 @@ export async function listProcesses() {
       // 分类标签统一用 whale-pod / napcat，前端据此显示
       if (/whale-pod[\\/]src[\\/]index\.js/.test(cmd)) kind = 'whale-pod'
       else if (/whale-pod[\\/]protocol[\\/]napcat/.test(cmd)) kind = 'napcat'
+      else if (/SnowCat/i.test(String(p.ExecutablePath ?? ''))) kind = 'napcat'
       // CreationDate 是 CIM 的日期，可能已被 JSON 化成 /Date(...)/ 或 ISO 串
       let startedAt = null
       const cd = p.CreationDate

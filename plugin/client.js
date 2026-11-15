@@ -1790,7 +1790,7 @@ window.__ModuleLoader__.load({
                 h('span', { className: 'gd_statusText' }, statusText),
                 h('span', { className: 'gd_statusSub' }, !enabled
                   ? t('dash.offHint')
-                  : `${selfName ? `${t('dash.self')}：${selfName} · ` : ''}${s?.qq?.napcatRunningLabel ?? (s?.qq?.running === true ? t('running') : t('stopped'))}`))),
+                  : `${selfName ? `${t('dash.self')}：${selfName} · ` : ''}${s?.qq?.napcatRunningLabel ?? (s?.qq?.connected === true ? t('running') : t('stopped'))}`))),
 
           // ── 一键启停 ─────────────────────────────────────────────────
           //

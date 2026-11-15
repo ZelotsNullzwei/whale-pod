@@ -1488,7 +1488,9 @@ async function backendsSnapshot({ store, state, protocols }) {
     //    界面于是显示"运行中"但什么细节都没有，用户觉得"后台情况看不见"。
     //    这里补上**从端口/进程反查到的实况**。
     let procs = []
-    if (info.running && !info.pid) {
+    // 2026-11-15：始终反查进程实况（SnowCat 是我们托管的、info.pid 有值，
+    // 但用户仍要看它那几个 QQ 进程）—— 不再用 `!info.pid` 把它挡掉。
+    if (info.running) {
       try { procs = protocols.listProcesses?.(store.home, b.id) ?? [] } catch { procs = [] }
     }
     const totalMem = procs.reduce((n, p) => n + (p.memBytes || 0), 0)
@@ -1508,7 +1510,7 @@ async function backendsSnapshot({ store, state, protocols }) {
       /** 进程实况（不是我们启动的时用来兜底展示） */
       processCount: procs.length || (info.pid ? 1 : 0),
       /** 只有"反查到的"进程才给明细，避免和 supervisor 的数据打架 */
-      processes: info.pid ? [] : procs,
+      processes: procs,
       memBytes: info.pid ? null : (totalMem || null),
       /** 谁启动的 —— 用户据此知道点「停止」能不能停掉 */
       managed: Boolean(info.pid),
