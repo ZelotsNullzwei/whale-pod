@@ -185,11 +185,14 @@ function extractLook(o = {}) {
    * 2026-11-13 用户：描述越多模型越容易乱 → 统一精简。
    *   去掉括号补充（"下摆塞进裤子"这类），最多保留 3 件主要单品。
    */
+  const __isFullBody = String(framing?.framing ?? '') === '全身'
   clothing = clothing
     .split(/[，,]/)
     .map((s) => s.replace(/（[^）]*）|\([^)]*\)/g, '').trim())
     .filter(Boolean)
-    .slice(0, 3)
+    // 2026-11-15：**全身不要砍成 3 件**——否则袜/鞋/鲸尾这些排在后面的单品被 slice 丢掉，
+    // 女仆装出街就变白袜光脚。只对半身/局部精简到 3 件（反正下半身不入镜）。
+    .slice(0, __isFullBody ? 99 : 3)
     .join('，')
   if (accessory) {
     hairText = hairText
