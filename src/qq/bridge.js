@@ -4674,7 +4674,9 @@ ${drewNote}
 
     const textChance = typeof cfg.textChance === 'number' ? cfg.textChance : 0.5
     /* 2026-11-14 用户：「私聊也一半说话一半扣」——原来 Boolean(groupId) 让私聊永远只戳回去、从不说话 */
-    const useText = cfg.text !== false && Math.random() < textChance
+    // 2026-11-15：SnowCat 的 packetBackend 不能发包 → 戳一戳戳不回去（会报错刷日志）。
+    // 改成永远走"说话"，不回戳：她仍能感知被戳、照常接话，只是不回戳。
+    const useText = true
     let ok = false
     let said = null
 
