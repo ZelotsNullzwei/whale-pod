@@ -2194,7 +2194,18 @@ async function startQqBridge({ store, state, log, decision, memory, longMemory, 
         if (napcat) log.info?.('QQ：协议端已就绪')
       }
     } catch (error) {
-      log.warn?.(`QQ：启动协议端失败 — ${String(error?.message ?? error)}`)
+      /*
+       * 2026-11-16：SnowCat 已占 3001/6099 时，sup.start('napcat') 会抛「NapCat 已在运行」，
+       * 但协议端其实**已经就绪**（就是 SnowCat 在跑）。以前这里一律当失败 → 侧栏误报「未运行」。
+       * 现在：抛错后再用 running() 端口探测确认一次——端口在监听就当协议端已就绪。
+       */
+      const sup = state.supervisor
+      if (sup?.running?.('napcat') === true) {
+        napcat = true
+        log.info?.('QQ：协议端已就绪（检测到已有协议端在监听 3001/6099，复用）')
+      } else {
+        log.warn?.(`QQ：启动协议端失败 — ${String(error?.message ?? error)}`)
+      }
     }
 
     // ── 2. 已有桥接实例：只补连接 ────────────────────────────
