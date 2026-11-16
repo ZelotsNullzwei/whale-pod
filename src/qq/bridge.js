@@ -2001,6 +2001,23 @@ export class QQBridge {
     } catch (e) {
       this.log.warn?.(`bridge：发确认图失败 — ${String(e?.message ?? e).slice(0, 60)}`)
     }
+    /*
+     * 2026-11-16：**把这条"已发说说预览、等他确认"记进她自己记忆**。
+     * 现场：她生成了草稿+图、私聊发了预览（用户看得到），但这条没进她的记忆，
+     * 于是用户问「那不是问我发空间吗」时她一脸懵——不记得自己刚发过预览在等确认。
+     * 记一条 isMe 消息，后续上下文里她就知道"我刚问了发不发空间，在等他回"。
+     */
+    try {
+      const mem = this.memory?.get?.(scope)
+      mem?.push?.(makeMessage({
+        id: `qzone-preview-${Date.now()}`,
+        sender: String(this.selfId ?? ''),
+        senderName: String(this.selfName ?? ''),
+        isMe: true,
+        at: Date.now(),
+        text: `（我把这条说说先发给他看了，正在等他确认发不发空间：「${say.slice(0, 100)}」）`,
+      }))
+    } catch { /* 记不进也不影响发预览 */ }
   }
 
   /**
