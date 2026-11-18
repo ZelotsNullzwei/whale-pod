@@ -1339,6 +1339,27 @@ export class ProtocolSupervisor {
      * 不再去 protocol/napcat 找 QQ.exe。running() 靠 3001/6099 端口探测，
      * SnowCat 正好监听这两个，所以状态显示天然正确。
      */
+    /*
+     * ── WhalePod-LC 自建内核优先（D:\\WhalePod-LC）───────────────
+     * 我们的自建内核（SnowCatQQ 源码构建的 napcat.mjs + winmm 注入，跑在官方 QQ 9.9.37 内）。
+     * 目录里有 QQ.exe 则优先用它：Start-Process QQ.exe --enable-logging + 隐藏窗口。
+     * running() 仍靠 3000/3001 端口探测。
+     */
+    const linkcoreRoot = process.env.WHALEPOD_LC_ROOT || 'D:\\WhalePod-LC'
+    const lcQQ = path.join(linkcoreRoot, 'QQ.exe')
+    if (backendId === 'napcat' && fs.existsSync(lcQQ)) {
+      this.log.info?.('协议端：使用 WhalePod-LC 自建内核启动（' + lcQQ + '）')
+      const ps = 'Start-Process -FilePath \'' + lcQQ + '\' -ArgumentList \'--enable-logging\' -WorkingDirectory \'' + linkcoreRoot + '\''
+      const child = spawn('powershell', ['-NoProfile', '-Command', ps], { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
+      const entry = { child, startedAt: Date.now(), exit: null, lines: [] }
+      this.procs.set(backendId, entry)
+      const hideCmd = 'Get-Process QQ -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 -and $_.Path -like \'' + linkcoreRoot.replace(/\\/g,'\\\\') + '*\' } | ForEach-Object { Add-Type -Name W -Namespace U -MemberDefinition \'[DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h,int c);\' -ErrorAction SilentlyContinue; [U.W]::ShowWindow($_.MainWindowHandle,0) | Out-Null }'
+      let hn = 0
+      const hideTimer = setInterval(() => { try { spawn('powershell', ['-NoProfile','-Command', hideCmd], { windowsHide:true, stdio:'ignore' }) } catch (e) {} if (++hn >= 15) clearInterval(hideTimer) }, 2000)
+      if (hideTimer.unref) hideTimer.unref()
+      return { ok: true, pid: child.pid, backend: backendId, linkcore: true }
+    }
+
     const snowcatRoot = process.env.SNOWCAT_ROOT || 'D:\\SnowCat.Portable'
     const snowcatRun = path.join(snowcatRoot, 'tools', 'build', 'snowcat-run.ps1')
     if (backendId === 'napcat' && fs.existsSync(snowcatRun)) {

@@ -731,6 +731,8 @@ export function createWebServer(opts) {
             freeOrder: configured,
             disabledProviders: disabled,
             qqModel: cfg.qq?.model ?? 'auto',
+            qqVisionModel: cfg.qq?.visionModel ?? '',   // 空=跟随回复模型（多态）
+            qqImageModel: cfg.qq?.imageModel ?? '',      // 空=跟随回复模型（多态）
             /* 2026-11-06：侧栏要能直接调这两项（热生效） */
             idleMinutes: Number(cfg.memory?.long?.idleMinutes ?? 10),
             crossGroupConfirm: cfg.qq?.actions?.crossGroupConfirm !== false,
@@ -3279,6 +3281,13 @@ async function whalePodCompat(o) {  const { sub, method, url, req, res, json, re
       }
       if (typeof body.qqModel === 'string') {
         patch.qq = { ...(patch.qq ?? {}), model: normalizeModelId(body.qqModel) }
+      }
+      // 识图/生图模型（2026-11-18）：空串=清掉（=跟随回复模型的多态能力）
+      if (typeof body.qqVisionModel === 'string') {
+        patch.qq = { ...(patch.qq ?? {}), visionModel: body.qqVisionModel.trim() === '' ? undefined : normalizeModelId(body.qqVisionModel) }
+      }
+      if (typeof body.qqImageModel === 'string') {
+        patch.qq = { ...(patch.qq ?? {}), imageModel: body.qqImageModel.trim() === '' ? undefined : normalizeModelId(body.qqImageModel) }
       }
       // 推理等级：空串表示"用模型默认"，此时清掉字段而不是存空串
       // （bridge 读 effort 时按 undefined 走默认逻辑）。

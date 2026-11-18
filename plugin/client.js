@@ -288,6 +288,9 @@ window.__ModuleLoader__.load({
         'model.current': '当前模型',
         // 侧栏两排各用一个标签（2026-11-05：对话和生图分开显示）
         'model.chat': '对话模型',
+        'model.reply': '回复模型',
+        'model.vision': '识图模型',
+        'model.follow': '跟随回复（默认）',
         'model.draw': '生图模型',
         'model.auto': 'auto（按下方顺序自动选）',
         'model.backToAuto': '切回自动选择',
@@ -656,6 +659,9 @@ window.__ModuleLoader__.load({
         'model.vlm': 'VLM (vision)',
         'model.current': 'Current model',
         'model.chat': 'Chat model',
+        'model.reply': 'Reply model',
+        'model.vision': 'Vision model',
+        'model.follow': 'Follow reply (default)',
         'model.draw': 'Image model',
         'model.auto': 'auto (pick by the order below)',
         'model.backToAuto': 'Back to automatic',
@@ -2066,6 +2072,8 @@ window.__ModuleLoader__.load({
       const s = status.data
       if (!d?.settings) return null
       const cur = d.settings.qqModel ?? 'auto'
+      const curV = d.settings.qqVisionModel ?? ''
+      const curI = d.settings.qqImageModel ?? ''
       const list = d.models ?? []
       const canDraw = s?.available === true
       const style = s?.drawStyle === 'anime' ? 'anime' : 'photo'
@@ -2085,66 +2093,46 @@ window.__ModuleLoader__.load({
         }).then(after).catch(() => {}).finally(() => setBusy(false))
       }
       const ids = list.map(idOf)
-
+      const sel = {
+        flex: '1 1 160px', minWidth: 0, fontSize: '12px', padding: '2px 4px',
+        background: 'transparent', color: 'inherit',
+        border: '1px solid rgba(120,120,120,.35)', borderRadius: '6px',
+      }
       /*
-       * ★ **两排分开**（2026-11-05 用户反馈：「对话模型一排，生图模型一排，
-       *   这样混着好乱」）。
-       *
-       * 原来上排是只读的「当前模型 + 生图 照片 · xxx」，下排是
-       * 「对话模型下拉 + 照片/插画胶囊」—— 对话和画图**混在同一行**，
-       * 看着像"这俩是一个东西的两个控制项"。
-       *
-       * 现在：
-       *   第一排  `对话模型`  [下拉]
-       *   第二排  `生图模型`  [照片] [插画]  · 模型名
-       * 画图不可用时**第二排整个不出现**（老规矩：没有的就不占位）。
+       * 通用下拉。pool = 该用途的模型池（回复=全部；识图=vision==='yes' 的 VLM）。
+       * includeFollow=true 时首项「跟随回复（空值）」。
+       * 候选 id 用 idOf 计算，保证三段式一致。
        */
-
-      // ── 第一排：对话模型 ───────────────────────────────────
-      const opts = [h('option', { key: 'auto', value: 'auto' }, t('model.auto'))]
-      if (cur !== 'auto' && !ids.includes(cur)) opts.push(h('option', { key: 'cur', value: cur }, cur))
-      list.forEach((m, i) => opts.push(h('option', { key: ids[i], value: ids[i] }, m.label ?? m.id)))
-
-      const chatRow = h('div', { className: 'gd_modelrow' },
-        h('span', { className: 'gd_modelrowlabel' }, t('model.chat')),
-        h('select', {
-          value: cur,
-          title: cur,
-          onChange: (e) => post({ qqModel: e.target.value }, () => data.reload()),
-          style: {
-            flex: '1 1 160px', minWidth: 0, fontSize: '12px', padding: '2px 4px',
-            background: 'transparent', color: 'inherit',
-            border: '1px solid rgba(120,120,120,.35)', borderRadius: '6px',
-          },
-        }, opts))
-
-      const pill = (key, label) => h('button', {
-        key,
-        onClick: () => { if (!busy && key !== style) post({ drawStyle: key }, () => status.reload()) },
-        disabled: busy,
-        style: {
-          padding: '2px 10px', fontSize: '12px', borderRadius: '999px',
-          border: '1px solid ' + (style === key ? 'rgba(59,130,246,.9)' : 'rgba(120,120,120,.35)'),
-          background: style === key ? 'rgba(59,130,246,.18)' : 'transparent',
-          color: 'inherit', cursor: busy ? 'default' : 'pointer',
-        },
-      }, label)
-
-      // ── 第二排：生图模型（不可用就整排不出现）──────────────
-      const drawRow = canDraw
-        ? h('div', { className: 'gd_modelrow', style: { marginTop: '6px' } },
-          h('span', { className: 'gd_modelrowlabel' }, t('model.draw')),
-          pill('photo', '照片'),
-          pill('anime', '插画'),
-          /* 模型名跟随 Magpie 的 settings.json（imageGen），只显示最后一段，太长会挤爆这行 */
-          h('span', {
-            className: 'gd_note',
-            title: s.model || '',
-            style: { marginLeft: '6px', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
-          }, s.model ? String(s.model).split('/').pop() : ''))
-        : null
-
-      return h('div', null, chatRow, drawRow)
+      const dd = (val, includeFollow, pool, onChangeFn) => {
+        const o = []
+        if (includeFollow) o.push(h('option', { key: 'follow', value: '' }, t('model.follow')))
+        else o.push(h('option', { key: 'auto', value: 'auto' }, t('model.auto')))
+        const poolIds = pool.map(idOf)
+        if (val && val !== 'auto' && !poolIds.includes(val)) o.push(h('option', { key: 'cur', value: val }, val))
+        pool.forEach((m, i) => o.push(h('option', { key: poolIds[i], value: poolIds[i] }, m.label ?? m.id)))
+        return h('select', { value: val, title: val, onChange: (e) => onChangeFn(e.target.value), style: sel }, o)
+      }
+      // 2026-11-18：三个用途都从**同一个模型池**选（不预设谁是什么类型——
+      // 不同环境配置不同，强分池会把别人的可用模型滤没）。各存各的字段，
+      // 识图/生图留空=跟随回复模型。
+      const replyPool = list
+      const visionPool = list
+      const imagePool = list
+      /*
+       * 三个选择器（2026-11-18 用户）：回复 / 识图 / 生图，都可各自自选。
+       *   识图、生图首项「跟随回复（默认）」= 空值：回复模型是多态 → 走它通用路径；
+       *   回复模型是纯文本 → 该功能未配置即不可用。
+       */
+      const replyRow = h('div', { className: 'gd_modelrow' },
+        h('span', { className: 'gd_modelrowlabel' }, t('model.reply')),
+        dd(cur, false, replyPool, (v) => post({ qqModel: v }, () => data.reload())))
+      const visionRow = h('div', { className: 'gd_modelrow', style: { marginTop: '6px' } },
+        h('span', { className: 'gd_modelrowlabel' }, t('model.vision')),
+        dd(curV, true, visionPool, (v) => post({ qqVisionModel: v }, () => data.reload())))
+      const imageRow = h('div', { className: 'gd_modelrow', style: { marginTop: '6px' } },
+        h('span', { className: 'gd_modelrowlabel' }, t('model.draw')),
+        dd(curI, true, imagePool, (v) => post({ qqImageModel: v }, () => data.reload())))
+      return h('div', null, replyRow, visionRow, imageRow)
     }
 
     function ChatModelSelect({ t }) {
@@ -2579,7 +2567,8 @@ window.__ModuleLoader__.load({
        *               否则未上报的渠道会在两个标签里都消失。
        */
       const isVlm = (m) => m.vision === 'yes'
-      const inModal = (m) => (m.vision === 'unknown' ? true : modal === 'vlm' ? isVlm(m) : !isVlm(m))
+      // 2026-11-18：去掉 LLM/VLM 分 tab 后，渠道卡片里**列出全部模型**（不再按 tab 过滤）
+      const inModal = (m) => true
       const modalModels = allModels.filter(inModal)
 
       const modelsOfGroup = (gid) => modalModels.filter((m) => (m.group ?? 'channel') === gid)
@@ -2740,205 +2729,29 @@ window.__ModuleLoader__.load({
         title: t('model.title'),
         hint: flash === null ? null : flash.text,
       },
-        // ── 大类：LLM / VLM ────────────────────────────────────────
-        //
-        // 为什么分两大类：这两类模型的用途完全不同 —— VLM 能看图（发图
-        // 才有意义），LLM 不能（发图等于没传）。混在一个列表里用户没法
-        // 判断"我选这个能不能看图"，只能试。
-        // 判定依据是 `vision`（服务端从 inputModalities 算），不是模型名。
-        h('div', { className: 'gd_modaltabs' },
-          [['llm', t('model.llm'), llmCount], ['vlm', t('model.vlm'), vlmCount]].map(([id, label, n]) =>
-            h('button', {
-              key: id,
-              className: `gd_modaltab${modal === id ? ' on' : ''}`,
-              disabled: busy || n === 0,
-              onClick: () => { setModal(id); setExpanded(null) },
-            },
-              label,
-              h('span', { className: 'gd_tabcount' }, String(n))))),
-
-        // ── 当前模型 + 推理等级（顶部一行摘要）──────────────────────
-        //
-        // 这一行是**保存状态的锚点**：点模型是即时生效的（不需要按保存），
-        // 但用户看不出来"到底存上没有"。
-        //
-        // ⚠️ 用本组件自己的 `flash`（第 1246 行）判断，**不要用 justSaved**。
-        //    justSaved 是 SettingsPage 的 state，作用域不覆盖这里 ——
-        //    直接引用会抛 ReferenceError: justSaved is not defined，
-        //    而它在渲染期抛出 → 整个设置页白屏（2026-10-19 实测踩到，
-        //    表现为"设置里鲸舱那一栏全白"，且不报任何可见错误）。
-        h('div', { className: 'gd_modelrow' },
-          h('span', { className: 'gd_modelrowlabel' }, t('model.current')),
-          h('b', { title: currentLabel }, currentLabel),
-          busy
-            ? h('span', { className: 'gd_savestate saving' }, t('saving'))
-            : (flash?.ok === true
-              ? h('span', { className: 'gd_savestate done' }, `✓ ${t('saved')}`)
-              : null),
-          currentEfforts.length > 0
-            ? h('select', {
-              className: 'gd_effortsel',
-              value: effortValue,
-              disabled: busy,
-              title: t('model.effort'),
-              onChange: (event) => apply({ effort: event.target.value }),
-            },
-              h('option', { value: '' }, `${t('model.effort')}：${t('model.effortDefault')}`),
-              currentEfforts.map((e) => h('option', { key: e, value: e }, t(`model.effortLevel.${e}`) === `model.effortLevel.${e}` ? e : t(`model.effortLevel.${e}`))))
-            : null),
-
-        // ── 切回自动（只在已选具体模型时出现）─────────────────────
-        //
-        // 之前这里**永远**有一个 auto 按钮，而上面的摘要行在 auto 模式下
-        // 已经写着"auto（按下方顺序自动选）"—— 同一个信息显示两遍，
-        // 还占一行高度。现在它只在"你选了具体模型、想切回来"时才有意义。
-        (settings.qqModel ?? 'auto') === 'auto' ? null : h('button', {
-          className: 'gd_autoitem',
-          disabled: busy,
-          onClick: () => { setLocalOrder(null); apply({ qqModel: 'auto' }) },
-        }, t('model.backToAuto')),
-
-        // ── 渠道卡片：每个渠道一张，模型列表可折叠 ──────────────────
-        //
-        // 形态照渠道卡片：标题行 = 渠道名 + 账号数 + 模型数 + 展开箭头；
-        // 展开后才是模型清单（每行点一下即选中）。
-        //
-        // 为什么不用"标签页 + 扁平列表"（之前那版）：用户是按**渠道**思考的
-        // （"我要用 buddy 的模型"），不是按分类。分类只作为分组小标题。
-        /*
-         * ★ 2026-11-02：把分组标题**去掉**（只剩一组时它没有意义）。
-         *
-         * 分组（免费车道 / 账号型 / 其它）本来就是给**渠道包**用的分类。
-         * 渠道包拆掉之后，`groupOf()` 对所有渠道都返回 `other` ——
-         * 于是永远显示一个「其它渠道」的标题，而"其它"相对于什么都不成立。
-         *
-         * 所以：**只有一组时不出标题**（那一组的名字就是"渠道"本身）；
-         * 真有多组时才显示，那时分类才有辨析价值。
-         */
-        /*
-         * ⚠️ 这里**只能写成表达式**（它在上面那个 h() 的子元素数组里），
-         *    所以"有几组"得在 map 里面算，不能在前面用 const 提出来。
-         *    组数很少（最多 4），重复算一次无所谓。
-         */
-        usable.length === 0
-          ? h('p', { className: 'gd_note' }, t('model.empty'))
-          : h('div', { className: 'gd_chcards' },
-            // 按额度模型分组：免费车道 → 账号型 → 其它 → 已关闭
-            ['lane', 'account', 'other', 'off'].map((g) => {
-              const items = g === 'off'
-                ? disabled
-                : enabled.filter((x) => groupOf(x.provider) === g)
-              if (items.length === 0) return null
-              // 只有一组时不显示组标题（分组是渠道包留下的分类，包拆了只剩 other）
-              const groupCount = ['lane', 'account', 'other', 'off'].filter((k) => (k === 'off'
-                ? disabled
-                : enabled.filter((x) => groupOf(x.provider) === k)).length > 0).length
-              return h('div', { className: 'gd_group', key: g },
-                groupCount > 1
-                  ? h('div', { className: 'gd_grouptitle' },
-                    t(`model.group.${g}`),
-                    g === 'account' ? h('span', { className: 'gd_grouphint' }, t('model.group.accountHint')) : null)
-                  : null,
-                items.map((item) => {
-                  const list = modelsForProvider(item.provider)
-                  const open = expanded === item.provider
-                  const currentIn = list.some((m) => `${m.provider}/${m.id}` === (settings.qqModel ?? 'auto'))
-                  const ms = latencyOf(item.provider)
-                  return h('div', {
-                    className: `gd_chcard${item.enabled ? '' : ' off'}${currentIn ? ' hasCurrent' : ''}${open ? ' expanded' : ''}${dragging === item.provider ? ' drag' : ''}${overTarget === item.provider && dragging !== null && dragging !== item.provider ? ' over' : ''}`,
-                    key: item.provider,
-                    // 拖拽落点：把拖着的渠道插到这个位置
-                    onDragOver: (e) => {
-                      if (dragging === null || !item.enabled) return
-                      e.preventDefault()
-                      try { e.dataTransfer.dropEffect = 'move' } catch {}
-                      setOverTarget(item.provider)
-                    },
-                    onDragLeave: () => setOverTarget((prev) => (prev === item.provider ? null : prev)),
-                    onDrop: (e) => {
-                      e.preventDefault()
-                      const from = dragging
-                      setDragging(null)
-                      setOverTarget(null)
-                      if (from !== null) dropOn(from, item.provider)
-                    },
-                  },
-                    // 标题行（点它展开/收起）
-                    h('div', {
-                      className: 'gd_chcardhead',
-                      role: 'button',
-                      tabIndex: 0,
-                      onClick: () => setExpanded(open ? null : item.provider),
-                      onKeyDown: (e) => {
-                        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setExpanded(open ? null : item.provider) }
-                      },
-                    },
-                      h('span', { className: `gd_chevron${open ? ' open' : ''}` }, '▸'),
-                      h('div', { className: 'gd_chcardname' },
-                        h('div', { className: 'gd_chcardtitle' },
-                          h('b', { title: item.provider }, item.provider),
-                          // 内置渠道标记：这两个不是 channel-pack 的账号渠道，
-                          // 而是 DSH 自带的（API Key / OAuth），凭据来源完全不同。
-                          item.kind === 'builtin'
-                            ? h('span', { className: 'gd_tagchip builtin' }, t('model.kindBuiltin'))
-                            : null,
-                          // 需要代理标记：不标的话用户只看到"试跑很慢/超时"，
-                          // 想不到是境外端点不通。
-                          item.needsProxy
-                            ? h('span', { className: 'gd_tagchip proxy', title: item.needsProxy }, t('model.needsProxy'))
-                            : null),
-                        h('span', { className: 'gd_chcardmeta' },
-                          // 内置渠道不说"账号"——它没有账号概念，说凭据
-                          item.kind === 'builtin'
-                            ? `${list.length} 模型 · ${item.credentialReady ? t('model.credReady') : t('model.credMissing')}`
-                            : `${list.length} 模型`,
-                          item.kind === 'builtin' ? '' : (item.accounts !== undefined && item.accounts >= 0 ? ` · ${item.accounts} 账号` : ''),
-                          ms === null ? '' : ` · ${ms}ms`,
-                          item.enabled === false ? ` · ${t('model.off')}` : '')),
-                      // 开关渠道
-                      h('button', {
-                        className: `gd_mini${item.enabled ? '' : ' on'}`,
-                        title: item.enabled ? t('model.disable') : t('model.enable'),
-                        disabled: busy,
-                        onClick: (e) => { e.stopPropagation(); toggle(item.provider, !item.enabled) },
-                      }, item.enabled ? '✓' : '○'),
-                      // 拖拽排序手柄（整卡可拖）
-                      h('span', {
-                        className: 'gd_grip',
-                        title: t('model.drag'),
-                        draggable: true,
-                        onDragStart: (e) => {
-                          e.stopPropagation()
-                          setDragging(item.provider)
-                          try { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', item.provider) } catch {}
-                        },
-                        onDragEnd: () => { setDragging(null); setOverTarget(null) },
-                      }, '⋮⋮')),
-                    // 模型清单（展开时）
-                    open
-                      ? (list.length === 0
-                        ? h('p', { className: 'gd_note', style: { padding: '4px 8px' } }, t('model.groupEmpty'))
-                        : h('div', { className: 'gd_modellist' },
-                          list.map((m) => {
-                            const value = `${m.provider}/${m.id}`
-                            const active = (settings.qqModel ?? 'auto') === value
-                            return h('button', {
-                              key: value,
-                              className: `gd_modelitem${active ? ' on' : ''}`,
-                              disabled: busy,
-                              title: `${m.provider} / ${m.id}`,
-                              onClick: () => { setLocalOrder(null); apply({ qqModel: value }) },
-                            },
-                              h('span', { className: 'gd_modelname' }, m.label ?? m.id),
-                              m.efforts?.length > 0
-                                ? h('span', { className: 'gd_modelbadge' }, `${m.effortDefault ?? m.efforts[0]}`)
-                                : null,
-                              active ? h('span', { className: 'gd_modelcheck' }, '✓') : null)
-                          })))
-                      : null)
-                }))
-            })),
-
+        // ── 回复 / 识图 / 生图 三个用途模型（2026-11-18）────────────
+        //   各存各的字段；识图/生图首项「跟随回复(=空)」。候选统一用全部模型池。
+        (() => {
+          const mlist = allModels
+          const mid = (m) => m.channel ? `${m.channel}/${m.provider}/${m.id}` : `${m.provider}/${m.id}`
+          const mkSel = (label, val, includeFollow, onPick) => {
+            const opts = []
+            if (includeFollow) opts.push(h('option', { key: 'f', value: '' }, t('model.follow')))
+            const poolIds = mlist.map(mid)
+            if (val && !includeFollow && val !== 'auto') opts.push(h('option', { key: 'cur', value: val }, val))
+            mlist.forEach((m, i) => opts.push(h('option', { key: poolIds[i], value: poolIds[i] }, m.label ?? m.id)))
+            return h('div', { className: 'gd_modelrow' },
+              h('span', { className: 'gd_modelrowlabel' }, label),
+              h('select', { className: 'gd_effortsel', value: val, title: val, disabled: busy,
+                onChange: (e) => onPick(e.target.value) }, opts))
+          }
+          return h('div', null,
+            mkSel(t('model.reply'), settings.qqModel ?? 'auto', false, (v) => { setLocalOrder(null); apply({ qqModel: v }) }),
+            h('div', { style: { height: '6px' } }),
+            mkSel(t('model.vision'), settings.qqVisionModel ?? '', true, (v) => apply({ qqVisionModel: v })),
+            h('div', { style: { height: '6px' } }),
+            mkSel(t('model.draw'), settings.qqImageModel ?? '', true, (v) => apply({ qqImageModel: v })))
+        })(),
         // ── 策略 ───────────────────────────────────────────────────
         /*
          * ★ 2026-11-02 换语义。

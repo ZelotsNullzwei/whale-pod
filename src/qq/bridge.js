@@ -12505,12 +12505,16 @@ const drewRecently = __drawRecentMs > 0 && lastDrewAt > 0 && Date.now() - lastDr
       + '控制在 150 字以内，一两句话一段，不要列清单。\n'
       + '现在输出：'
 
-    // 优先用 Magpie 里配的识图模型；读不到就用当前聊天模型
-    let prefer = ''
-    try {
-      const { readMagpieSettings } = await import('./mcpImage.js')
-      prefer = String(readMagpieSettings().vision ?? '').trim()
-    } catch { /* 读不到就退回 */ }
+    // 识图模型：**优先用户在小鲸鱼面板里设的「识图模型」**（cfg.visionModel）；
+    // 没设再回退 Magpie 里配的 vision；都没有就用当前聊天模型。
+    let prefer = String(this.cfg?.visionModel ?? '').trim()
+    if (prefer) this.log.info?.(`bridge：识图用面板设置的「${prefer}」`)
+    if (!prefer) {
+      try {
+        const { readMagpieSettings } = await import('./mcpImage.js')
+        prefer = String(readMagpieSettings().vision ?? '').trim()
+      } catch { /* 读不到就退回 */ }
+    }
     /*
      * ★★ **Magpie 里存的是两段，走网关要三段**（2026-11-06 修）。
      *
