@@ -1353,7 +1353,8 @@ export class ProtocolSupervisor {
       const child = spawn('powershell', ['-NoProfile', '-Command', ps], { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
       const entry = { child, startedAt: Date.now(), exit: null, lines: [] }
       this.procs.set(backendId, entry)
-      const hideCmd = 'Get-Process QQ -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 -and $_.Path -like \'' + linkcoreRoot.replace(/\\/g,'\\\\') + '*\' } | ForEach-Object { Add-Type -Name W -Namespace U -MemberDefinition \'[DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h,int c);\' -ErrorAction SilentlyContinue; [U.W]::ShowWindow($_.MainWindowHandle,0) | Out-Null }'
+      const lcPrefix = linkcoreRoot.replace(/\\/g, '\\\\')
+      const hideCmd = 'Add-Type -Name W -Namespace U -MemberDefinition \"[DllImport(\\\"user32.dll\\\")] public static extern bool ShowWindow(IntPtr h,int c);\" -ErrorAction SilentlyContinue; Get-Process QQ -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 -and $_.Path -like \"' + lcPrefix + '*\" } | ForEach-Object { [U.W]::ShowWindow($_.MainWindowHandle,0) | Out-Null }'
       let hn = 0
       const hideTimer = setInterval(() => { try { spawn('powershell', ['-NoProfile','-Command', hideCmd], { windowsHide:true, stdio:'ignore' }) } catch (e) {} if (++hn >= 15) clearInterval(hideTimer) }, 2000)
       if (hideTimer.unref) hideTimer.unref()
