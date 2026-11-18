@@ -21,7 +21,7 @@ const PY_CANDIDATES = [
  * @param {object} [log]
  * @returns {Promise<Buffer>} 缩好的 JPEG；失败就**原样返回**（审核会自行放行）
  */
-export async function shrinkForReview(buf, maxSide = 768, log = {}) {
+export async function shrinkForReview(buf, maxSide = 1536, log = {}) {
   if (!Buffer.isBuffer(buf) || buf.length < 1024) return buf
   const stamp = `${process.pid}-${Date.now()}`
   const tmpIn = path.join(os.tmpdir(), `wp-rv-${stamp}.img`)
@@ -32,7 +32,7 @@ export async function shrinkForReview(buf, maxSide = 768, log = {}) {
     'im = Image.open(sys.argv[1]).convert("RGB")',
     'n = int(sys.argv[3])',
     'im.thumbnail((n, n))',
-    'im.save(sys.argv[2], quality=82)',
+    'im.save(sys.argv[2], quality=88)',
   ].join('\n')
   try {
     fs.writeFileSync(tmpIn, buf)

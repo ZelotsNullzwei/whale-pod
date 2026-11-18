@@ -69,7 +69,7 @@ WhalePod **依附于 [DSH Desktop](https://github.com/deepseek-ai/deepseek-harne
 **❌ 不适合，如果**
 
 - 你**没有 DSH** —— 先去把 DSH 装上，这里没有替代方案
-- 你以为是一键脚本 —— 还要自备 QQ 协议端（推荐 SnowCat）、配 QQ 号、扫码登录
+- 你以为是一键脚本 —— 还要自备 QQ 协议端、配 QQ 号、扫码登录
 - 你想要开箱即用的成品 —— 现在还在 beta
 - 你想要「自动回复机器人」—— 它**经常故意不说话**，这是设计
 
@@ -99,7 +99,7 @@ WhalePod **依附于 [DSH Desktop](https://github.com/deepseek-ai/deepseek-harne
 │  ├─ 决策层    Jev / 规则 / 自定义（可插拔）                 │
 │  ├─ 记忆层    短期上下文 + 长期摘要                        │
 │  ├─ 人格层    角色提示词（可编辑）                          │
-│  ├─ 组件管理  协议端托管（推荐 SnowCat，需自备）            │
+│  ├─ 组件管理  协议端托管（需自备）                          │
 │  └─ 管理界面  Web UI（10 个页面，可折叠侧栏 + 线性图标）    │
 └──────────────────────────────────────────────────────────┘
 ```
@@ -116,7 +116,7 @@ WhalePod **依附于 [DSH Desktop](https://github.com/deepseek-ai/deepseek-harne
 > 代码里保留了完整的架子（后端定义、uv 安装流程、启停、模式切换、
 > 网关接入提示都已经写了），但**尚未在真机上跑通验证**：
 > `initArgs` 从未被调用、启动后不做就绪校验、OneBot 侧的对接也还是照
-> NapCat 的逻辑推的。**现在不要指望切过去就能用。**
+> 现有协议端的逻辑推的。**现在不要指望切过去就能用。**
 >
 > 保留它的原因是安装与托管这套逻辑（自带 uv + Python）本身有复用价值，
 > 以后要补的是 AstrBot 专属的那部分 —— 而不是从零重写。
@@ -129,39 +129,25 @@ WhalePod **依附于 [DSH Desktop](https://github.com/deepseek-ai/deepseek-harne
 
 **看你用哪个模型。**
 
-WhalePod 本身不收费，钱花在**你选的模型**上。它支持两类来源：
+WhalePod 本身不收费，钱花在**你接的模型渠道**上。
 
-| 来源 | 怎么计费 |
+**默认走 OpenAI 接口。** 只要渠道兼容 OpenAI 协议就能接：
+
+| 来源 | 说明 |
 |---|---|
-| **官方 API**（默认） | 按模型厂商官网价，从你的 API Key 余额扣 |
-| **自备渠道**（Ollama / 自建中转 / 别的 API） | 看你的渠道 —— 本地模型免费，中转看你买的套餐 |
+| **OpenAI 接口（默认）** | 填 `baseUrl` + API Key，任何 OpenAI 兼容端点都行 |
+| **官方 API** | 填厂商 API Key，按该厂商计价 |
+| **自备渠道** | Ollama / 自建中转 / 任意 OpenAI 兼容端点 —— 本地模型免费，中转看你的套餐 |
 
-### 默认按官方价计费
+> 本质上都是 OpenAI 兼容接口 —— WhalePod 只认协议，不认厂商。
 
-面板上的「折合费用」就是按**模型官网挂牌价**算的：
+### 费用怎么算
 
-```
-费用按各厂商官网挂牌价折算，与实际渠道无关
-```
+面板上的「折合费用」按**模型官网挂牌价**折算，只用于横向对比，**不是你的实际账单**。走免费或包月渠道时真实扣费更少甚至为 0，核账请去对应厂商后台。
 
-它回答的是「**这些用量按原价买要多少钱**」—— 换渠道时好做对比。
-但**它不是你的账单**：如果你走的是免费/包月渠道，实际扣费会更少甚至为 0。
-要核账请去对应厂商的后台。
+### 搜索成本
 
-### 搜索是唯一固定成本
-
-| 项目 | 单价 |
-|---|---|
-| Search API | 每 1,000 次成功请求 ¥5 → **¥0.005/次** |
-| 总结那一步 | 几百 token → 按你选的模型官网价 |
-
-按群里一天搜十几次算，**一个月大概 ¥2~3**（用便宜模型的话）。
-
-余额低于 ¥2 时它会自己提一句（大肥鱼会念叨 Token，这是她的性格）。
-
-> **想完全不花钱**：
-> · 搜索可以在设置里关掉 —— 之后遇到新番、新人名它会说「不太确定」而不是硬编
-> · 模型换成本地 Ollama 或任何免费渠道，聊天成本就是 0
+搜索走外部 Search API，按次计费（单价以你配置的服务商为准）。**不想花这笔钱**：设置里可以关掉搜索，之后遇到没把握的信息她会直说「不太确定」，而不是硬编。模型换成本地或免费渠道，聊天成本就是 0。
 
 ### 怎么控制成本
 
@@ -177,10 +163,10 @@ QQ 机器人常见的两个痛点，WhalePod 各解决一个：
 
 | 痛点 | 常见做法 | WhalePod |
 |---|---|---|
-| **要开一堆窗口** | NapCat + 框架 + 桥接，2-3 个 cmd/node 挂着 | **一个托盘进程**，Web 管所有 |
+| **要开一堆窗口** | 协议端 + 框架 + 桥接，几个窗口挂着 | **一个托盘进程**，Web 管所有 |
 | **烧钱** | 每条消息都调付费 API | **免费渠道优先**，付费仅兜底 |
 | **说话很呆** | 逢消息必回 | **决策层**先判断该不该说 |
-| **装组件要自己折腾** | 去 GitHub 找 Release、装 Python、配环境 | **一键启停 + 托管**；协议端自备（推荐 SnowCat） |
+| **装组件要自己折腾** | 去 GitHub 找 Release、装 Python、配环境 | **一键启停 + 托管**；协议端自备 |
 
 第三点是关键。真人不会每条消息都回 —— 他们会判断「这是在问我吗」
 「我刚说过话要不要歇会」「现在插话合适吗」。WhalePod 把这件事拆成两层：
@@ -196,17 +182,23 @@ QQ 机器人常见的两个痛点，WhalePod 各解决一个：
 
 ## 组件与协议端
 
-WhalePod 通过 OneBot v11 连接协议端（启停、日志、扫码登录）。**协议端本体需自备**，WhalePod 不再内置下载。
+WhalePod 通过 **OneBot v11** 连接 QQ 协议端（启停、日志、扫码登录）。**协议端本体需自备** —— WhalePod 不内置下载、也不随包分发任何协议端代码，只做托管。
 
-推荐协议端：**SnowCat（雪猫）** —— NapCat + SnowLuma 融合的第三方 QQ 客户端，跑在官方 QQ 9.9.37 主进程内，抗风控较好。
+你手上有什么协议端就用什么，只要满足：
 
-| 组件 | 许可 | 获取方式 | 说明 |
-|---|---|---|---|
-| **SnowCat** | 见上游仓库 | 自备（GitHub 源码 + 打包） | https://github.com/DandanLLab/SnowCatQQ ，仅适配 QQ 9.9.37-54395；解包官方 QQ 后 V8 注入启动 |
-| **NapCat** | Limited Redistribution License | ❌ 上游已终止 | 2026-11-12 仓库被清空、Release 全删；已装的照常跑 |
-| **AstrBot** | AGPL-3.0 | ⚠️ 框架已有，**未完善** | 见上文说明，当前不可用 |
+- 提供 **OneBot v11**（HTTP / 正向 WS 均可）
+- WhalePod 能填地址连上，就能用面板启停、看日志、扫码登录
 
-> SnowCat 的部署：下载官方 QQ 9.9.37 安装包 → 用 SnowCat 的 `snowcat-qq-unpack.ps1` 解包成便携结构 → `snowcat-run.ps1` 启动（V8 注入 + WebUI 6099）。启动后监听 OneBot ws 3001，WhalePod 直连即可。详见上游仓库。
+### 怎么接
+
+| 方式 | 说明 |
+|---|---|
+| **只连接** | 你自己先把协议端跑起来，把它的 OneBot 地址填进 WhalePod 设置 |
+| **托管启动** | 把协议端放到 `~/.whale-pod/protocol/<名字>/`，面板识别到入口就显示「已安装」，可一键启停、看日志 |
+
+托管目录约定：里面能找到入口（`index.js`，或 `*.Shell/*WinBootMain.exe`）即视为已安装。
+
+> 常见协议端（NapCat / SnowCat / SnowLuma 等）上游近况各有变化，本仓库不跟踪、不背书；请自备一份可用的，自行确认来源、许可与账号风险。
 
 
 ### 自带运行时（为 AstrBot 预留）
@@ -235,34 +227,15 @@ WhalePod 下载 uv（14.6 MB，单文件）
 > 所以日常使用不会碰到。要启用 AstrBot 模式之前，先按上面的说明做好
 > 「可能跑不通」的准备。
 
-### 上游变化：SnowLuma 与 NapCat
-
-| 上游 | 现状 | WhalePod 的处理 |
-|---|---|---|
-| **SnowLuma** | 仓库 2026-11 变 404 | 后端支持已从代码删除 |
-| **NapCat** | 2026-11-12 仓库被清空：只剩一句「到这里告一段落」，**0 个 Release、0 个 Tag**，文档站也 404 | 后端与进程托管**保留**；**自动下载失效**（`/releases/latest` 变 404） |
-
-NapCat 这条要展开说，因为它影响「装」这一步：
-
-- **已经装好的**：照常启动、照常托管，配置和登录态都不受影响
-- **面板「一键装」**：会停在 `查询 NapCat 版本失败：HTTP 404` —— 代码没删，是上游没东西可下了
-- **新装**：自己准备一份 NapCat（旧版备份、别的机器拷来、或社区 fork 的 Release —— ⚠️ 非官方，自行判断来源、风险与许可），解压到 `~/.whale-pod/protocol/napcat/`
-
-WhalePod 认这个目录：只要里面能找到入口（`index.js`，或 `NapCat.*.Shell/NapCatWinBootMain.exe`），就显示「已安装」，启停与日志照常。
-
 ### 许可合规
 
-「内置下载」与「打包分发」是**两件不同的事**：
+WhalePod **不提供协议端下载，也不随包分发协议端代码** —— 协议端完全由你自己获取、自己承担其许可约束。
 
-- **下载官方 Release** → 用户主动从上游获取，**不是 WhalePod 再分发** ✅
-- **打进 WhalePod 发行包** → 属于再分发，受各自许可约束 ⚠️
+- 协议端是第三方软件，其来源、许可证与使用限制由它的作者决定，与本仓库无关
+- WhalePod 只做**进程托管与连接**，不改协议端、不把它塞进发行包
+- 请自行确认你手上那份协议端的来源正当、许可允许你用，并遵守《QQ 用户协议》
 
-> NapCat 上游 2026-11 终止后，「下载官方 Release」这条路已经不可用；
-> 原则不变 —— WhalePod 依旧不把协议端代码放进自己的仓库。
-
-所以 WhalePod **只做进程托管**（下载器只在上游还在时可用），不把协议端代码放进自己的仓库。
-下载前 UI 会强制展示许可名称、链接与要点，用户显式确认后才开始；
-下载后自动把上游 LICENSE 与来源说明 (`WHALE-POD-NOTICE.md`) 一并存下来。
+> 建议使用小号，账号风险自负。
 
 ---
 
@@ -299,7 +272,7 @@ dsh plugin --profile desktop add link:<解压目录>/plugin
 侧栏会出现「鲸舱」。第一次点「一键启动」，它会：
 
 - 自己拉 WhalePod 进程
-- 托管你自己准备的协议端（推荐 SnowCat：https://github.com/DandanLLab/SnowCatQQ）
+- 托管你自己准备的协议端
 - 弹二维码让你扫码登录
 
 **④ 扫码登录 QQ**
@@ -345,7 +318,7 @@ node src/index.js
 |---|---|
 | **DSH Desktop** | 装成插件时必需（复用它的 `channel-pack` 和凭据）；独立跑时可选 |
 | **Node 22+** | 独立跑必需；用 DSH 自带的运行时也行 |
-| **QQ 协议端** | 自备一份 —— 推荐 **SnowCat**（[DandanLLab/SnowCatQQ](https://github.com/DandanLLab/SnowCatQQ)，仅适配 QQ 9.9.37-54395）；NapCat 上游 2026-11 终止、Release 全删，已装的那份仍可托管 |
+| **QQ 协议端** | 自备一份可用的 OneBot v11 协议端，填地址连接或放进 `~/.whale-pod/protocol/` 托管 |
 
 ### 立刻用起来（任何 OpenAI 客户端）
 
@@ -518,8 +491,8 @@ WhalePod 会 POST：
 | `[表情包:猫猫]` | 按名字挑 —— 先查 `faces.json` 按名匹配，挑不到再退到收藏表情 |
 
 **关于"按关键词搜表情"**：QQ 没有公开的表情搜索 API（实测候选接口全 404），
-所以 WhalePod 在**本地**完成匹配 —— `src/qq/faces.json` 是从 NapCat 内嵌的
-QQ face_config 导出的表情索引（105 个经典小黄脸 + 动画表情）。
+所以 WhalePod 在**本地**完成匹配 —— `src/qq/faces.json` 是从 QQ 内置的
+face_config 导出的表情索引（105 个经典小黄脸 + 动画表情）。
 
 如果你下载过 QQ 表情商城的表情包，可以生成自己的索引：
 
@@ -573,12 +546,6 @@ WhalePod 会把送进模型的文本里的 `[表情包:xx]`/`[图片]` 改写成
 - **WebSocket 服务端**（正向 WS）→ 填到 `wsUrl`
 - **HTTP API** → 填到 `httpUrl`
 
-> **2026-11 上游变化**：SnowLuma 仓库 404；NapCat 仓库被清空（Release 与 Tag 全删，
-> 文档站也 404）。这两条**自动下载**的路都不通了 —— 已装在本机的那份不受影响，
-> 新装请自备，见[「上游变化」](#上游变化snowluma-与-napcat)。
->
-> ⚠️ SnowLuma 的 EULA 对「通过自动化脚本部署」有限制，
-> 所以 WhalePod 刻意不做它的自动安装。
 
 ---
 
@@ -628,7 +595,7 @@ Web UI 的「人格」页可以直接编辑并切换当前角色。
 | **QQ** | 连接状态、消息统计、最近交互、暂停开关 |
 | **模型** | **路由策略 / 渠道优先级 / 默认模型 / token 上限 / 试跑** |
 | **渠道** | 自备渠道管理（添加、测试连接、删除） |
-| **组件** | **模式切换 + 协议端启停/日志**（自动下载随 NapCat 上游终止失效；AstrBot 为未完善） |
+| **组件** | **模式切换 + 协议端启停/日志**（AstrBot 为未完善） |
 | **决策** | 提供者可用性、**在线试判断**（不真的发消息） |
 | **人格** | 编辑角色、切换当前角色 |
 | **记忆** | 各会话上下文、长期摘要、清空 |
@@ -898,7 +865,7 @@ looking things up. Point it at a local model and cost drops to zero.
 
 - **LLM gateway (OpenAI-compatible).** Ships with DeepSeek account credentials; any OpenAI-compatible endpoint can be added as a custom provider.
 - **QQ bridge.** OneBot v11 in and out. A decision layer first asks *should I speak at all*, then the model decides *what to say* — which is both cheaper and more human than replying to everything.
-- **Protocol host.** Starts, stops and supervises your own protocol side (logs, QR-less quick login). **SnowCat** is what we run now ([DandanLLab/SnowCatQQ](https://github.com/DandanLLab/SnowCatQQ)); NapCat upstream was wiped in 2026-11, so the built-in downloader no longer works.
+- **Protocol host.** Starts, stops and supervises your own OneBot v11 protocol side (logs, QR-less quick login). Bring your own protocol host; WhalePod does not bundle or download one.
 
 **Modes**
 
@@ -910,7 +877,7 @@ looking things up. Point it at a local model and cost drops to zero.
 > The AstrBot path has the full skeleton (backend definition, uv install flow, start/stop,
 > mode switching, gateway hint) but has **never been verified end-to-end**: `initArgs` is
 > never called, there is no readiness check after spawn, and the OneBot wiring is inferred
-> from the NapCat path. Do not expect it to work yet. Use `whale-pod` mode.
+> from the existing protocol path. Do not expect it to work yet. Use `whale-pod` mode.
 
 **Can I use a local model?**
 
@@ -938,7 +905,7 @@ layer already filters out most messages.
 - Decision and expression are separate layers — that separation is what makes it feel less like a bot.
 - Data lives in `~/.whale-pod`; deleting that directory uninstalls everything.
 
-**Requirements:** DSH Desktop · Node 22.19+ · a QQ protocol host of your own — **SnowCat** recommended ([DandanLLab/SnowCatQQ](https://github.com/DandanLLab/SnowCatQQ))
+**Requirements:** DSH Desktop · Node 22.19+ · a QQ protocol host of your own (any OneBot v11 endpoint)
 
 See the Chinese sections above for configuration details, the full CLI reference, and the API surface.
 
@@ -947,10 +914,7 @@ See the Chinese sections above for configuration details, the full CLI reference
 ## 已知限制
 
 - **reverse WS 未实现** —— 只支持 WhalePod 主动连协议端（forward）。
-  SnowCat / NapCat 都支持正向 WS，够用。
-- **协议端自动下载已失效** —— NapCat 上游 2026-11-12 清空仓库、Release 全删，
-  「组件」页的一键装会报 `HTTP 404`。已装好的照常跑；新装**推荐直接用 SnowCat**
-  （外部目录 + `SNOWCAT_ROOT` 指过去）；仍想用 NapCat 的，把一份放进 `~/.whale-pod/protocol/napcat/`。
+  常见协议端都支持正向 WS，够用。
 - **图片只记占位** —— 收到图片存 `[图片]`，不送多模态（可扩展）。
 - **托盘需要额外包** —— 未装 `systray2` 时回退控制台模式，核心功能不受影响。
 - **长期记忆用摘要而非向量检索** —— 见上文取舍说明。
@@ -961,8 +925,8 @@ See the Chinese sections above for configuration details, the full CLI reference
 
 ## 合规
 
-- WhalePod **不修改** QQ 客户端或协议端，也**不在发行包里附带**它们；协议端由用户自己获取（「组件」页提供 SnowCat 获取入口）。
-- 使用第三方协议端（NapCat 及其社区分支等）请自行阅读其许可与
+- WhalePod **不修改** QQ 客户端或协议端，也**不在发行包里附带**它们；协议端由用户自己获取。
+- 使用第三方协议端请自行阅读其许可与
   《QQ 用户协议》。**建议使用小号**，账号风险自负。
 - WhalePod 本身 MIT 许可，不含任何腾讯专有代码。
 

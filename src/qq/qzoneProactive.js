@@ -534,7 +534,23 @@ export function startQzoneProactive(bridge, opts = {}) {
     /* 2026-11-12：让模型按人格现写文案，模板只兜底 */
     try {
       const better = await bridge._writeQzoneCopy?.(content.type, content, plan)
-      if (better && better.length >= 6) { content.text = better; bridge.log?.info?.(`qzone-proactive：文案已现写「${better.slice(0, 24)}」`) }
+      if (better && better.length >= 6) {
+        /*
+         * 2026-11-17：outfit(穿搭)帖**图文必须同源**——配图穿的是 plan.outfit，
+         * 文案若编了别的衣服（实测「衣柜翻出蓝色小抓夹，配浅灰棉服…」而配图并非这身）就图文不符。
+         * 硬校验：文案里出现的"衣物实词"必须在 todayWear 里出现过，否则**不采用这条现写、回退模板**
+         * （模板 outfit 文案和配图本就同源）。
+         */
+        let ok = true
+        if (content.type === 'outfit' || content.type === 'selfie') {
+          const todayWear = String(plan?.outfit ?? content?.outfit ?? content?.basis ?? '').replace(/\*\*/g, '')
+          const CLOTH = ['棉服','外套','大衣','羽绒','毛衣','针织','卫衣','衬衫','T恤','T恤','连衣裙','连身裙','背带裙','半身裙','短裙','长裙','百褶','长裤','阔腿裤','牛仔裤','裤','围裙','风衣','开衫','马甲','背心','吊带','睡衣','家居服','长裙','短靴','长靴','乐福鞋','帆布鞋','小皮鞋','运动鞋','玛丽珍','围巾','帽子','发夹','发圈','发带']
+          const worn = CLOTH.filter((w) => better.includes(w))
+          const foreign = worn.filter((w) => !todayWear.includes(w))
+          if (foreign.length) { ok = false; bridge.log?.info?.(`qzone-proactive：现写文案提到不在今天穿着里的「${foreign.join('/')}」→ 回退模板保图文一致`) }
+        }
+        if (ok) { content.text = better; bridge.log?.info?.(`qzone-proactive：文案已现写「${better.slice(0, 24)}」`) }
+      }
     } catch { /* 用模板兜底 */ }
 
     const check = (c) => checkQzoneText(c.text, c.basis ?? '', { basisOk: c.type !== 'scene' })

@@ -265,6 +265,9 @@ window.__ModuleLoader__.load({
         'qq.supervisor.stop': '停止协议端',
         'qq.start': '一键启动',
         'qq.stop': '完全关闭',
+        'qq.restart': '重启',
+        'qq.restartHint': '完全关闭后重新启动（桥接 + 协议端 + 进程）',
+        'qq.addProtocol': '添加协议端',
         'qq.startHint': '启动 WhalePod 进程、协议端与 QQ 桥接',
         'qq.stopHint': '关闭桥接、停止协议端，并结束 WhalePod 进程（配置保留）',
         'actionRestarting': '已发出指令，状态刷新中…',
@@ -410,7 +413,7 @@ window.__ModuleLoader__.load({
         'model.effortLevel.max': '最高',
         'model.effortLevel.tiered': '分级',
 
-        'napcat.install': '获取 SnowCat（见说明）',
+        'napcat.install': '添加本地自建协议端',
         'napcat.installing': '安装中…',
         'napcat.logs': '协议端运行日志',
         'napcat.logsEmpty': '暂无日志',
@@ -418,7 +421,7 @@ window.__ModuleLoader__.load({
         'napcat.webuiStopped': '协议端未运行，先启动',
         'napcat.webuiNoToken': '未读到登录令牌，面板打开后需手动输入（首次登录后会生成）',
         'napcat.webuiAt': '管理面板：',
-        'napcat.accept': 'SnowCat 是第三方 QQ 客户端（见上游仓库许可），需自行从 GitHub 获取并按说明部署。点确定打开仓库地址。',
+        'napcat.accept': '将使用本地运行的协议端。点确定继续。',
         'napcat.progress': '安装进度',
         'napcat.builtIn': '内置托管：协议端由 DSH 自动拉起，无需手动开窗口',
 
@@ -631,6 +634,9 @@ window.__ModuleLoader__.load({
         'qq.supervisor.stop': 'Stop protocol',
         'qq.start': 'Start',
         'qq.stop': 'Shut down',
+        'qq.restart': 'Restart',
+        'qq.restartHint': 'Fully stop then start again (bridge + protocol + process)',
+        'qq.addProtocol': 'Add protocol',
         'qq.startHint': 'Start the WhalePod process, protocol side and the QQ bridge',
         'qq.stopHint': 'Stop the bridge, protocol side and the WhalePod process (settings kept)',
         'actionRestarting': 'Command sent, refreshing…',
@@ -746,7 +752,7 @@ window.__ModuleLoader__.load({
         'model.effortLevel.max': 'Max',
         'model.effortLevel.tiered': 'Tiered',
 
-        'napcat.install': 'Get SnowCat (see notes)',
+        'napcat.install': 'Add local protocol',
         'napcat.installing': 'Installing…',
         'napcat.logs': 'Protocol run log',
         'napcat.logsEmpty': 'No log entries yet',
@@ -754,7 +760,7 @@ window.__ModuleLoader__.load({
         'napcat.webuiStopped': 'Protocol side is not running; start it first',
         'napcat.webuiNoToken': 'No login token found; enter it manually in the panel (generated after first login)',
         'napcat.webuiAt': 'Web panel:',
-        'napcat.accept': 'SnowCat is a third-party QQ client; get it from GitHub and follow its setup. OK opens the repo.',
+        'napcat.accept': 'This will use the locally-run protocol side. OK to continue.',
         'napcat.progress': 'Install progress',
         'napcat.builtIn': 'Built-in hosting: DSH starts the protocol side automatically; no manual window needed',
         'napcat.webuiAt': 'Web panel:',
@@ -1808,6 +1814,13 @@ window.__ModuleLoader__.load({
               title: enabled ? t('qq.stopHint') : t('qq.startHint'),
               onClick: () => act(enabled ? '/qq/stop' : '/qq/start'),
             }, busy ? '…' : enabled ? t('qq.stop') : t('qq.start')),
+            // 重启：完全关闭再启动（2026-11-18 用户要求，放在"完全关闭"之后）
+            enabled ? h('button', {
+              className: 'gd_btn',
+              disabled: busy,
+              title: t('qq.restartHint'),
+              onClick: () => act('/qq/restart'),
+            }, t('qq.restart')) : null,
             // 暂停开关：按钮上只写**动作**（暂停 / 恢复），不写状态。
             // 之前是「已暂停 ↔ 开启」，两个词一个像状态一个像动作，
             // 用户分不清按下去会发生什么（"已暂停"看着像当前状态标签，
@@ -2281,7 +2294,7 @@ window.__ModuleLoader__.load({
 
       const procs = alive.data?.processes ?? []
       const isUp = alive.data?.alive === true
-      const kindLabel = (k) => (k === 'whale-pod' ? 'WhalePod' : k === 'napcat' ? 'NapCat' : t('proc.other'))
+      const kindLabel = (k) => (k === 'whale-pod' ? 'WhalePod' : k === 'napcat' ? '协议端' : t('proc.other'))
       const fmtTime = (iso) => {
         if (!iso) return '—'
         try { return new Date(iso).toLocaleTimeString() } catch { return '—' }
@@ -3207,27 +3220,30 @@ window.__ModuleLoader__.load({
             !napcatInstalled
               ? h('button', {
                 className: 'gd_btn primary',
-                disabled: busy || installProgress.installing !== null,
+                disabled: busy,
+                title: '添加本地协议端',
                 onClick: async () => {
-                  // 许可确认：NapCat 是 Limited Redistribution License，
-                  // 下载前必须让用户明确同意（合规要求，不可省略）。
-                  if (!window.confirm?.(t('napcat.accept'))) return
-                  setBusy(true)
-                  try { window.open('https://github.com/DandanLLab/SnowCatQQ', '_blank') }
-                  catch (error) { setToast({ ok: false, text: String(error?.message ?? error) }) }
-                  finally { setBusy(false) }
+                  // 2026-11-18：协议端都是本地自留的（上游早没了），不再跳三方仓库，
+                  // 统一打开本地面板由用户放置/管理协议端。
+                  try {
+                    const info = await api('/backends/webui')
+                    window.open?.(info.autoLoginUrl ?? info.url, '_blank', 'noopener')
+                  } catch (error) { setToast({ ok: false, text: String(error?.message ?? error) }) }
                 },
-              }, installProgress.installing !== null ? t('napcat.installing') : t('napcat.install'))
+              }, t('qq.addProtocol'))
               : h('button', {
                 className: 'gd_btn',
                 disabled: busy,
+                title: '添加本地协议端',
                 onClick: async () => {
-                  setBusy(true)
-                  try { await post(napcatRunning ? '/backends/stop' : '/backends/start', {}, 30000); backends.reload() }
-                  catch (error) { setToast({ ok: false, text: String(error?.message ?? error) }) }
-                  finally { setBusy(false) }
+                  // 添加协议端：打开本地协议端管理 / 引导添加自建内核。
+                  try {
+                    const info = await api('/backends/webui')
+                    const target = info.autoLoginUrl ?? info.url
+                    window.open?.(target, '_blank', 'noopener')
+                  } catch (error) { setToast({ ok: false, text: String(error?.message ?? error) }) }
                 },
-              }, napcatRunning ? t('qq.supervisor.stop') : t('qq.supervisor.start')),
+              }, t('qq.addProtocol')),
             // 打开 NapCat 自己的管理面板（WebUI）。
             // token 从它的 webui.json 读出并以 URL 参数带上 —— 官方启动日志
             // 打的就是 /webui?token=xxx 形式，等效自动登录，不用手抄 token。
@@ -3298,7 +3314,7 @@ window.__ModuleLoader__.load({
         h(Section, { title: t('section.qq'), hint: t('section.qqHint') },
           h(Row, { label: t('qq.enabled') },
             h(Toggle, { checked: qq.enabled === true, disabled: busy, onChange: (v) => apply({ 'qq.enabled': v }) })),
-          h(Row, { label: t('qq.supervisor'), hint: '协议端（SnowCat）' },
+          h(Row, { label: t('qq.supervisor'), hint: '协议端（本地运行）' },
             h(Toggle, {
               checked: qq.supervisor?.enabled === true,
               disabled: busy,

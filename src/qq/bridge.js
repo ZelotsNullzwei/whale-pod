@@ -6851,7 +6851,7 @@ const drewRecently = __drawRecentMs > 0 && lastDrewAt > 0 && Date.now() - lastDr
                 buf: finalBuf,
                 mode: qcMode,
                 reviewEnabled,
-                shrink: (b) => shrinkForReview(b, 640, this.log),
+                shrink: (b) => shrinkForReview(b, 1536, this.log),
                 legacyCheck,
                 captureReviewer,
                 requireReview,
@@ -12025,7 +12025,7 @@ const drewRecently = __drawRecentMs > 0 && lastDrewAt > 0 && Date.now() - lastDr
             ? '自拍帖只写发型、衣服、当下的状态，不要编地点和动作。'
             : type === 'outing'
               ? '出门帖只写素材里明确发生的出门事项；不要写穿搭，不要添加路况、天气体感、商品细节、价格或同行者，素材没给出的信息一律省略。'
-              : '穿搭帖只写衣服/鞋/配饰的细节和感受，不要编地点和行程。'
+              : '穿搭帖**只能描述「今天穿着」里明确给出的衣物/鞋/配饰**，逐件对应，不许添加、替换、臆造任何「今天穿着」里没有的衣服、颜色或配饰（配图穿的就是这一套，文案说错了就图文不符）。只写这些衣物的细节和感受，不要编地点和行程。'
       const user = [`类型：${typeName}`, `素材：${basis || scene}`, outfit ? `今天穿着：${outfit}` : '', hair ? `发型：${hair}` : '', scene ? `画面：${scene}` : '', `规则：${__typeRule}`].filter(Boolean).join('\n')
       const chunks = []
       const stream = llm.stream({ provider, model: model || undefined, messages: [{ role: 'system', content: sys }, { role: 'user', content: user }], maxTokens: 140, temperature: 0.95, signal: AbortSignal.timeout(12000) })

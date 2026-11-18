@@ -150,7 +150,7 @@ export function webInfo(home, backendId) {
       if (j?.token) {
         out.token = String(j.token)
         if (j.port) out.port = Number(j.port)
-        out.url = `http://127.0.0.1:${out.port ?? 6099}/webui`
+        out.url = `http://127.0.0.1:18898/`  // → 小鲸鱼自己的 Web 面板（含 LinkCore 页签；原 SnowCat 6099/webui）
         return out
       }
     } catch { /* 换下一个 */ }
@@ -224,10 +224,15 @@ export function listProcesses(home, backendId) {
   // napcat 后端也要把它算进来，否则"后端进程"只显示 WhalePod 一个。
   const snowcatPrefix = (process.env.SNOWCAT_ROOT || 'D:\\SnowCat.Portable')
     .replace(/\//g, '\\').toLowerCase()
+  // LinkCore 自建内核目录（WhalePod-LC）：其 QQ.exe 也属于 napcat 后端，需一并反查到，
+  // 否则面板反查不到真实进程、只能显示 supervisor 的旧 pid（stale）。
+  const linkcorePrefix = (process.env.WHALEPOD_LC_ROOT || 'D:\\WhalePod-LC')
+    .replace(/\//g, '\\').toLowerCase()
   const matchPrefix = (full) => {
     const f = full.replace(/\//g, '\\').toLowerCase()
     if (f.startsWith(prefix)) return true
     if (backendId === 'napcat' && f.startsWith(snowcatPrefix)) return true
+    if (backendId === 'napcat' && f.startsWith(linkcorePrefix)) return true
     return false
   }
 

@@ -173,6 +173,16 @@ export function createWebServer(opts) {
       }
 
       // ── 组件（协议端 / 框架）─────────────────────────────────
+      if (p === '/api/linkcore' && req.method === 'GET') {
+        // 代理 LinkCore 管理面板快照（18802）
+        try {
+          const r = await fetch('http://127.0.0.1:18802/api/snapshot')
+          const j = await r.json()
+          return json(res, 200, j)
+        } catch (e) {
+          return json(res, 502, { error: 'LinkCore 不可达：' + String(e && e.message || e) })
+        }
+      }
       if (p === '/api/backends' && req.method === 'GET') {
         return json(res, 200, await backendsSnapshot({ store, state, protocols }))
       }
@@ -2616,6 +2626,12 @@ async function whalePodCompat(o) {  const { sub, method, url, req, res, json, re
       const stopped = await stopQqBridge({ store, state, log })
       return json(res, stopped.ok ? 200 : 500, stopped)
     }
+    if (sub === '/qq/restart' && method === 'POST') {
+      /* 2026-11-18：重启 = 先完全停（桥接+协议端+进程），再重新拉起。 */
+      try { await stopQqBridge({ store, state, log }) } catch { /* 停失败也继续拉 */ }
+      const started = await startQqBridge({ store, state, log, decision, memory, longMemory, persona, usage, llm, creds })
+      return json(res, started.ok ? 200 : 500, started)
+    }
     if (sub === '/qq/pause' && method === 'POST') {
       const body = await readJson(req)
       // 同 /status：只认 state.bridge（关了就是关了，不回退旧实例）
@@ -2639,7 +2655,7 @@ async function whalePodCompat(o) {  const { sub, method, url, req, res, json, re
           webui = {
             url: w.url,
             hasToken: w.token !== null,
-            autoLoginUrl: w.token === null ? null : `${w.url.replace(/\/$/, '')}/web_login?token=${encodeURIComponent(w.token)}`,
+            autoLoginUrl: w.token === null ? null : `${w.url.replace(/\/$/, '')}?token=${encodeURIComponent(w.token)}`,
           }
         }
       } catch { /* ignore */ }
@@ -2711,7 +2727,7 @@ async function whalePodCompat(o) {  const { sub, method, url, req, res, json, re
         ok: true,
         url: w.url,
         token: w.token,
-        autoLoginUrl: w.token === null ? null : `${w.url.replace(/\/$/, '')}/web_login?token=${encodeURIComponent(w.token)}`,
+        autoLoginUrl: w.token === null ? null : `${w.url.replace(/\/$/, '')}?token=${encodeURIComponent(w.token)}`,
       })
     }
 
