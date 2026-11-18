@@ -2380,13 +2380,10 @@ window.__ModuleLoader__.load({
       },
         h('span', { className: 'gd_note' }, label),
         h('input', {
+          className: 'gd_input',
           value: form[key] ?? '',
           placeholder: placeholder ?? '',
           onChange: (e) => set(key, e.target.value),
-          style: {
-            fontSize: '12px', padding: '3px 6px', background: 'transparent', color: 'inherit',
-            border: '1px solid rgba(120,120,120,.35)', borderRadius: '6px', minWidth: 0,
-          },
         }))
       const save = () => {
         if (busy) return
@@ -2411,12 +2408,9 @@ window.__ModuleLoader__.load({
         h('label', { style: { display: 'flex', flexDirection: 'column', gap: '2px', minWidth: 0 } },
           h('span', { className: 'gd_note' }, '渠道类型'),
           h('select', {
+            className: 'gd_select',
             value: form.provider,
             onChange: (e) => set('provider', e.target.value),
-            style: {
-              fontSize: '12px', padding: '3px 6px', background: 'transparent', color: 'inherit',
-              border: '1px solid rgba(120,120,120,.35)', borderRadius: '6px',
-            },
           },
             h('option', { value: 'magpie-mcp' }, 'Magpie 插件（MCP 工具）'),
             h('option', { value: 'openai-images' }, '兼容 API（/v1/images/generations）'),
@@ -2434,13 +2428,9 @@ window.__ModuleLoader__.load({
           input('裁底部 cropBottom', 'cropBottom', '0.1')),
         h('div', { style: { display: 'flex', gap: '8px', alignItems: 'center' } },
           h('button', {
+            className: 'gd_btn primary',
             onClick: save,
             disabled: busy,
-            style: {
-              padding: '4px 14px', fontSize: '13px', borderRadius: '8px',
-              border: '1px solid rgba(59,130,246,.9)', background: 'rgba(59,130,246,.18)',
-              color: 'inherit', cursor: busy ? 'default' : 'pointer',
-            },
           }, busy ? '保存中…' : '保存'),
           h('span', { className: 'gd_note' },
             'key 只填凭据名（DSH 凭据库 / 同名环境变量），不会存明文'),
@@ -2473,14 +2463,9 @@ window.__ModuleLoader__.load({
       }
       const seg = (on, label, onClick) => h('button', {
         key: label,
+        className: on ? 'gd_btn primary' : 'gd_btn',
         onClick,
         disabled: busy,
-        style: {
-          padding: '4px 12px', fontSize: '13px', borderRadius: '8px',
-          border: '1px solid ' + (on ? 'rgba(59,130,246,.9)' : 'rgba(120,120,120,.35)'),
-          background: on ? 'rgba(59,130,246,.18)' : 'transparent',
-          color: 'inherit', cursor: busy ? 'default' : 'pointer',
-        },
       }, label)
       return h('section', { style: { marginTop: '18px' } },
         h('h3', { style: { fontSize: '14px', margin: '0 0 8px' } }, '生图'),
@@ -2731,26 +2716,27 @@ window.__ModuleLoader__.load({
       },
         // ── 回复 / 识图 / 生图 三个用途模型（2026-11-18）────────────
         //   各存各的字段；识图/生图首项「跟随回复(=空)」。候选统一用全部模型池。
+        // ── 模型选择（2026-11-18）：只留一个下拉（回复+识图共用多态模型；生图在下方单独配置）──
         (() => {
           const mlist = allModels
           const mid = (m) => m.channel ? `${m.channel}/${m.provider}/${m.id}` : `${m.provider}/${m.id}`
-          const mkSel = (label, val, includeFollow, onPick) => {
-            const opts = []
-            if (includeFollow) opts.push(h('option', { key: 'f', value: '' }, t('model.follow')))
-            const poolIds = mlist.map(mid)
-            if (val && !includeFollow && val !== 'auto') opts.push(h('option', { key: 'cur', value: val }, val))
-            mlist.forEach((m, i) => opts.push(h('option', { key: poolIds[i], value: poolIds[i] }, m.label ?? m.id)))
-            return h('div', { className: 'gd_modelrow' },
-              h('span', { className: 'gd_modelrowlabel' }, label),
-              h('select', { className: 'gd_effortsel', value: val, title: val, disabled: busy,
-                onChange: (e) => onPick(e.target.value) }, opts))
-          }
+          const cur = settings.qqModel ?? 'auto'
+          const opts = [h('option', { key: 'auto', value: 'auto' }, t('model.auto'))]
+          const ids = mlist.map(mid)
+          if (cur !== 'auto' && !ids.includes(cur)) opts.push(h('option', { key: 'cur', value: cur }, cur))
+          mlist.forEach((m, i) => opts.push(h('option', { key: ids[i], value: ids[i] }, (m.label ?? m.id) + (m.vision === 'yes' ? ' 👁 多模态' : ''))))
+          const selModel = cur === 'auto' ? null : mlist.find((m) => mid(m) === cur)
+          const noVision = selModel && selModel.vision !== 'yes'
           return h('div', null,
-            mkSel(t('model.reply'), settings.qqModel ?? 'auto', false, (v) => { setLocalOrder(null); apply({ qqModel: v }) }),
-            h('div', { style: { height: '6px' } }),
-            mkSel(t('model.vision'), settings.qqVisionModel ?? '', true, (v) => apply({ qqVisionModel: v })),
-            h('div', { style: { height: '6px' } }),
-            mkSel(t('model.draw'), settings.qqImageModel ?? '', true, (v) => apply({ qqImageModel: v })))
+            h('div', { className: 'gd_modelrow' },
+              h('span', { className: 'gd_modelrowlabel' }, t('model.reply')),
+              h('select', { className: 'gd_select', value: cur, title: cur, disabled: busy,
+                style: { flex: '1 1 auto', minWidth: 0, width: 'auto' },
+                onChange: (e) => { setLocalOrder(null); apply({ qqModel: e.target.value }) } }, opts)),
+            noVision
+              ? h('p', { className: 'gd_note', style: { color: 'var(--dsw-alias-state-warn-primary,#d98)', marginTop: '4px' } },
+                '⚠️ 当前选的是语言模型（无识图能力），发图她看不见；要识图请选带 👁 多模态的模型')
+              : null)
         })(),
         // ── 策略 ───────────────────────────────────────────────────
         /*

@@ -5055,6 +5055,67 @@ ${drewNote}
       }
     }
     /*
+     * 群聊表情：没点名就不读（2026-11-18 用户：「而且读表情」）。
+     * 与 groupJoin 解耦：她可以正常接话，但表情不是话题。
+     */
+    if (msg.kind === 'group' && this.cfg.reply?.groupStickerAddressedOnly === true) {
+      const gtext = String(msg.text ?? '')
+      const isSticker = /\[表情包|\[表情:/.test(gtext) || (msg.stickerRefs?.length ?? 0) > 0
+      if (isSticker) {
+        const atMe = Boolean(msg.mentionsMe)
+          || Boolean(this.selfId && typeof msg.isAtMe === 'function' && msg.isAtMe(this.selfId))
+        const replyTo = String(msg.replyTo ?? msg.reply_to ?? '')
+        const memG = (() => { try { return this.memory?.get?.(msg.scope)?.recent?.(30) ?? [] } catch { return [] } })()
+        const quotedMine = Boolean(replyTo) && memG.some((m) => m?.isMe
+          && (String(m?.messageId ?? m?.id ?? '') === replyTo))
+        if (!atMe && !quotedMine) {
+          this.log.info?.('bridge：群里没点名的表情 → 不读')
+          return
+        }
+      }
+    }
+    /*
+     * 群聊「观察后接话」（2026-11-18 用户：能接话，不是插话抬杠，也不是不讲话）。
+     * - 点名/引用/叫名字 → 直接接；
+     * - 没点名：先看 ≥N 条别人的发言，且她最近 2 分钟没说过 → 允许接一句；
+     * - 表情不点名不读。
+     * 只在生产配置显式打开（测试默认不受影响）。
+     */
+    if (msg.kind === 'group' && this.cfg.reply?.groupJoin === true) {
+      const gtext = String(msg.text ?? '')
+      const atMe = Boolean(msg.mentionsMe)
+        || Boolean(this.selfId && typeof msg.isAtMe === 'function' && msg.isAtMe(this.selfId))
+      const replyTo = String(msg.replyTo ?? msg.reply_to ?? '')
+      const memG = (() => { try { return this.memory?.get?.(msg.scope)?.recent?.(30) ?? [] } catch { return [] } })()
+      const quotedMine = Boolean(replyTo) && memG.some((m) => m?.isMe
+        && (String(m?.messageId ?? m?.id ?? '') === replyTo))
+      const aliases = Array.isArray(this.cfg.decisionAliases)
+        ? this.cfg.decisionAliases
+        : (Array.isArray(this.cfg.aliases) ? this.cfg.aliases : ['鱼', '鲸鱼'])
+      const aliasHit = aliases.some((a) => a && gtext.includes(String(a)))
+      if (!atMe && !quotedMine && !aliasHit) {
+        const isSticker = /\[表情包|\[表情:/.test(gtext) || (msg.stickerRefs?.length ?? 0) > 0
+        if (isSticker) {
+          this.log.info?.('bridge：群里没点名的表情 → 不读')
+          return
+        }
+        const now = Date.now()
+        const lastOwn = [...memG].reverse().find((m) => m?.isMe)
+        if (lastOwn && now - Number(lastOwn.at ?? 0) < 120_000) {
+          this.log.info?.('bridge：刚说过话 → 先看一会儿')
+          return
+        }
+        const others = memG.filter((m) => !m?.isMe && String(m?.text ?? '').trim()
+          && now - Number(m?.at ?? 0) <= 120_000)
+        const need = Number(this.cfg.reply?.groupJoinAfterMessages ?? 3)
+        if (others.length < need) {
+          this.log.info?.(`bridge：群里才 ${others.length} 条，先观察`)
+          return
+        }
+        this.log.info?.('bridge：看了一会儿 → 接一句')
+      }
+    }
+    /*
      * ★ 出现结束性的话 → 这一轮聊完就归档（2026-11-07 用户）。
      *   等 8 秒：让她的回复也进短期记忆，再一起摘进长期档案。
      */
@@ -10562,6 +10623,13 @@ const drewRecently = __drawRecentMs > 0 && lastDrewAt > 0 && Date.now() - lastDr
             + '上面更早的那些是**背景** —— 已经翻篇、没人接的话茬别再回头答，'
             + '除非有人又把话拉回去。'
           : '',
+        msg.kind === 'group'
+          ? '## 群聊接话\n'
+            + '你是在**接话**，不是来辩赢的：顺着对方的话说、补充一句、共情一下，都行。\n'
+            + '**不要抬杠、不要反驳、不要挑刺、不要为不同而不同**。\n'
+            + '别人互相聊的时候先听；等话题轮到你、或你有一句真正相关的话，再接一句。\n'
+            + '没话说就 [SILENT]，别硬接。'
+          : '',
         addressedToMe
           ? '## 有人点了你的名\n'
             + '**被点名就得应一声。** 给不了、不知道、不想给，都直接说出来'
@@ -12507,9 +12575,10 @@ const drewRecently = __drawRecentMs > 0 && lastDrewAt > 0 && Date.now() - lastDr
 
     // 识图模型：**优先用户在小鲸鱼面板里设的「识图模型」**（cfg.visionModel）；
     // 没设再回退 Magpie 里配的 vision；都没有就用当前聊天模型。
-    let prefer = String(this.cfg?.visionModel ?? '').trim()
-    if (prefer) this.log.info?.(`bridge：识图用面板设置的「${prefer}」`)
-    if (!prefer) {
+    // 2026-11-18：单模型方案——没单独设 visionModel 时，**识图跟随回复模型 qq.model**（多态就同时识图）。
+    let prefer = String(this.cfg?.visionModel ?? '').trim() || String(this.cfg?.model ?? '').trim()
+    if (prefer) this.log.info?.(`bridge：识图用「${prefer}」`)
+    if (!prefer || prefer === 'auto') {
       try {
         const { readMagpieSettings } = await import('./mcpImage.js')
         prefer = String(readMagpieSettings().vision ?? '').trim()

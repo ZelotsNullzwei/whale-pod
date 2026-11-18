@@ -733,6 +733,7 @@ export function createWebServer(opts) {
             qqModel: cfg.qq?.model ?? 'auto',
             qqVisionModel: cfg.qq?.visionModel ?? '',   // 空=跟随回复模型（多态）
             qqImageModel: cfg.qq?.imageModel ?? '',      // 空=跟随回复模型（多态）
+            channels: cfg.qq?.channels ?? { reply: [], vision: [], image: [] },  // 各用途的渠道
             /* 2026-11-06：侧栏要能直接调这两项（热生效） */
             idleMinutes: Number(cfg.memory?.long?.idleMinutes ?? 10),
             crossGroupConfirm: cfg.qq?.actions?.crossGroupConfirm !== false,
@@ -3227,6 +3228,9 @@ async function whalePodCompat(o) {  const { sub, method, url, req, res, json, re
           freeOrder: configured,
           disabledProviders: disabled,
           qqModel: cfg.qq?.model ?? 'auto',
+          qqVisionModel: cfg.qq?.visionModel ?? '',
+          qqImageModel: cfg.qq?.imageModel ?? '',
+          channels: cfg.qq?.channels ?? { reply: [], vision: [], image: [] },
           maxTokens: cfg.qq?.maxTokens ?? 0,
           effort: cfg.qq?.effort ?? '',
           /*
@@ -3262,6 +3266,27 @@ async function whalePodCompat(o) {  const { sub, method, url, req, res, json, re
     }
 
     // ── 修改模型设置（侧栏的排序 / 开关 / 换模型）──────────────────
+    if (sub === '/channels/scan' && method === 'GET') {
+      // 自动扫描 DSH 里已配的渠道（读 profiles/<profile>/cordis.patch.yml）
+      try {
+        const { discoverDshProviders } = await import('../gateway/dsh-providers.js')
+        const nodePath = await import('node:path')
+        const dshHome = process.env.DSH_HOME ?? nodePath.join(process.env.USERPROFILE ?? '', '.dsh')
+        const r = await discoverDshProviders({
+          dshHome, profile: state.profile ?? 'desktop', appDir: state.dshAppDir ?? null,
+          log: (lv, msg) => log?.[lv]?.(msg),
+        })
+        const channels = (r.channels ?? []).map((c) => ({
+          name: c.id ?? c.name ?? '',
+          baseUrl: c.baseUrl ?? c.base_url ?? '',
+          model: c.model ?? Array.isArray(c.models) ? (c.model ?? (c.models?.[0] ?? '')) : '',
+          keyEnv: c.apiKeyEnv ?? c.keyEnv ?? '',
+        }))
+        return json(res, 200, { ok: true, channels, source: r.source, file: r.file })
+      } catch (e) {
+        return json(res, 200, { ok: false, channels: [], error: String(e?.message ?? e) })
+      }
+    }
     if (sub === '/models/settings' && method === 'POST') {
       const body = await readJson(req)
       const patch = {}
@@ -3288,6 +3313,18 @@ async function whalePodCompat(o) {  const { sub, method, url, req, res, json, re
       }
       if (typeof body.qqImageModel === 'string') {
         patch.qq = { ...(patch.qq ?? {}), imageModel: body.qqImageModel.trim() === '' ? undefined : normalizeModelId(body.qqImageModel) }
+      }
+      // 各用途渠道（2026-11-18）：{ reply:[], vision:[], image:[] }，每项 {name,baseUrl,model,keyEnv}
+      if (body.channels && typeof body.channels === 'object') {
+        const norm = (arr) => (Array.isArray(arr) ? arr : []).map((c) => ({
+          name: String(c?.name ?? '').trim(),
+          baseUrl: String(c?.baseUrl ?? '').trim(),
+          model: String(c?.model ?? '').trim(),
+          keyEnv: String(c?.keyEnv ?? '').trim(),
+        })).filter((c) => c.baseUrl || c.model || c.name)
+        patch.qq = { ...(patch.qq ?? {}), channels: {
+          reply: norm(body.channels.reply), vision: norm(body.channels.vision), image: norm(body.channels.image),
+        } }
       }
       // 推理等级：空串表示"用模型默认"，此时清掉字段而不是存空串
       // （bridge 读 effort 时按 undefined 走默认逻辑）。
