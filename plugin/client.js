@@ -3129,7 +3129,9 @@ window.__ModuleLoader__.load({
         toast === null ? null : h('p', { className: toast.ok ? 'gd_note' : 'gd_err' }, toast.text),
 
         // 概览首页
-        h('div', { style: tab !== 'overview' ? { display: 'none' } : null }, h(OverviewPanel, { t })),
+        h('div', { style: tab !== 'overview' ? { display: 'none' } : null },
+          h(OverviewPanel, { t }),
+          h(LogSection, { t })),
 
         // ── NapCat 协议端 ───────────────────────────────────────────────
         h('div', { style: tab !== 'advanced' ? { display: 'none' } : null },
