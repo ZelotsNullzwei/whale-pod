@@ -46,6 +46,7 @@ import { fetchWithProxyFallback } from '../net.js'
 import { startQzoneProactive, QZONE_CONFIRM_TTL_MS } from './qzoneProactive.js'
 import { startOwnLife } from './ownLife.js'
 import { startQzoneRead } from './qzoneRead.js'
+import { startQzoneLike } from './qzoneLike.js'
 import { InteractionTracker, BegState, decideBeg } from './beg.js'
 import { ProactiveScheduler, ProactiveState } from './proactive.js'
 import { extractFindImageMarkers, stripFindImageMarkers, resolveFindImage, findImageKey, isDuplicateFindImage } from './imageFindMarkers.js'
@@ -2433,6 +2434,15 @@ export class QQBridge {
      */
     try { startQzoneRead(this, { home: opts.home }) } catch (e) {
       this.log?.warn?.(`qzone-read：挂载失败 — ${String(e?.message ?? e).slice(0, 80)}`)
+    }
+
+    /*
+     * ★ 给别人点赞（2026-11-19 用户：「别人的只点赞，不评论」）。
+     * 只有点赞，没有评论 —— 评论是写别人墙上的话，收不回。
+     * 默认关（qq.qzoneLike.enabled=false），要开得显式打开。
+     */
+    try { startQzoneLike(this, { home: opts.home }) } catch (e) {
+      this.log?.warn?.(`qzone-like：挂载失败 — ${String(e?.message ?? e).slice(0, 80)}`)
     }
 
     const file = opts.home ? `${opts.home}/proactive.json` : null
