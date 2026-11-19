@@ -4359,7 +4359,16 @@ ${drewNote}
   _recentChatState(scope, windowMs = 10 * 60_000) {
     const none = { fresh: false, ageMs: Infinity, lastFromHim: false, lastText: '' }
     try {
-      const list = this.memory?.get?.(scope)?.recent?.(6) ?? []
+      const raw = this.memory?.get?.(scope)?.recent?.(8) ?? []
+      /*
+       * ⚠️ **戳一戳记录不算"他说的一句话"**（2026-11-19 修）。
+       *
+       * 戳一戳会被写进上下文：`（Null_zwei 戳了你一下）`，isMe=false。
+       * 如果不过滤，`lastFromHim` 永远为 true —— 她刚回完、你马上戳，
+       * 仍被判"催"，于是出现「催什么，这不正回着吗」。
+       */
+      const isPokeNote = (m) => /^[（(].+戳了.+一下[）)]$/.test(String(m?.text ?? '').trim())
+      const list = raw.filter((m) => m && !isPokeNote(m))
       if (list.length === 0) return none
       const last = list[list.length - 1] ?? {}
       const at = Number(last.at ?? 0)
@@ -4444,14 +4453,26 @@ ${drewNote}
       const provider = model.includes('/') ? model.slice(0, model.indexOf('/')) : undefined
       /* 2026-11-15：戳一戳要**看上文**——把最近几句拿给模型，接着上面说，而不是干巴巴独立问"干嘛"。 */
       let recent = '他戳了你一下。'
+      let hasContext = false
       try {
         const mem = this._memOf?.(scope) ?? this.memory?.get?.(scope) ?? null
-        const msgs = (mem?.messages ?? mem?.items ?? []).slice(-6)
+        const rawMsgs = (mem?.messages ?? mem?.items ?? []).slice(-8)
+        /* 戳一戳记录不是对话内容，别喂给模型当上文（2026-11-19） */
+        const isPokeNote = (m) => /^[（(].+戳了.+一下[）)]$/.test(String(m?.text ?? '').trim())
+        const msgs = rawMsgs.filter((m) => m && !isPokeNote(m)).slice(-6)
+        /*
+         * ⚠️ 只有**最后一条是他说的**才接话题（2026-11-19 修）。
+         * 她刚说完话就被戳，那是"喂/还有事？"，不是让她把旧话题再说一遍。
+         */
+        const lastIsMine = Boolean(msgs.length && msgs[msgs.length - 1]?.isMe)
         const lines = msgs.map((m) => {
           const who = m.isMe ? '你' : (m.senderName || '他')
           return `${who}：${String(m.text ?? '').slice(0, 40)}`
         }).filter((x) => x && !/^\S：$/.test(x))
-        if (lines.length) recent = '最近的对话：\n' + lines.join('\n') + '\n\n（他刚戳了你一下——结合上面聊的，接一句。如果是催/等你回，就直接接话，别问"干嘛"。）'
+        if (lines.length && !lastIsMine) {
+          hasContext = true
+          recent = '最近的对话：\n' + lines.join('\n') + '\n\n（他刚戳了你一下——结合上面聊的，接一句。如果是催/等你回，就直接接话，别问"干嘛"。）'
+        }
       } catch { /* 取不到就退原来的 */ }
       const chunks = []
       const stream = llm.stream({
@@ -4460,17 +4481,31 @@ ${drewNote}
         messages: [
           {
             role: 'system',
-            content: [
-              '你刚在 QQ 上被戳了一下。用一句话回应，1~15 字，口语。',
-              '**每次都要换个说法，别老用"？""干嘛""怎么了""嗯？"这几句——听腻了。**',
-              '可以的反应（挑一种，每次不同）：',
-              '· 假娇嗔/赖一下：别戳了/痒/哎哟你别闹',
-              '· 嘴硬反将一句：有事说事/戳什么戳/干嘛呀你',
-              '· 卖乖/卖惨：在呢在呢/干嘛啦/人家在忙',
-              '· 直接催他：说/讲/有事快说',
-              '❌ 但**不要**汇报自己正在做什么（在睡觉、吃饭、刷手机…都不行）。',
-              '❌ 不要括号动作、不要引号、不要解释、不要 emoji。',
-            ].join('\n'),
+            content: hasContext
+              /*
+               * 有上文时**只接话题，绝不提"戳"**（2026-11-19 修）。
+               * 原来两套规则同时生效，模型把两件拼起来 →
+               * 「扎啤就扎啤，戳我干啥」「瞅啥瞅，本鲸在旁边看着呢」。
+               */
+              ? [
+                '你刚在 QQ 上被戳了一下。下面是最近的对话，**接着话题自然地接一句**，1~15 字，口语。',
+                '❌ 不要提"戳"这件事（别写"戳我干嘛/别戳/戳什么戳"）。',
+                '❌ 不要问"干嘛""怎么了""嗯？"——上面已经有话题了。',
+                '❌ 不许描述自己正在做什么（在睡觉、吃饭、刷手机…都不行）。',
+                '❌ 不要括号动作、不要引号、不要解释、不要 emoji。',
+              ].join('\n')
+              : [
+                '你刚在 QQ 上被戳了一下。用一句话回应，1~15 字，口语。',
+                '**每次都要换个说法，别老用"？""干嘛""怎么了""嗯？"这几句——听腻了。**',
+                '可以的反应（挑一种，每次不同）：',
+                '· 假娇嗔/赖一下：别戳了/痒/哎哟你别闹',
+                '· 嘴硬反将一句：有事说事/戳什么戳/干嘛呀你',
+                '· 卖乖/卖惨：在呢在呢/干嘛啦/人家在忙',
+                '· 直接催他：说/讲/有事快说',
+                '第一反应是**问对方要干嘛**。',
+                '❌ 不许描述自己正在做什么（在睡觉、吃饭、刷手机…都不行）。',
+                '❌ 不要括号动作、不要引号、不要解释、不要 emoji。',
+              ].join('\n'),
           },
           { role: 'user', content: recent, },
         ],
@@ -4713,7 +4748,15 @@ ${drewNote}
     const chat = this._recentChatState(pokeScope)
     /* 2026-11-11 用户：私聊戳一戳必须真的戳回去，不能变成聊天文字 */
     /* 2026-11-14 用户：「打完字的时候戳 = 催促」——私聊也认（原来只 group）。 */
-    if (chat.fresh) {
+    /*
+     * ⚠️ **只有「他最后一句还没被接住」才算催**（2026-11-19 修）。
+     *
+     * 现场：她刚回完一句，他马上戳 → 原来 `fresh` 只看
+     * "10 分钟内有没有他说的话"，于是照样判成"催"，让她接着旧话题说，
+     * 末尾再补一句"戳我干啥"，看着前言不搭后语。
+     * 她刚说完话时被戳，那是"喂/还有事？"，不是催她补话。
+     */
+    if (chat.fresh && chat.lastFromHim) {
       this.log.info?.(
         `bridge：被 ${fromId} 戳了，但那边 ${Math.round(chat.ageMs / 1000)} 秒前还在聊 → 当成催促，直接接话`,
       )
@@ -5107,9 +5150,25 @@ ${drewNote}
           .replace(/\[图片\]/g, '')
           .trim()
         if (!words) {
+          /*
+           * 2026-11-19 修（用户：「发表情必回」太机械）：
+           * 群里纯表情**不再无脑必回**——
+           *   · 没点名、没引用她 → 不回（表情不是话题，别像自动回复）；
+           *   · 点名/引用她 → 回一张，但有 30s 冷却，连发表情只回一次。
+           */
+          if (!atMe && !quotedMine) {
+            this.log.info?.('bridge：群里没点名的纯表情 → 不回（不再必回）')
+            return
+          }
+          const lastStickerAt = Number(this._lastGroupStickerReplyAt ?? 0)
+          if (Date.now() - lastStickerAt < 30000) {
+            this.log.info?.('bridge：群里纯表情 → 30s 内已回过，不重复')
+            return
+          }
+          this._lastGroupStickerReplyAt = Date.now()
           try {
             await this._send(msg, '[表情包]')
-            this.log.info?.('bridge：群里纯表情 → 回一张收藏表情')
+            this.log.info?.('bridge：群里纯表情（点名/引用）→ 回一张收藏表情')
           } catch (e) {
             this.log.warn?.(`bridge：群表情回应失败 — ${String(e?.message ?? e).slice(0, 60)}`)
           }
