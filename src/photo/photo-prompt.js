@@ -162,6 +162,7 @@ function composeMirrorSelfiePrompt(o = {}) {
     '',
     `她${isFull ? '站在落地穿衣镜前' : '站在或坐在梳妆镜前'}，穿着${clothing}${hairText ? `，发型：${hairText}` : ''}。`,
     '',
+    ...(moodLine(o.mood, 'mirror') ? [moodLine(o.mood, 'mirror'), ''] : []),
     `拍摄方式：她本人手持手机，使用手机后置摄像头对着面前的镜子拍摄。画面呈现真实的镜面自拍，人物倒影、手机和持机手出现在同一面镜子的反射区域内。${actClause}。`,
     '',
     `环境：${mirrorDesc}，镜子前方干净整洁。${lightShort}`,
@@ -230,6 +231,30 @@ function lightShortOf(slot = '') {
 }
 
 /** 前置自拍：只写画面里能看到的人、手、场景 */
+/**
+ * 心情 → 表情/姿态那一句（三个独立合成器共用）。
+ *
+ * 2026-11-19 用户：「发照片表情就是当前聊天的心情来」。
+ * 之前只有通用合成器读 `mood`，而**自拍 / 对镜 / 第一人称都走独立短模板**，
+ * 根本没接 mood —— 聊到一半别扭着，出图还是一张标准甜笑。
+ *
+ * @param {string} mood
+ * @param {'selfie'|'mirror'|'first_person'} [kind]
+ * @returns {string} 空串 = 没心情
+ */
+function moodLine(mood, kind = 'selfie') {
+  const m = String(mood ?? '').trim()
+  if (!m) return ''
+  if (kind === 'first_person') {
+    return `此刻的心情：${m}（只体现在**手和眼前的东西**上：手停住/蜷起/随手放着，`
+      + `桌面上的东西被挪动或没收拾——不写脸，画面里没有脸）`
+  }
+  return `此刻的心情：${m}。**表情和姿态按这个心情画**：`
+    + `眼神和嘴角跟着它走（别扭就别笑得那么甜、困倦就带点没精神、心虚就把视线飘开、`
+    + `得意就下巴抬一点），姿态也配合（缩着、撑着、别过脸、往下塌…挑一个）。`
+    + `不要画成一张和心情无关的标准笑脸。`
+}
+
 function composeFrontSelfiePrompt(o = {}) {
   const { plan = {}, scene = '', slot = '' } = o
   const { clothing, hairText } = extractLook(o)
@@ -253,6 +278,7 @@ function composeFrontSelfiePrompt(o = {}) {
     '',
     `今天穿着：${clothing}${hairText ? `，发型：${hairText}` : ''}${temp}。`,
     '',
+    ...(moodLine(o.mood, 'selfie') ? [moodLine(o.mood, 'selfie'), ''] : []),
     `地点：${locationWho}。她${/洗手台|浴室|刷牙|洗脸/.test(String(scene)) ? '站在洗手台前' : '在室内'}。${clean ? `画面：${clean}。` : ''}`,
     '',
     `环境与质感：${lightShortOf(slot)}真实手机前置镜头拍摄，自然生活质感，画面干净温暖，不要插画感和 3D 渲染感。`,
@@ -279,6 +305,7 @@ function composeFirstPersonPrompt(o = {}) {
     temp,
     `场景与动作：${scene}。`,
     '',
+    ...(moodLine(o.mood, 'first_person') ? [moodLine(o.mood, 'first_person'), ''] : []),
     `环境与质感：${lightShortOf(slot)}真实手机随手拍，自然生活质感，画面干净温暖，不要插画感和 3D 渲染感。`,
     '',
     '【输出】竖版 9:16，单张。',
@@ -514,6 +541,20 @@ ${bodyOverride ? `${bodyOverride}、` : ''}
   const life = []
   if (weather) life.push(`天气：${weather}`)
   if (mood) life.push(`心情：${mood}`)
+  /*
+   * ★ **心情必须落到脸上和动作上**（2026-11-19 用户：「发照片表情就是当前聊天的心情来」）。
+   *
+   * 只写一行「心情：别扭」，模型经常画成一张无关的漂亮脸 —— 心情只是背景说明。
+   * 这里明确要求把它翻译成**表情 + 姿态**，照片才对得上正在聊的事。
+   */
+  if (mood) {
+    life.push(
+      `⚠️ 上面这个「心情」要**画出来**，不是背景说明：`
+      + `眼神和嘴角按这个情绪走（别扭就别笑得太甜、困倦就带点没精神、心虚就飘开视线），`
+      + `姿态也跟着它（缩着、撑着、别过脸、往下塌…挑一个符合的）。`
+      + `不要画成一张和心情无关的标准笑脸。`,
+    )
+  }
   /*
    * ⚠️ **第一人称不写衣服、不写头发**（2026-11-06 全量实测）：
    *   写了「今天穿着…」「今天的头发…」模型就理解成"要画这个人"，

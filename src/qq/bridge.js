@@ -6662,6 +6662,19 @@ const drewRecently = __drawRecentMs > 0 && lastDrewAt > 0 && Date.now() - lastDr
            */
           const photoMode = 'daily'
           /*
+           * ★ 生图前先读**当前聊天的心情**（2026-11-19）。
+           *   失败/读不出来 → 留空，`planShot` 会退回日程心情。
+           */
+          if (!String(msg.__chatMood ?? '').trim()) {
+            try {
+              const _cm = await this._detectChatMood(msg, mem)
+              if (_cm) {
+                msg.__chatMood = _cm
+                this.log.info?.(`bridge：这一轮的心情「${_cm}」→ 照片按它来`)
+              }
+            } catch { /* 读不出来就照旧 */ }
+          }
+          /*
            * ★★ **背景跟着今日日程走**（2026-11-08 用户：「背景就根据当前的日程计划而定」）。
            *
            * 现场：她说"对镜全身自拍，站在床边"，出图背景却是**零食货架** ——
@@ -6695,7 +6708,19 @@ const drewRecently = __drawRecentMs > 0 && lastDrewAt > 0 && Date.now() - lastDr
             outfit: promptOutfit,
             hair: hairText,
             weather: (() => { try { return String(this.dayPlan?.today?.()?.weather ?? '') } catch { return '' } })(),
-            mood: (() => { try { return String(this.dayPlan?.today?.()?.mood ?? '') } catch { return '' } })(),
+            /*
+             * ★ **照片的心情跟着当前聊天走**（2026-11-19 用户：
+             *   「发照片表情就是当前聊天的心情来」「照片主要是生图流程」）。
+             *
+             * 原来这里只有 `dayPlan.today().mood` —— 那是**今天预定的心情**，
+             * 跟正在聊的内容毫无关系：聊到一半正别扭着，出图还是日程里那个
+             * "心情不错"，表情和氛围就全错位了。
+             *
+             * 现在优先用**这一轮聊天里读出来的情绪**（`msg.__chatMood`，
+             * 由 `_detectChatMood()` 在生图前算好）；读不出来才退回日程心情。
+             */
+            mood: String(msg.__chatMood ?? '').trim()
+              || (() => { try { return String(this.dayPlan?.today?.()?.mood ?? '') } catch { return '' } })(),
             request: drawRequest,
             scope: msg.scope ?? '',
             mode: photoMode,
@@ -13858,7 +13883,82 @@ const drewRecently = __drawRecentMs > 0 && lastDrewAt > 0 && Date.now() - lastDr
    * 配置形状（config.qq.reply.mfaceMap）：
    *   { "猫猫": "https://…/cat.gif", "笑": "file:///D:/pic/x.jpg" }
    */
-  async _pickMface(name) {
+  /**
+   * **从当前聊天里读出情绪**（2026-11-19 用户：「发照片表情就是当前聊天的心情来」）。
+   *
+   * ## 要解决什么
+   * 照片的 `mood` 原来只取「今天日程里的心情」——和正在聊的事无关。
+   * 于是聊得正别扭/正闹着，出图还是日程里那个"心情不错"，表情和氛围全错位。
+   *
+   * ## 做法
+   * 用最近几条对话 + 她这一轮要说的话，让模型只吐**一个情绪短词**
+   * （例如：别扭、心虚、撒娇、气鼓鼓、困倦、得意）。
+   * 失败/超时就返回空串 —— 调用方退回日程心情，绝不因为读情绪把图弄丢。
+   *
+   * @param {object} msg 当前消息
+   * @param {object} mem 会话记忆
+   * @returns {Promise<string>}
+   */
+  async _detectChatMood(msg, mem) {
+    try {
+      const llm = this.gateway
+      if (!llm?.stream) return ''
+      let lines = []
+      try {
+        const raw = mem?.recent?.(8) ?? []
+        const isPoke = (m) => /^[（(].+戳了.+一下[）)]$/.test(String(m?.text ?? '').trim())
+        lines = raw.filter((m) => m && !isPoke(m)).slice(-6).map((m) => {
+          const who = m.isMe ? '你' : (m.senderName || '他')
+          return `${who}：${String(m.text ?? '').replace(/\[[^\]]*\]/g, '').slice(0, 40)}`
+        }).filter((x) => x && !/：$/.test(x))
+      } catch { /* 取不到就只看这一轮 */ }
+      const tail = String(msg?.__herDraft ?? '').slice(0, 80)
+      const body = (lines.length ? lines.join('\n') + '\n\n' : '')
+        + (tail ? `（她这一轮打算说：${tail}）\n` : '')
+      if (!body.trim()) return ''
+
+      const model = String(this.cfg?.model ?? '').trim()
+      const provider = model.includes('/') ? model.slice(0, model.indexOf('/')) : undefined
+      const chunks = []
+      const stream = llm.stream({
+        provider,
+        model: model || undefined,
+        messages: [
+          {
+            role: 'system',
+            content: [
+              '只输出一个中文情绪词（2~4 个字），描述**她此刻的心情**。',
+              '例：别扭、心虚、气鼓鼓、撒娇、困倦、得意、委屈、敷衍、心软。',
+              '不要解释、不要标点、不要多个词。读不出来就只输出：无',
+            ].join('\n'),
+          },
+          { role: 'user', content: body.slice(0, 400) },
+        ],
+        maxTokens: 12,
+        temperature: 0.3,
+        signal: AbortSignal.timeout(2500),
+      })
+      for await (const c of stream) {
+        if (c?.type === 'text-delta' && c.text) chunks.push(c.text)
+        else if (c?.type === 'text' && c.text) chunks.push(c.text)
+        else if (c?.type === 'error') return ''
+      }
+      const t = chunks.join('').trim().replace(/[。，,、！!？?\s"“”「」]/g, '')
+      if (!t || t === '无') return ''
+      return t.slice(0, 6)
+    } catch { return '' }
+  }
+
+  /**
+   * 挑一张收藏表情。
+   *
+   * @param {string} name  `[表情包:<标签>]` 里的标签；空 = 没指定
+   * @param {object} [ctx]
+   * @param {string} [ctx.contextText] 当前这轮她刚说的话 / 对方那句
+   *        （2026-11-19 用户：「发照片表情就是当前聊天的心情来」）
+   *        —— 没给标签时，**按这段话里的情绪挑**，而不是随机抽一张。
+   */
+  async _pickMface(name, ctx = {}) {
     const map = this.cfg.reply?.mfaceMap ?? {}
     const key = String(name ?? '').trim()
 
@@ -13978,6 +14078,7 @@ const drewRecently = __drawRecentMs > 0 && lastDrewAt > 0 && Date.now() - lastDr
     const COMMON = [4, 13, 20, 12, 28, 42, 0, 42, 74]
     return [{ type: 'face', data: { id: String(COMMON[hashStr(key || 'x') % COMMON.length]) } }]
   }
+
 
   /**
    * 把「因冷却被推迟」的消息排进队列，冷却结束后自动补回。
