@@ -51,7 +51,10 @@ export function parseFriendPosts (html, selfUin) {
     const info = /class="f-info"[^>]*>([\s\S]*?)<\/div>/.exec(b)
     const text = stripTags(info ? info[1] : '').slice(0, 200)
     if (!text) continue
-    const nick = (/link="nameCard_\d+"[^>]*>([^<]+)<\/a>/.exec(b) ?? [])[1] || ''
+    /* 作者昵称在 <div class="f-nick"><a class="f-name">昵称</a>；
+     * 不能随便抓 nameCard —— 文末「谁点赞了」的名单里也有，会抓成别人。 */
+    const nickBlock = /<div class="f-nick">([\s\S]{0,300}?)<\/div>/.exec(b)
+    const nick = stripTags((/<a[^>]*>([^<]+)<\/a>/.exec(nickBlock ? nickBlock[1] : '') ?? [])[1] || '')
     const imgs = [...new Set(
       [...b.matchAll(/<img[^>]+src="([^"]+)"/g)]
         .map((m) => m[1])
@@ -133,6 +136,9 @@ export function startQzoneFriends (bridge, opts = {}) {
               }
               if (blocks.length) {
                 p0.imageDesc = String(await bridge._describeForwardImages(blocks) || '').slice(0, 300)
+                bridge.log?.info?.('qzone-friends：识图 ' + blocks.length + ' 张 → ' + (p0.imageDesc ? '有结果' : '空'))
+              } else {
+                bridge.log?.warn?.('qzone-friends：图片下载/建档全失败，跳过识图')
               }
             } catch (e) {
               bridge.log?.warn?.('qzone-friends：识图失败 — ' + String(e?.message ?? e).slice(0, 60))
