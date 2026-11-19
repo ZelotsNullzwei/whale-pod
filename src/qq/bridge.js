@@ -8402,8 +8402,11 @@ const drewRecently = __drawRecentMs > 0 && lastDrewAt > 0 && Date.now() - lastDr
       /* 2026-11-11：生成失败还说“图在这儿/真拍了” */
       { kind: 'draw', need: 'draw', re: /图(就|已经)?在(这|那)(儿|里)|图(这回)?(没跑|不会跑)|这回(是)?真(的)?拍(了|好)/ },
       { kind: 'draw', need: 'draw', re: /图卡在|不是没拍|卡在.{0,6}这头/ },
-      { kind: 'qzone', need: 'qzone', re: /发(空间|说说)(了|好|出去)|说说(发好|发出)了|已经发了/ },
-      { kind: 'qzoneImg', need: 'qzoneImage', re: /(图|图片)[^。！？\n]{0,8}(带上|挂上|传上|塞进|放上)(了|去)/ },
+      /*
+       * ⚠️ 原来这里还有 `qzone` / `qzoneImg` 两条谎报规则 —— 聊天里已经不发说说
+       * （2026-11-19），`did.qzone` 恒为 false，规则会把「我发了条说说」这种
+       * 正常叙述也判成谎报、逼她重写一遍。整条链路搬去 ownLife 后一起删掉。
+       */
       { kind: 'qzoneDel', need: 'qzoneDel', re: /(说说|空间)[^。！？\n]{0,8}(删|撤)(掉|了|好了)/ },
     ]
     for (const r of rules) {
