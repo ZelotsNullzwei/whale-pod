@@ -126,6 +126,7 @@ export function startQzoneComment (bridge, opts = {}) {
       if (!j || Number(j.code) !== 0) throw new Error('msglist code=' + String(j?.code ?? '?'))
       return (j.msglist ?? []).map((m) => ({
         tid: String(m.tid ?? ''),
+        content: String(m.content ?? '').slice(0, 200),
         comments: Number(m.cmtnum ?? 0),
       }))
     }
@@ -179,11 +180,25 @@ export function startQzoneComment (bridge, opts = {}) {
       return { ok, code: j?.code ?? null, message: String(j?.msg ?? text.slice(0, 80)) }
     }
 
+    /** 从 qzone-read 的缓存里找这条说说的配图描述（qzoneRead 已经识过图了，别重复花钱）。 */
+    const readCachedImageDesc = (tid) => {
+      try {
+        const p = path.join(home, 'qzone-read.json')
+        const j = JSON.parse(fs.readFileSync(p, 'utf8'))
+        const hit = (j?.posts ?? []).find((x) => String(x?.tid ?? '') === String(tid ?? ''))
+        return String(hit?.imageDesc ?? '').trim()
+      } catch { return '' }
+    }
+
     /** 让她说一句回复（走 bridge 的生成层，带上下文）。 */
     const composeReply = async (uin, scope, post, comment) => {
+      const imageDesc = readCachedImageDesc(post.tid)
       const hint = [
         '## 有人在你的说说下面留言了',
         '（这不是聊天，是 QQ 空间的评论区 —— 回复会**公开挂在你的说说下面**，好友都看得见）',
+        '',
+        '你这条说说：「' + String(post.content ?? '').slice(0, 80) + '」',
+        imageDesc ? '（这条说说配的图：' + imageDesc.slice(0, 160) + '）' : '',
         '',
         '留言的人：' + (comment.name || '某人'),
         '他说：「' + String(comment.content).slice(0, 100) + '」',
