@@ -47,6 +47,7 @@ import { startQzoneProactive, QZONE_CONFIRM_TTL_MS } from './qzoneProactive.js'
 import { startOwnLife } from './ownLife.js'
 import { startQzoneRead } from './qzoneRead.js'
 import { startQzoneLike } from './qzoneLike.js'
+import { startQzoneComment } from './qzoneComment.js'
 import { InteractionTracker, BegState, decideBeg } from './beg.js'
 import { ProactiveScheduler, ProactiveState } from './proactive.js'
 import { extractFindImageMarkers, stripFindImageMarkers, resolveFindImage, findImageKey, isDuplicateFindImage } from './imageFindMarkers.js'
@@ -2443,6 +2444,16 @@ export class QQBridge {
      */
     try { startQzoneLike(this, { home: opts.home }) } catch (e) {
       this.log?.warn?.(`qzone-like：挂载失败 — ${String(e?.message ?? e).slice(0, 80)}`)
+    }
+
+    /*
+     * ★ 回评论（2026-11-19 用户：「先在自己的空间下面试」）。
+     * **只回她自己说说下的评论**，不碰好友的说说。
+     * ⚠️ 删除评论的接口还没找到 —— 所以默认 enabled=false + dryRun=true，
+     *    先只看它想回什么，不发出去。
+     */
+    try { startQzoneComment(this, { home: opts.home }) } catch (e) {
+      this.log?.warn?.(`qzone-comment：挂载失败 — ${String(e?.message ?? e).slice(0, 80)}`)
     }
 
     const file = opts.home ? `${opts.home}/proactive.json` : null
