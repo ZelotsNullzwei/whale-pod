@@ -44,6 +44,7 @@ import FACE_TABLE from './faces.json' with { type: 'json' }
 import { fetchWithProxyFallback } from '../net.js'
 /* QQ 空间主动草稿调度器（2026-11-10）：独立模块，避免和正在改动的本文件冲突 */
 import { startQzoneProactive, QZONE_CONFIRM_TTL_MS } from './qzoneProactive.js'
+import { startOwnLife } from './ownLife.js'
 import { InteractionTracker, BegState, decideBeg } from './beg.js'
 import { ProactiveScheduler, ProactiveState } from './proactive.js'
 import { extractFindImageMarkers, stripFindImageMarkers, resolveFindImage, findImageKey, isDuplicateFindImage } from './imageFindMarkers.js'
@@ -1997,7 +1998,8 @@ export class QQBridge {
       ? `这条说说配这张图，发空间行吗？\n「${say}」`
       : `我要发这条说说：\n「${say}」\n发空间行吗？`
     try {
-      await this._send({ scope, kind: 'private', userId, images: [] }, text, file ? { url: file } : null)
+      /* noInterrupt：预览是「问题+正文+图」一整条，被打断就只剩半句话 */
+      await this._send({ scope, kind: 'private', userId, images: [] }, text, file ? { url: file } : null, null, { noInterrupt: true })
     } catch (e) {
       this.log.warn?.(`bridge：发确认图失败 — ${String(e?.message ?? e).slice(0, 60)}`)
     }
@@ -2407,6 +2409,18 @@ export class QQBridge {
      */
     try { startQzoneProactive(this, { home: opts.home }) } catch (e) {
       this.log?.warn?.(`qzone-proactive：挂载失败 — ${String(e?.message ?? e).slice(0, 80)}`)
+    }
+
+    /*
+     * ★ 「她自己的生活」静默唤醒（2026-11-19）
+     *
+     * 和主动聊天、说说草稿都分开：**不往聊天发一个字**，只给她一句
+     * 「现在是你的时间」的提示，发不发说说她自己决定。
+     * 这样说说永远不会占用聊天通道 —— 也就不会被他插话打断。
+     * 实现见 `src/qq/ownLife.js`，这里只挂一个启动点。
+     */
+    try { startOwnLife(this, { home: opts.home }) } catch (e) {
+      this.log?.warn?.(`own-life：挂载失败 — ${String(e?.message ?? e).slice(0, 80)}`)
     }
 
     const file = opts.home ? `${opts.home}/proactive.json` : null
@@ -12144,7 +12158,7 @@ const drewRecently = __drawRecentMs > 0 && lastDrewAt > 0 && Date.now() - lastDr
     return { text: x, dropped: x !== before.trim() }
   }
 
-  async _send(msg, text, cover = null, target = null) {
+  async _send(msg, text, cover = null, target = null, opts = {}) {
     {
       const _origText = String(text ?? '')
       text = this._stripSystemTags(text)
@@ -12319,7 +12333,13 @@ const drewRecently = __drawRecentMs > 0 && lastDrewAt > 0 && Date.now() - lastDr
       const seg = segments[i]
 
       // 插话打断：i>0 时，若上一条发出后用户又说话了 → 停掉剩余段
-      if (segments.length > 1 && i > 0) {
+      /*
+       * `opts.noInterrupt`：**成组发送**的消息（如说说预览：问题+正文+配图）不能只发半截。
+       * 2026-11-19 现场：预览正发到一半用户插话，打断后只剩「发空间行吗？」一句，
+       * 正文和配图都没发出去，可 `_qzonePending` 已经存了 —— 她等着确认，
+       * 用户却没看到要确认的东西（后面还会被草稿冷却挡住）。
+       */
+      if (segments.length > 1 && i > 0 && opts?.noInterrupt !== true) {
         const __newMsgs = this._inboundAfter(msg.scope, __startSeq)
         if (__newMsgs.length > 0) {
           __interrupt = true

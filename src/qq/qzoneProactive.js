@@ -45,6 +45,13 @@ const DEFAULTS = {
   windowEnd: 23,
   minChars: 12,
   draftCooldownMs: 90 * 60_000,
+  /**
+   * 只有他**不在跟她聊**的时候才递预览（2026-11-19 用户）。
+   * 现场：他正在私聊里说话，说说预览照样插进去，还被下一句话打断 ——
+   * 只剩半句「发空间行吗？」，正文和配图都没到，人却已经在等确认。
+   * 现在：这个私聊最近一条消息已经过去这么久，才弹预览。
+   */
+  idleBeforePreviewMs: 3 * 60_000,
   /** 每天最多**生成**几份草稿（不确认时防止每 90 分钟弹一次） */
   draftDailyMax: 2,
   /**
@@ -328,6 +335,24 @@ export function startQzoneProactive(bridge, opts = {}) {
   const stateFile = path.join(home, 'qzone-proactive.json')
 
   const cfg = () => ({ ...DEFAULTS, ...(bridge.cfg?.qq?.qzoneProactive ?? {}) })
+
+  /**
+   * 这个私聊**现在是不是闲着**（2026-11-19）。
+   * 判据：
+   *   ① 这个会话不在生成回复中（`_queueBusy`）；
+   *   ② 他最近一条消息已经是 idleBeforePreviewMs 之前的事。
+   * 取不到入站记录（刚启动 / 他从没说过话）→ 算闲着。
+   */
+  const isChatIdle = (scope) => {
+    try {
+      if (bridge._queueBusy?.(scope)) return false
+      const rec = bridge._inbound?.get?.(String(scope))
+      const last = rec?.entries?.[rec.entries.length - 1]
+      const at = Number(last?.at ?? 0)
+      if (!at) return true
+      return clock() - at >= Number(cfg().idleBeforePreviewMs)
+    } catch { return true }
+  }
 
   const readState = () => {
     try { return JSON.parse(fs.readFileSync(stateFile, 'utf8')) ?? {} } catch { return {} }
@@ -645,6 +670,9 @@ export function startQzoneProactive(bridge, opts = {}) {
     const scope = pickPrivateScope()
     if (!scope) return noteSkip('没有绑定的私聊（persona.activeByScope 缺 private:*）')
 
+    /* 他正在跟她聊，就先别插这条预览（2026-11-19 用户：「发说说被我说话打断了」） */
+    if (!isChatIdle(scope)) return noteSkip('他正在聊，预览等他安静下来再递')
+
     const content = await draft(scope)
     if (!content) return noteSkip('今天没有合适的素材/文案（不硬凑）')
     const text = content.text
@@ -666,6 +694,12 @@ export function startQzoneProactive(bridge, opts = {}) {
     }
 
     ensureDay()
+    /*
+     * ⚠️ 生成要二三十秒，这期间他可能又开口了 —— 那份草稿先**不递**，
+     * 也别记 lastDraftAt（记了就得等满 90 分钟冷却，白等一轮）。
+     */
+    if (!isChatIdle(scope)) return noteSkip('生成期间他开口了 → 预览先不递')
+
     state.drafts = draftsToday() + 1
     state.lastDraftAt = clock()
     state.lastDraftText = text
