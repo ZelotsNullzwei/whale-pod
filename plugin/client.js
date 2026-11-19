@@ -71,7 +71,7 @@ window.__ModuleLoader__.load({
       zh: {
         nav: '鲸舱',
         title: '鲸舱',
-        sub: 'DSH 内置的 QQ 聊天机器人：协议端 + 免费优先的 LLM 网关。',
+        sub: 'DSH 插件：给 QQ 群加个会看场合的聊天机器人（自备 OneBot v11 协议端，兼容 OpenAI 协议）。',
         loading: '正在加载…',
         loadFailed: '无法连接鲸舱后端',
         retry: '重试',
@@ -464,7 +464,7 @@ window.__ModuleLoader__.load({
       en: {
         nav: 'WhalePod',
         title: 'WhalePod',
-        sub: 'A QQ chat bot inside DSH: protocol side plus a free-first LLM gateway.',
+        sub: 'A DSH plugin: a chat bot for QQ groups that reads the room (bring your own OneBot v11 backend, OpenAI-compatible).',
         loading: 'Loading…',
         loadFailed: 'Cannot reach the WhalePod backend',
         retry: 'Retry',
