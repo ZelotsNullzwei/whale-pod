@@ -31,41 +31,60 @@ const DEFAULTS = {
   imageDesc: true,
 }
 
-function unescapeFeedText (s) {
-  return String(s ?? '')
-    .replace(/\\x([0-9a-fA-F]{2})/g, (_, h) => String.fromCharCode(parseInt(h, 16)))
-    .replace(/\\\//g, '/')
+export function unescapeFeedText (s) {
+  let t = String(s ?? '')
+  const B = String.fromCharCode(92)
+  t = t.replace(new RegExp(B + B + 'x([0-9a-fA-F]{2})', 'g'), (_, h) => String.fromCharCode(parseInt(h, 16)))
+  t = t.replace(new RegExp(B + B + 'u([0-9a-fA-F]{4})', 'g'), (_, h) => String.fromCharCode(parseInt(h, 16)))
+  t = t.replace(new RegExp(B + B + '/', 'g'), '/')
+  t = t.replace(new RegExp(B + B + 't', 'g'), ' ')
+  t = t.replace(new RegExp(B + B + 'n', 'g'), ' ')
+  t = t.replace(new RegExp(B + B + 'r', 'g'), ' ')
+  return t
 }
 
 const stripTags = (s) => String(s ?? '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
 
 /** 从 feeds3 HTML 里解析出好友的说说（正文 + 图）。 */
 export function parseFriendPosts (html, selfUin) {
+  const t = String(html ?? '')
   const out = []
-  const blocks = String(html ?? '').split('<div class="f-item')
-  for (let i = 1; i < blocks.length; i++) {
-    const b = blocks[i]
+  const seen = new Set()
+  const marker = '<div class="f-item'
+  const starts = []
+  for (let i = t.indexOf(marker); i >= 0; i = t.indexOf(marker, i + marker.length)) starts.push(i)
+  const nickMarks = []
+  const NM = '<div class="f-nick">'
+  for (let i = t.indexOf(NM); i >= 0; i = t.indexOf(NM, i + NM.length)) nickMarks.push(i)
+  const nickBefore = (pos) => {
+    let best = -1
+    for (const n of nickMarks) { if (n < pos) best = n; else break }
+    if (best < 0) return ''
+    const aStart = t.indexOf('<a', best)
+    const gt = t.indexOf('>', aStart)
+    const end = t.indexOf('</a>', gt)
+    if (gt > 0 && end > gt) return stripTags(t.slice(gt + 1, end)).slice(0, 40)
+    return ''
+  }
+  for (let k = 0; k < starts.length; k++) {
+    const b = t.slice(starts[k], k + 1 < starts.length ? starts[k + 1] : t.length)
     const tid = (/data-tid="([0-9a-f]+)"/.exec(b) ?? [])[1] || ''
     const owner = (/data-uin="(\d+)"/.exec(b) ?? [])[1] || ''
     if (!tid || !owner || owner === String(selfUin)) continue
+    if (seen.has(tid)) continue
     const info = /class="f-info"[^>]*>([\s\S]*?)<\/div>/.exec(b)
     const text = stripTags(info ? info[1] : '').slice(0, 200)
     if (!text) continue
-    /* 作者昵称在 <div class="f-nick"><a class="f-name">昵称</a>；
-     * 不能随便抓 nameCard —— 文末「谁点赞了」的名单里也有，会抓成别人。 */
-    const nickBlock = /<div class="f-nick">([\s\S]{0,300}?)<\/div>/.exec(b)
-    const nick = stripTags((/<a[^>]*>([^<]+)<\/a>/.exec(nickBlock ? nickBlock[1] : '') ?? [])[1] || '')
     const imgs = [...new Set(
       [...b.matchAll(/<img[^>]+src="([^"]+)"/g)]
         .map((m) => m[1])
         .filter((u) => /photo\.store\.qq\.com|photogzmaz|qpic\.cn/.test(u) && !/qlogo/i.test(u)),
     )].slice(0, 4)
     const abstime = Number((/data-abstime="(\d+)"/.exec(b) ?? [])[1] || 0)
-    out.push({ tid, owner, nick: stripTags(nick), text, imgs, abstime })
+    seen.add(tid)
+    out.push({ tid, owner, nick: nickBefore(starts[k]), text, imgs, abstime })
   }
-  /* 同一 tid 去重（feeds3 里可能重复出现） */
-  const seen = new Set()
-  return out.filter((p) => (seen.has(p.tid) ? false : (seen.add(p.tid), true)))
+  return out
 }
 
 export function startQzoneFriends (bridge, opts = {}) {
@@ -126,7 +145,12 @@ export function startQzoneFriends (bridge, opts = {}) {
             try {
               const blocks = []
               for (const u of p0.imgs.slice(0, 2)) {
-                const ir = await fetchWithProxyFallback(u, { timeoutMs: 20000, headers: { Referer: 'https://user.qzone.qq.com/' } })
+                const dh = {
+                  'User-Agent': ['Mozilla', '5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/138 Safari/537.36'].join('/'),
+                  Referer: 'https://user.qzone.qq.com/' + p0.owner,
+                }
+                dh['Cookie'] = auth.cookies
+                const ir = await fetchWithProxyFallback(u, { timeoutMs: 20000, headers: dh })
                 if (!ir?.ok) continue
                 const buf = Buffer.from(await ir.arrayBuffer())
                 if (buf.length > 6 * 1024 * 1024) continue
