@@ -739,7 +739,7 @@ export function createWebServer(opts) {
             crossGroupConfirm: cfg.qq?.actions?.crossGroupConfirm !== false,
             maxTokens: cfg.qq?.maxTokens ?? 1024,
             /** 生图风格：'photo'（写实照片）/ 'anime'（日系插画）。两档完全分开。 */
-            drawStyle: cfg.qq?.actions?.drawStyle === 'anime' ? 'anime' : 'photo',
+            drawStyle: 'photo',   // 2026-11-19：anime 档已移除
             imageProvider: cfg.qq?.image?.provider ?? 'magpie-mcp',
             image: {
               provider: cfg.qq?.image?.provider ?? 'magpie-mcp',
@@ -784,7 +784,7 @@ export function createWebServer(opts) {
           model: String(img.model || '').trim() || ms.imageGen || '',
           vision: ms.vision,
           draw: cfgNow.qq?.actions?.draw !== false,
-          drawStyle: cfgNow.qq?.actions?.drawStyle === 'anime' ? 'anime' : 'photo',
+          drawStyle: 'photo',
         }
         if (provider === 'none') {
           return json(res, 200, { ...base, available: false, reason: '画图渠道被设成 none（不启用）', url: img.url })
@@ -838,7 +838,8 @@ export function createWebServer(opts) {
          * 生图风格（2026-11-05）：photo / anime 两档完全分开。
          * bridge 每次生图现读 `cfg.qq.actions.drawStyle`，所以改完立即生效、不用重启。
          */
-        if (body.drawStyle === 'photo' || body.drawStyle === 'anime') {
+        /* 2026-11-19：anime 档已移除，只接受 'photo'（旧客户端传 anime 会被忽略）。 */
+        if (body.drawStyle === 'photo') {
           const curActions = store.get().qq?.actions ?? {}
           patch.qq = { ...(patch.qq ?? {}), actions: { ...curActions, drawStyle: body.drawStyle } }
         }
@@ -3049,7 +3050,7 @@ async function whalePodCompat(o) {  const { sub, method, url, req, res, json, re
         model: String(img.model || '').trim() || ms.imageGen || '',
         vision: ms.vision,
         draw: cfg.qq?.actions?.draw !== false,
-        drawStyle: cfg.qq?.actions?.drawStyle === 'anime' ? 'anime' : 'photo',
+        drawStyle: 'photo',   // 2026-11-19：anime 档已移除
       }
       if (provider === 'none') {
         return json(res, 200, { ...base, available: false, reason: '画图渠道被设成 none（不启用）' })
@@ -3238,7 +3239,7 @@ async function whalePodCompat(o) {  const { sub, method, url, req, res, json, re
            * 「画图 照片|插画」和「生图渠道」。**必须在这条兼容层里也带上** ——
            * 侧栏走的是 /api/whale-pod/*，跟直连 /api/* 是两套入口。
            */
-          drawStyle: cfg.qq?.actions?.drawStyle === 'anime' ? 'anime' : 'photo',
+          drawStyle: 'photo',   // 2026-11-19：anime 档已移除
           imageProvider: cfg.qq?.image?.provider === 'none' ? 'none' : (cfg.qq?.image?.provider ?? 'magpie-mcp'),
           /** 生图渠道的完整参数（设置页表单用）。 */
           image: {
@@ -3335,7 +3336,8 @@ async function whalePodCompat(o) {  const { sub, method, url, req, res, json, re
         patch.gateway = { ...(patch.gateway ?? {}), strategy: body.strategy }
       }
       // 生图风格 / 渠道（2026-11-05）：侧栏和设置页都走这条兼容层。
-      if (body.drawStyle === 'photo' || body.drawStyle === 'anime') {
+      /* 2026-11-19：anime 档已移除，只接受 'photo'。 */
+      if (body.drawStyle === 'photo') {
         const curActions = store.get().qq?.actions ?? {}
         patch.qq = { ...(patch.qq ?? {}), actions: { ...curActions, drawStyle: body.drawStyle } }
       }

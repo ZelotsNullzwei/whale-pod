@@ -5714,7 +5714,6 @@ ${drewNote}
           + '· [画图:描述] —— **照片**，画面里有你。**要露脸就写自拍/对镜自拍**（这两种能拍到脸）；'
           + '  写别的动作时按那个动作的视角走（低头做事就是第一人称，别硬摆成第三个人在拍）；\n'
           + '· [场景图:描述] —— **照片**，只拍眼前的东西，画面里没有人（拍碗、拍窗台、拍桌上的东西用这个）；\n'
-          + '· [插画:描述] —— **日系插画**那一档，只有他明确要"画一张/二次元的"才用。\n'
           + '⚠️ 他明确要「看看你 / 你的脸」而你决定发 → 给**自拍**或**对镜自拍**，别用背影糊弄；'
           + '不愿发就直说，别拿"拍不到"当借口。\n'
           + '❌ **不要写拍摄动作/摆姿势的旁白**（「把手机举高」「脚伸过去」「站到镜子前」这类都不行）——他要的是图，不是动作解说。\n'
@@ -6647,7 +6646,8 @@ const drewRecently = __drawRecentMs > 0 && lastDrewAt > 0 && Date.now() - lastDr
              *   原来只认 [插画:…] 标记，面板上的「生图风格」这个开关
              *   在 bridge 里**从来没被读过** —— 点了等于没点。
              */
-            anime: Boolean(hitIll) || String(this.cfg?.actions?.drawStyle ?? '') === 'anime',
+            /* 2026-11-19：anime 档已移除，只保留写实照片；[插画:] 标记也按照片走。 */
+            anime: false,
             imageCfg: imgCfg,
           })
           /*
@@ -7813,7 +7813,7 @@ const drewRecently = __drawRecentMs > 0 && lastDrewAt > 0 && Date.now() - lastDr
               scope: msg.scope ?? '',
               mode: (typeof photoMode !== 'undefined' ? photoMode : 'daily'),
               sceneOnly: Boolean(mark.sceneOnly),
-              anime: Boolean(mark.anime) || String(this.cfg?.actions?.drawStyle ?? '') === 'anime',
+              anime: false,   // 2026-11-19：anime 档已移除，只保留写实照片
               imageCfg: (this.cfg?.image ?? {}),
             })
             if (!s2 || s2.skip) { this.log.info?.(`bridge：第 ${no} 张跳过（${s2?.skipReason ?? '—'}）`); continue }
@@ -10388,7 +10388,6 @@ const drewRecently = __drawRecentMs > 0 && lastDrewAt > 0 && Date.now() - lastDr
               + '    ⚠️ **要露脸就明说"自拍/对镜自拍/怼脸自拍"** —— 这三种能拍到脸；'
               + '不写的话默认是背影/侧后方（拍不到脸）；\n'
               + '  · [场景图:一句话描述] —— **照片**，只拍眼前的东西，画面里没有人；\n'
-              + '  · [插画:一句话描述] —— **日系插画**那一档，只有他明确说"画一张 / 二次元的"才用。\n'
               + '  ⚠️ 反例：他要看**真实存在的东西**（他自己发的截图、照片）→ **别画**，'
               + '画出来只会露馅。\n'
               + '  ⚠️ 一轮最多一张，要等二十多秒。',

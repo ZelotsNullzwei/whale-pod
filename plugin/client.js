@@ -2116,7 +2116,7 @@ window.__ModuleLoader__.load({
       const curI = d.settings.qqImageModel ?? ''
       const list = d.models ?? []
       const canDraw = s?.available === true
-      const style = s?.drawStyle === 'anime' ? 'anime' : 'photo'
+      const style = 'photo'   // 2026-11-19：anime 档已移除
       const channel = cur !== 'auto' && cur.split('/').length >= 3 ? cur.split('/')[0] : ''
       const idOf = (m) => (
         m.channel ? `${m.channel}/${m.provider}/${m.id}`
@@ -2242,7 +2242,7 @@ window.__ModuleLoader__.load({
         return h('div', { className: 'gd_note' },
           '画图不可用' + (s.reason ? '：' + s.reason : '') + '（需要 Magpie 的 magpie-image / minimax 插件）')
       }
-      const style = s.drawStyle === 'anime' ? 'anime' : 'photo'
+      const style = 'photo'   // 2026-11-19：anime 档已移除
       const apply = (next) => {
         if (busy || next === style) return
         setBusy(true)
@@ -2269,8 +2269,7 @@ window.__ModuleLoader__.load({
           style: { display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' },
         },
           h('span', { className: 'gd_modelrowlabel' }, '画图'),
-          pill('photo', '照片'),
-          pill('anime', '插画')),
+          pill('photo', '照片')),   /* 2026-11-19：anime 档已移除 */
         /*
          * 生图模型**不在这里选**（2026-11-05 说明）。
          * 接口层 `generate_image` 只收 prompt/aspect/resolution/input_urls，
@@ -2488,7 +2487,7 @@ window.__ModuleLoader__.load({
       }, [flash])
       const s = status.data
       if (!s) return null
-      const style = s.drawStyle === 'anime' ? 'anime' : 'photo'
+      const style = 'photo'   // 2026-11-19：anime 档已移除
       const provider = s.provider === 'none' ? 'none' : 'magpie-mcp'
       const save = (body) => {
         if (busy) return
@@ -2515,8 +2514,7 @@ window.__ModuleLoader__.load({
          */
         h('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' } },
           h('span', { className: 'gd_note', style: { minWidth: '64px' } }, '风格'),
-          seg(style === 'photo', '照片', () => save({ drawStyle: 'photo' })),
-          seg(style === 'anime', '插画', () => save({ drawStyle: 'anime' }))),
+          seg(style === 'photo', '照片', () => save({ drawStyle: 'photo' }))),   /* 2026-11-19：anime 档已移除 */
         h(DrawChannelForm, { t }),
         h('p', { className: 'gd_note', style: { marginTop: '6px' } },
           s.available
