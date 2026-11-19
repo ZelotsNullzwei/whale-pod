@@ -2908,8 +2908,14 @@ window.__ModuleLoader__.load({
           card('QQ', online ? '在线' : '离线', q.selfName || null, online ? 'ok' : null)),
         h('div', { className: 'gd_grid gd_grid3', style: { marginTop: '10px', gridTemplateColumns: 'repeat(3,minmax(0,1fr))' } },
           h('div', null,
-            h('div', { className: 'gd_rowlabel', style: { marginBottom: '6px' } }, h('b', null, 'LLM 网关')),
-            h('div', { className: 'gd_note' }, `模型：${c.qq?.model && c.qq.model !== 'auto' ? c.qq.model : '自动（按渠道优先级）'}`),
+            h('div', { className: 'gd_rowlabel', style: { marginBottom: '6px' } }, h('b', null, '网关')),
+            (() => {
+              const raw = String(c.qq?.model ?? '')
+              /* 模型名可能很长（如 magpie/magpie/workbuddy/deepseek-v4.1-flash），
+               * 这块只有 1/3 宽，整串会折两行 —— 只显示最后一段，完整名放 title 里悬停看。 */
+              const short = raw && raw !== 'auto' ? raw.split('/').pop() : '自动（按渠道优先级）'
+              return h('div', { className: 'gd_note', title: raw || 'auto', style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, `模型：${short}`)
+            })(),
             h('div', { className: 'gd_note' }, `渠道：${modelCount} 个可用${provs.length ? ` · ${provs.length} 个在用` : ''}`),
             h('div', { className: 'gd_note' }, `策略：${c.gateway?.strategy ?? '—'}`),
             h('div', { className: 'gd_note' }, `地址：${c.gateway?.host ?? '127.0.0.1'}:${c.gateway?.port ?? 18899}/v1`)),
