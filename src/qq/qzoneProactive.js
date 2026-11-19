@@ -334,7 +334,8 @@ export function startQzoneProactive(bridge, opts = {}) {
   const clock = typeof opts.now === 'function' ? opts.now : () => Date.now()
   const stateFile = path.join(home, 'qzone-proactive.json')
 
-  const cfg = () => ({ ...DEFAULTS, ...(bridge.cfg?.qq?.qzoneProactive ?? {}) })
+  /* bridge.cfg 是**扁平**的（bridgeCfgOf = { ...cfg.qq }），所以先读顶层 */
+  const cfg = () => ({ ...DEFAULTS, ...(bridge.cfg?.qzoneProactive ?? bridge.cfg?.qq?.qzoneProactive ?? {}) })
 
   /**
    * 这个私聊**现在是不是闲着**（2026-11-19）。
@@ -728,6 +729,10 @@ export function startQzoneProactive(bridge, opts = {}) {
   bridge._qzoneProactiveTick = tick
   /* 启动后立刻跑一次（不然要等满 60 秒；也方便排查"到底卡在哪道闸"） */
   try { setTimeout(() => { void tick() }, 3000).unref?.() } catch { /* ignore */ }
-  bridge.log?.info?.(`qzone-proactive：调度器已启动（每天 ${cfg().dailyMax} 条，${cfg().windowStart}–${cfg().windowEnd} 点）`)
+  bridge.log?.info?.(
+    cfg().enabled
+      ? `qzone-proactive：调度器已启动（每天 ${cfg().dailyMax} 条，${cfg().windowStart}–${cfg().windowEnd} 点）`
+      : 'qzone-proactive：已挂载但未启用（qq.qzoneProactive.enabled=false）',
+  )
   return timer
 }

@@ -62,7 +62,8 @@ export function startOwnLife(bridge, opts = {}) {
     if (!home) { bridge.log?.info?.('own-life：没有 home，跳过挂载'); return null }
 
     const stateFile = path.join(home, 'own-life.json')
-    const cfg = () => ({ ...DEFAULTS, ...(bridge.cfg?.qq?.ownLife ?? {}) })
+    /* bridge.cfg 是**扁平**的（bridgeCfgOf = { ...cfg.qq }），所以先读顶层 */
+  const cfg = () => ({ ...DEFAULTS, ...(bridge.cfg?.ownLife ?? bridge.cfg?.qq?.ownLife ?? {}) })
     const now = () => Date.now()
     const today = () => new Date(now()).toLocaleDateString('sv-SE')
 
