@@ -73,6 +73,7 @@ import { buildBalanceHint } from './balanceHint.js'
 import { buildVarietyHint, buildExpressionHint } from '../persona/variety.js'
 import { currentSlot, renderDayPlan } from '../memory/dayPlan.js'
 import { fetchHotTopics, filterTopics, fetchForum } from './hot-topics.js'
+import { gifFrameGrid, looksAnimated } from './gif-frames.js'
 
 /**
  * 单张图下载上限的兜底值。
@@ -5082,8 +5083,26 @@ ${drewNote}
         const memG = (() => { try { return this.memory?.get?.(msg.scope)?.recent?.(30) ?? [] } catch { return [] } })()
         const quotedMine = Boolean(replyTo) && memG.some((m) => m?.isMe
           && (String(m?.messageId ?? m?.id ?? '') === replyTo))
+        /*
+         * 纯表情（没字）→ 回一张收藏表情，不调模型、不读情绪。
+         * 有字的梗图留给正常文字判断。
+         */
+        const words = gtext
+          .replace(/\[表情包(?::[^\]]*)?\]/g, '')
+          .replace(/\[表情:\d+\]/g, '')
+          .replace(/\[图片\]/g, '')
+          .trim()
+        if (!words) {
+          try {
+            await this._send(msg, '[表情包]')
+            this.log.info?.('bridge：群里纯表情 → 回一张收藏表情')
+          } catch (e) {
+            this.log.warn?.(`bridge：群表情回应失败 — ${String(e?.message ?? e).slice(0, 60)}`)
+          }
+          return
+        }
         if (!atMe && !quotedMine) {
-          this.log.info?.('bridge：群里没点名的表情 → 不读')
+          this.log.info?.('bridge：群里没点名的有字表情 → 不读')
           return
         }
       }
@@ -7501,23 +7520,17 @@ const drewRecently = __drawRecentMs > 0 && lastDrewAt > 0 && Date.now() - lastDr
         try {
           const qItem = msg.__qzoneResolved ? null : marks.items.find((x) => x.id === 'qzone')
           /*
-           * 说说一律摘下，走"先给他看再发"：runQQMarkers 永远看不到 qzone，
-           * 否则那条直发路会让确认闸形同虚设（2026-11-08 用户：「都修吧」）。
+           * ★ **聊天里不再发说说**（2026-11-19 用户：「只留一个」）。
+           *
+           * 说说只剩「她自己的时间」那条链路（src/qq/ownLife.js）：到点她自己
+           * 决定发不发，不占聊天通道，也就不会被他插话打断。
+           * 这里把标记**剥掉但不执行** —— 留一句日志，方便确认模型还在写它。
            */
           if (qItem) {
             marks.items = marks.items.filter((x) => x.id !== 'qzone')
-            /* 2026-11-13：本轮要发说说时，同期 [删说说] 一律摘掉，防止"刚摘下又被自己删"（13:21 事故） */
-            const delBefore = marks.items.length
-            marks.items = marks.items.filter((x) => x.id !== 'qzoneDel')
-            if (marks.items.length !== delBefore) this.log.info?.('bridge：本轮有说说待确认 → 摘掉 [删说说]，不执行')
-            if (!this._pendingQzone) this._pendingQzone = new Map()
-            this._pendingQzone.set(String(msg.scope ?? ''), {
-              scope: String(msg.scope ?? ''),
-              content: String(qItem.arg ?? ''),
-              imageUrl: String(drawnImage?.url ?? ''),
-            })
-            this.log.info?.('bridge：说说已摘下 → 等发图给他确认')
-          }} catch { /* 拦截失败就按老路走 */ }
+            this.log.info?.(`bridge：聊天里的 [说说] 不再发（改由她自己的时间）——「${String(qItem.arg ?? '').slice(0, 30)}」`)
+          }
+        } catch { /* 剥不干净就按老路走 */ }
         qqNotes = await runQQMarkers({
           items: marks.items,
           onebot: this.onebot,
@@ -7550,21 +7563,9 @@ const drewRecently = __drawRecentMs > 0 && lastDrewAt > 0 && Date.now() - lastDr
          * 读起来像她自己的动作记录，不像别人塞给她的话。
          */
         try {
-          const said = (marks.items ?? []).find((x) => x.id === 'qzone')
+          /* 聊天里不再发说说（2026-11-19），「发说说」的记账移到 _sendQzoneNow 里做 */
           const didDel = (marks.items ?? []).some((x) => x.id === 'qzoneDel')
-          if (said && qqNotes.some((n) => String(n).includes('发空间'))) {
-            const body = String(said.arg ?? '').trim().slice(0, 120)
-            const withImg = qqNotes.some((n) => String(n).includes('发空间了') && !String(n).includes('没图'))
-            mem.push(makeMessage({
-              id: 'qzone-' + Date.now(),
-              sender: String(this.selfId ?? ''),
-              senderName: String(this.selfName ?? ''),
-              isMe: true,
-              at: Date.now(),
-              text: '（刚发了条说说：' + body + (withImg ? '｜带图' : '｜没图') + '）',
-            }))
-            this.log.info?.('bridge：已把「发说说」写进她的记忆 — ' + body.slice(0, 20))
-          } else if (didDel && qqNotes.some((n) => String(n).includes('删了刚发的说说'))) {
+          if (didDel && qqNotes.some((n) => String(n).includes('删了刚发的说说'))) {
             mem.push(makeMessage({
               id: 'qzone-del-' + Date.now(),
               sender: String(this.selfId ?? ''),
@@ -7750,14 +7751,10 @@ const drewRecently = __drawRecentMs > 0 && lastDrewAt > 0 && Date.now() - lastDr
         this.log.info?.(`bridge：图有了但正文是空的 → 兜一句「${text}」`)
       }
       const sentIds = await this._send(msg, text, coverForSend)
-      /* ★ 回复已经出去了 —— 现在补说说的图（不占聊天延迟） */
-      try {
-        const pq = this._pendingQzone?.get?.(String(msg.scope ?? ''))
-        if (pq) {
-          this._pendingQzone.delete(String(msg.scope ?? ''))
-          void this._askQzoneConfirm(pq).catch(() => {})
-        }
-      } catch { /* 忽略 */ }
+      /*
+       * 2026-11-19：原来这里会在回复发出后补发说说预览（`_pendingQzone`）。
+       * 聊天里的说说已经关掉，没人再写 `_pendingQzone` —— 整段删除。
+       */
       /*
        * ★ 主图**真的发出去了**吗（2026-11-06）。
        *   读 _send 挂在 msg 上的结构化结果 —— 图段失败会被跳过、正文照发，
@@ -10106,10 +10103,12 @@ const drewRecently = __drawRecentMs > 0 && lastDrewAt > 0 && Date.now() - lastDr
 **只回一个表情，不要打字。** 直接发 [表情包] 或 [表情:N]。
 不要配「哈哈」「我也是」「这表情」这种字 —— **配了就是错**。
 
-⚠️ **严格禁止**（这三条是最容易被骂的）：
+⚠️ **严格禁止**（这四条是最容易被骂的）：
 1. **描述画面** —— 「图里是只青蛙」「一个猫瞪大眼张着嘴」
 2. **把图翻译成文字** —— 「我这边也是这个表情」「吃了一惊」
 3. **认领** —— 「这不是我」「像我」「勉强沾点边」
+4. **替对方解释情绪** —— 「你难过了」「你生气了」「你哭啥」「是不是不开心」
+   表情的意思你自己看懂就行，**不要给对方的情绪下定义**；同表情回一个，或顺着当前话题接一句。
 
 ⚠️ 特别注意 **B 类**：真人收到一个「震惊猫」表情包，
 **直接甩一个表情回去**，不会说「我这边也是这个表情——吃了一惊」。
@@ -10137,6 +10136,8 @@ const drewRecently = __drawRecentMs > 0 && lastDrewAt > 0 && Date.now() - lastDr
           : `## 这条消息只有一张图
 
 **先看清楚这张图画的是什么，再决定怎么回。**
+⚠️ **图已经加载出来了：绝对不要用「糊 / 看不清 / 分辨率低 / 画质差」来形容它** ——
+那是在点评画工，不是在看图；会让人误以为图没加载出来。只回应画面内容/角色，不评价画质。
 ⚠️ 不管哪种情况，**回复都要短** —— 一两句话，别写成说明文。
 
 **① 图上有文字吗？**（截图、聊天记录、梗图上的字）
@@ -10456,10 +10457,8 @@ const drewRecently = __drawRecentMs > 0 && lastDrewAt > 0 && Date.now() - lastDr
             lines.push('- 说「签名改了」→ 必须同时输出 [签名:一句话]')
           }
           if (a.qzone === true) {
-            lines.push('- 他说「发个说说 / 发空间 / 把这张发空间」→ 输出 [说说:一句话]（≤300 字）')
-            lines.push('- **图会自动带上**：这条消息里他发的图、或者你刚发的那张，会一起进说说 —— 你什么都不用做')
-            lines.push('- ⚠️ 别回「我发不了」「图塞不进去」这种话 —— 你有这个能力，写标记就行')
-            lines.push('- ⚠️ 空间是**公开**的（好友/访客都看得到）—— 他没提，你别自己发。')
+            lines.push('- ⚠️ **聊天里不发说说**（2026-11-19 改）：说说由「她自己的时间」自己决定，到点她自己在空间发。')
+            lines.push('- 他让你「发个说说 / 发空间」→ 用嘴回一句（比如「等会儿我自己发」），**不要输出 [说说:…]** —— 写了也不会发出去。')
             lines.push('- 他说「删掉刚发的那条说说」→ 输出 [删说说]（只能删最近一条；重启后记不得）')
             lines.push('- 私聊里他说「去群里说一句/发群里」→ 输出 [发群:那句话]（目标自动取最近活跃的群）')
             lines.push('- 私聊里他说「去群里发张自拍/发张图」→ **同时写两个标记**：[画图:画面描述] + [发群:配文]')
@@ -12386,6 +12385,32 @@ const drewRecently = __drawRecentMs > 0 && lastDrewAt > 0 && Date.now() - lastDr
         const file = m?.[0]?.data?.file
         if (typeof file === 'string' && /^https?:/i.test(file)) {
           this._lastMface = { scope: String(msg?.scope ?? ''), url: file, at: Date.now() }
+          /*
+           * ★ 发完把**这张的标签**写回记忆（2026-11-18 用户：「她知道不知道自己发的表情啥意思」）。
+           *   随机挑的那张如果不记，下一轮她根本不知道自己刚发了「晚上坏」还是「猫」。
+           */
+          try {
+            const tags = this.stickerTags?.get?.(file) ?? []
+            const label = tags.length ? tags.slice(0, 3).join('、') : (seg.name || '表情')
+            this._lastMfaceTag = label
+            const mm = this.memory?.get?.(String(msg?.scope ?? ''))
+            if (mm?.push) {
+              mm.push(makeMessage({
+                id: undefined,
+                sender: this.selfId ?? '0',
+                senderName: this.selfName,
+                text: `[表情包:${label}]`,
+                at: Date.now(),
+                isMe: true,
+                provider: null,
+                model: null,
+              }))
+            }
+            /* 连续两张不重复：记住最近发过的 3 个 URL */
+            if (!this._recentMface) this._recentMface = new Map()
+            const k = String(msg?.scope ?? '')
+            this._recentMface.set(k, [...(this._recentMface.get(k) ?? []), file].slice(-3))
+          } catch { /* 记账失败不影响发送 */ }
         }
         payload = m
       } else {
@@ -12670,7 +12695,8 @@ const drewRecently = __drawRecentMs > 0 && lastDrewAt > 0 && Date.now() - lastDr
     return out
   }
 
-  async _callVisionTags(block) {
+  async _callVisionTags(block, opts = {}) {
+    const animated = opts?.animated === true
     /*
      * ⚠️ **头一句必须是「只输出答案，不要写思考过程」**（2026-10-31）。
      *
@@ -12683,10 +12709,21 @@ const drewRecently = __drawRecentMs > 0 && lastDrewAt > 0 && Date.now() - lastDr
      * 比只说「最多 5 个」更能压住它写长句。
      */
     const prompt = '只输出答案本身，不要写任何思考过程、分析、标题或格式说明。\n'
-      + '下面这张是表情包图片（动图的话这里只给了一帧）。\n'
-      + '用 1~5 个**中文短词**说出它表达的情绪 / 语气 / 使用场景，用顿号分隔。\n'
-      + '每个词最多 4 个字。\n'
-      + '示例输出：开心、得意、炫耀\n'
+      + (animated
+        ? '下面是**同一张动图的三帧**，从左到右按时间顺序排列（首 → 中 → 尾），帧之间用白边隔开。\n'
+          + '**先看动作怎么变化**（表情从什么变成什么、动作从什么做到什么），再下判断。\n'
+        : '下面这张是表情包图片。\n')
+      + '**先看意思**：用 1~3 个**中文短词**说出它表达的情绪 / 语气 / 使用场景，用顿号分隔，每个词最多 4 个字。\n'
+      + '**再看有没有字或符号**：如果图上写着字（台词、吐槽、梗），把**最关键的 1~2 个短词**也加在后面，'
+      + '并且**用中文双引号括起来**，让人一眼看出那是图上的原字（例：“何意味”）。\n'
+      + '如果是**纯符号/颜文字/大 emoji**（问号、感叹号、省略号、汗滴、比心、哭笑不得这种），\n'
+      + '就用一个短词说出**那个符号是什么**（如：问号、省略号、汗、比心），同样用顿号分隔，不用引号。\n'
+      + '示例输出：无语、嫌弃、“管好自己”\n'
+      + '示例输出：开心、得意\n'
+      + '示例输出：疑惑、问号\n'
+      + '⚠️ 没字也没符号就只给意思，不要编；**引号里只能放图上真实存在的字**。\n'
+      + '⚠️ 图上的字是**中文**就照中文写。**不要把中文认成日文假名**（实测把「叭叭叭叭叭」认成「マハマハ」）——'
+      + '拿不准就用意思词，别硬写引号。\n'
       + '现在输出：'
     const candidates = this._candidates?.() ?? []
     if (!Array.isArray(candidates) || candidates.length === 0) return []
@@ -12721,7 +12758,7 @@ const drewRecently = __drawRecentMs > 0 && lastDrewAt > 0 && Date.now() - lastDr
      * ⚠️ **长了就丢掉**：真正的标签列表不会超过几十个字。
      * 超过 80 字基本可以断定是 reasoning 漏出来了（宁可这张不打标签）。
      */
-    if (text.length > 80) {
+    if (text.length > 120) {
       this.log.debug?.(`表情标签：输出过长（${text.length} 字，疑似思考过程），丢弃`)
       return []
     }
@@ -12754,16 +12791,45 @@ const drewRecently = __drawRecentMs > 0 && lastDrewAt > 0 && Date.now() - lastDr
         try {
           const img = await this.onebot.fetchImage(url, {
             maxBytes: this.cfg.reply?.maxImageBytes ?? 8 * 1024 * 1024,
+            /*
+             * ⚠️ 打标签要**更长的超时**（2026-11-19 实测）。
+             * 收藏里不少是 1~3MB 的大 GIF，CDN 单张要 20 秒上下；
+             * 用默认 15 秒会一直失败（日志「图片响应体读不出来」），
+             * 表现就是标签永远打不完。
+             */
+            timeoutMs: 60000,
           })
           const m = /^data:([^;]+);base64,(.*)$/s.exec(img?.dataUrl ?? '')
           if (!m) continue
+          /*
+           * ★ 动图抽多帧（2026-11-19 用户确认要做）。
+           *
+           * 视觉模型看 GIF **只取第一帧**，于是「先愣住→爆笑」这种表情
+           * 只被打成「愣住」。这里先把首/中/尾三帧拼成一张横排静图，
+           * 让模型看到动作线，再打标签。
+           *
+           * 抽帧失败（没 Python/Pillow、静态图）→ 原样用原图，绝不丢表情。
+           */
+          const rawBuf = Buffer.from(m[2], 'base64')
+          let base64 = m[2]
+          let mediaType = m[1]
+          let animated = false
+          if (looksAnimated(mediaType, rawBuf)) {
+            const grid = gifFrameGrid(rawBuf, { log: this.log })
+            if (grid) {
+              base64 = grid.jpeg.toString('base64')
+              mediaType = 'image/jpeg'
+              animated = true
+              this.log.info?.(`表情标签：动图抽了 ${grid.frames}/${grid.total} 帧拼图`)
+            }
+          }
           const block = await this.gateway.makeImageBlock({
-            base64: m[2],
-            mediaType: m[1],
+            base64,
+            mediaType,
             name: 'sticker-tag',
           })
           if (!block) continue
-          const tags = await this._callVisionTags(block)
+          const tags = await this._callVisionTags(block, { animated })
           if (tags.length && this.stickerTags.set(url, tags)) {
             done += 1
             this.log.info?.(`表情标签：${stickerKey(url).slice(-16)} → ${tags.join('、')}`)
@@ -12803,7 +12869,22 @@ const drewRecently = __drawRecentMs > 0 && lastDrewAt > 0 && Date.now() - lastDr
        * 30 秒留够 `finally` 把 `_taggingBusy` 放掉，不会自己把自己挡住。
        */
       if (done > 0 && left > 0) {
+        this._tagZeroRuns = 0
         setTimeout(() => { void this._tagStickerBatch?.() }, 30_000)
+      } else if (done === 0 && left > 0) {
+        /*
+         * 这一批一张都没成（网关抖动/图下载失败）——**别立刻死掉**。
+         * 原来条件是 `done > 0` 才续跑，于是重启或一次抖动就永久停在半路
+         * （2026-11-18 实测：48 张打完 37 张就停了）。
+         * 现在允许连续空跑 3 次再放弃。
+         */
+        this._tagZeroRuns = Number(this._tagZeroRuns ?? 0) + 1
+        if (this._tagZeroRuns <= 3) {
+          this.log.info?.(`表情标签：这批没打成功，${this._tagZeroRuns}/3 次后放弃`)
+          setTimeout(() => { void this._tagStickerBatch?.() }, 30_000)
+        }
+      } else if (left === 0) {
+        this._tagZeroRuns = 0
       }
     } catch (e) {
       this.log.debug?.(`表情标签：批处理失败（忽略）— ${String(e?.message ?? e)}`)
@@ -13582,6 +13663,29 @@ const drewRecently = __drawRecentMs > 0 && lastDrewAt > 0 && Date.now() - lastDr
     const refs = Array.isArray(msg?.stickerRefs) ? msg.stickerRefs : []
     if (refs.length === 0) return
     if (typeof this.onebot.addCustomFace !== 'function') return
+    /*
+     * ★★ **不再"见一张收一张"**（2026-11-18 用户：「群友一发表情她就会收藏一份」
+     *   「收藏的表情总有满的一天」）。
+     *
+     * 收藏位是有限资源（默认上限 200），以前是收到表情包就无条件收藏，
+     * 群里一天几十张，很快就塞满，而且收进来的多半永远不会用到。
+     *
+     * 现在只有**值得收**的才收（满足任一）：
+     *   · 她正好想回一个表情（本轮决策要发 `[表情包]`）
+     *   · 这张出现在**跟她有关**的上下文里（被 @ / 引用她 / 提到她）
+     *   · 用户明确让它收（`qq.autoCollectStickers === 'always'`）
+     * 其余情况：只是看看，不入库。
+     */
+    const mode = String(cfg.autoCollectStickers ?? 'smart')
+    if (mode !== 'always') {
+      const aboutMe = Boolean(msg?.mentionsMe)
+        || Boolean(this.selfId && typeof msg.isAtMe === 'function' && msg.isAtMe(this.selfId))
+        || this._wantsStickerReply === true
+      if (!aboutMe) {
+        this.log.debug?.('bridge：这张表情不收藏（跟它无关，省收藏位）')
+        return
+      }
+    }
 
     const cap = Number(cfg.maxCollectedStickers ?? 200)
     // 收藏总数只在需要时查一次（10 分钟缓存，见 _customFaces）
@@ -13613,6 +13717,14 @@ const drewRecently = __drawRecentMs > 0 && lastDrewAt > 0 && Date.now() - lastDr
             this.log.info?.(r.existed
               ? 'bridge：这张表情已经在收藏里了'
               : `bridge：已自动收藏一张表情（当前共 ${existing.length + 1} 张）`)
+            /*
+             * ★ 新表情**立刻打标签**（2026-11-18 用户：「每次有新表情也这样处理」）。
+             *   默认要攒够 3 张才打，这里显式降到 1 张，收藏完就补上意思/字。
+             *   延迟 2 秒等收藏在协议端落盘，再重新拉列表。
+             */
+            if (!r.existed) {
+              setTimeout(() => { void this._tagStickerBatch?.({ minPending: 1, batchLimit: 2 }) }, 2000)
+            }
           } else {
             this.log.warn?.(`bridge：收藏表情失败 — ${JSON.stringify(r.raw ?? {}).slice(0, 160)}`)
           }

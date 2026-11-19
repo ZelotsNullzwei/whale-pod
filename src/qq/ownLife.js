@@ -39,6 +39,8 @@ const DEFAULTS = {
   maxPerDay: 6,
   /** 允许她在自己的时间发说说 */
   allowPost: true,
+  /** 每天最多发几条说说（0 = 不限）。叫醒次数 ≠ 发布条数。 */
+  postDailyMax: 1,
   /**
    * 两次「发空间」之间的最小间隔。
    * ⚠️ 私聊通道本身**没有**冷却（qq.actions 里私聊 gapMs=0），
@@ -189,6 +191,10 @@ export function startOwnLife(bridge, opts = {}) {
           bridge.log?.warn?.(`own-life：说说没过内容检查（${chk.reasons.join('、')}）→ 不发`)
           return
         }
+        if (Number(c.postDailyMax) > 0 && Number(state.posts ?? 0) >= Number(c.postDailyMax)) {
+          bridge.log?.info?.(`own-life：今天已经发过 ${state.posts} 条说说 → 这次不发`)
+          return
+        }
         if (state.lastPostAt && now() - Number(state.lastPostAt) < Number(c.postMinGapMs)) {
           const h = Math.max(1, Math.round((now() - Number(state.lastPostAt)) / 3600_000))
           bridge.log?.info?.(`own-life：${h} 小时前刚发过说说 → 这次只想想，不发`)
@@ -219,7 +225,8 @@ export function startOwnLife(bridge, opts = {}) {
     bridge.log?.info?.(
       `own-life：已武装 · 每 ${Math.round(Number(c0.intervalMs) / 3600_000 * 10) / 10}h 一次`
       + ` · 安静 ${c0.quietStart}:00–${c0.quietEnd}:00 · 每天最多 ${c0.maxPerDay} 次`
-      + ` · 发说说冷却 ${Math.round(Number(c0.postMinGapMs) / 3600_000)}h`,
+      + ` · 发说说冷却 ${Math.round(Number(c0.postMinGapMs) / 3600_000)}h`
+      + ` · 每天最多发 ${c0.postDailyMax} 条`,
     )
     return timer
   } catch (e) {
