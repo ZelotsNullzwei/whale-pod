@@ -920,7 +920,7 @@ export function cleanModelText(raw) {
    * ⚠️ 不会误伤正常句子 —— 正则要求括号**在时间单位处就结束**：
    *    「（2 天没睡了）」不匹配（后面还有字），只有「（2 天）」才剥。
    */
-  s = s.replace(/^[ \t]*[（(]\s*[+＋]?\s*\d+\s*(秒|分钟|小时|天)\s*(前|之前|以前)?\s*[）)][ \t]*/gm, '')
+  s = s.replace(/^[ \t]*[（(]\s*[+＋\-−]?\s*\d+\s*(秒|分钟|小时|天)\s*(前|之前|以前)?\s*[）)][ \t]*/gm, '')
   /*
    * ⚠️ 第四种形态（2026-10-31 补，日志实测）：
    * ```
@@ -1063,7 +1063,7 @@ export function cleanModelText(raw) {
     '$2',
   )
   s = s.replace(
-    /(^|[\s\n])[（(]\s*([+＋]?\s*(?:\d{1,3}|几|一|半|好几|若干|\?|？)\s*(?:秒|分钟?|小时)\s*(?:后|之前|以前|前|以后|左右|多)?|紧接着|刚刚|刚才|过了一会儿?|片刻后)\s*[）)]/gm,
+    /(^|[\s\n])[（(]\s*([+＋\-−]?\s*(?:\d{1,3}|几|一|半|好几|若干|\?|？)\s*(?:秒|分钟?|小时)\s*(?:后|之前|以前|前|以后|左右|多)?|紧接着|刚刚|刚才|过了一会儿?|片刻后)\s*[）)]/gm,
     '$1',
   )
   /*
@@ -11906,12 +11906,27 @@ const drewRecently = __drawRecentMs > 0 && lastDrewAt > 0 && Date.now() - lastDr
      * 平常用 90ms/字 模拟手打；但进入正戏后，短句连发本来就是那个节奏 ——
      * 在这里硬等 1~3 秒反而破戏（对方会以为卡住）。
      * 所以场景内换成 **35ms/字**、上限压到 1.5 秒。
+     *
+     * ⚠️ **2026-11-19 改**：用户「那场景模式慢一点呢」「按照字数多少来吧」。
+     *    35ms/字 + 1.5s 上限等于**把字数差抹平了** —— 超过约 43 字后
+     *    全都等 1.5 秒，短句连发时几乎贴在一起（实测 22:43:34 +1s、
+     *    22:44:42 +1s），短时间内把协议端的发送队列堆满，
+     *    22:46~22:59 整段发不出去就是这么堵上的。
+     *
+     *    现在改成**真正按字数算**：场景内 60ms/字（比日常 90ms/字 快，
+     *    仍符合「场景里另说」），上限放宽到 5 秒 —— 长句自然等更久，
+     *    短句仍然利落。
+     *
+     * ⚠️ 顺手把日常那档对齐成注释/测试一直写的 90ms/字、[300, 6000]
+     *    （代码此前漂成 120ms/字、[150, 8000]，和注释不一致）。
      */
     const perChar = inScene
-      ? Number(reply.sceneTypingMsPerChar ?? 35)
-      : Number(reply.typingMsPerChar ?? 120)
-    const lo = inScene ? 150 : 150
-    const hi = inScene ? 1500 : 8000
+      ? Number(reply.sceneTypingMsPerChar ?? 60)
+      : Number(reply.typingMsPerChar ?? 90)
+    const lo = inScene ? 200 : 300
+    const hi = inScene
+      ? Number(reply.sceneTypingMaxMs ?? 5000)
+      : 6000
     let gap = fixed > 0 ? fixed : chars * perChar
     gap = Math.max(lo, Math.min(hi, gap))
     /* ⚠️ `_rand` 不是所有调用方都有（测试桩 / 少数旁路）→ 兜底 Math.random */

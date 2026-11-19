@@ -111,6 +111,17 @@ ok('另外两种既有形态照旧（（5 秒前）/（+3 秒））', () => {
   assert.equal(cleanModelText('（1 小时前）ok'), 'ok')
 })
 
+ok('★ 负号时间注也要剥（（-5 秒）—— 2026-11-19 实测漏网）', () => {
+  /*
+   * 现场：「（-5 秒）本鲸不用那玩意儿。 / 行，明天早上。」
+   * 生活时间注在"时间倒流"时会写负数，老正则只认 +/数字/几，负号整条漏出去。
+   */
+  assert.equal(cleanModelText('（-5 秒）本鲸不用那玩意儿。'), '本鲸不用那玩意儿。')
+  assert.equal(cleanModelText('（-3 秒）\n行，明天早上。'), '行，明天早上。')
+  assert.equal(cleanModelText('（-2 分钟）知道了'), '知道了')
+  assert.equal(cleanModelText('(-5 秒)半角也认'), '半角也认')
+})
+
 ok('⚠️ 不误伤正文里的括号（只有"括号在时间单位处结束"才剥）', () => {
   assert.equal(cleanModelText('我在想（2 天没睡了）'), '我在想（2 天没睡了）')
   assert.equal(cleanModelText('我等了（3 分钟）就走了'), '我等了（3 分钟）就走了')

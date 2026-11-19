@@ -8,7 +8,9 @@
  *
  * 守什么：
  * ① 普通节奏按 90ms/字，夹在 [300, 6000]
- * ② 场景内更快（35ms/字，夹在 [200, 1500]），且同样字数一定比普通短
+ * ② 场景内按字数（2026-11-19 改：60ms/字，夹在 [200, 5000]）——
+ *    旧版 35ms/字 + 1.5s 上限把字数差抹平了：超过约 43 字全都等 1.5 秒，
+ *    短句连发几乎贴在一起，把协议端发送队列堆满（22:46~22:59 发不出去）。
  * ③ `bubbleGapMs = 0` 能整体关掉；给正数就是固定间隔
  * ④ `_send` 里真的用了它，并且把 inScene 传进去了
  */
@@ -50,9 +52,18 @@ ok('★ 同样字数，场景内一定更快', () => {
     assert.ok(scene < normal, `${n} 字：场景内(${scene}) 应该快于普通(${normal})`)
   }
 })
-ok('★ 场景内下限 200ms、上限 1500ms', () => {
+ok('★ 场景内下限 200ms、上限 5000ms', () => {
   assert.equal(gap(1, {}, { inScene: true }), 200)
-  assert.equal(gap(500, {}, { inScene: true }), 1500)
+  assert.equal(gap(500, {}, { inScene: true }), 5000)
+})
+ok('★ 场景内也要按字数拉开（不能再被上限抹平）', () => {
+  const a = gap(8, {}, { inScene: true })
+  const b = gap(20, {}, { inScene: true })
+  const c = gap(40, {}, { inScene: true })
+  assert.ok(a < b, `8字(${a}) 应短于 20字(${b})`)
+  assert.ok(b < c, `20字(${b}) 应短于 40字(${c})`)
+  assert.ok(a < 1500, `8 字不该被顶到上限：${a}`)
+  assert.ok(c > 1500, `40 字应该超过旧上限 1500：${c}`)
 })
 
 console.log('\n=== 3. 开关 ===')
