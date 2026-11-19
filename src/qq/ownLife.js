@@ -42,6 +42,13 @@ const DEFAULTS = {
   /** 每天最多发几条说说（0 = 不限）。叫醒次数 ≠ 发布条数。 */
   postDailyMax: 1,
   /**
+   * 配图开关（2026-11-19 用户：「配图根据内容来吧」）。
+   * 画面从**说说正文本身**推出来：正文里的主体词 → 她自己最近说过的描述
+   * → 当日日程兜底，全在 `bridge._makeQzoneImage` 里做。
+   * 生图失败不影响发文字。
+   */
+  imageEnabled: true,
+  /**
    * 两次「发空间」之间的最小间隔。
    * ⚠️ 私聊通道本身**没有**冷却（qq.actions 里私聊 gapMs=0），
    *    所以这里必须自己补一道，否则每天能发好几条。
@@ -130,7 +137,8 @@ export function startOwnLife(bridge, opts = {}) {
           : '今天不发说说。',
         '什么都不想做 → 输出 [SILENT]。',
         '',
-        '⚠️ 不要提发图/拍照（这条链路没有配图能力），也不要写「喏」「给你看」这类话。',
+        '⚠️ 说说正文里不要提发图/拍照，也不要写「喏」「给你看」这类话。',
+        '（配图会按你写的这件事自动生成一张，你不用管。）',
       ].join('\n')
     }
 
@@ -200,12 +208,25 @@ export function startOwnLife(bridge, opts = {}) {
           bridge.log?.info?.(`own-life：${h} 小时前刚发过说说 → 这次只想想，不发`)
           return
         }
-        const ok = await bridge._sendQzoneNow(scope, text, null)
+        /*
+         * 配图：按**这条说说的内容**推画面（主体词 / 她自己的描述 / 日程）。
+         * 生图约 20–30 秒，失败就只发文字 —— 不能因为没图就不发。
+         */
+        let file = ''
+        if (c.imageEnabled !== false) {
+          try {
+            file = await bridge._makeQzoneImage?.(scope, text, null) || ''
+          } catch (e) {
+            bridge.log?.warn?.(`own-life：配图失败（${String(e?.message ?? e).slice(0, 60)}）→ 只发文字`)
+            file = ''
+          }
+        }
+        const ok = await bridge._sendQzoneNow(scope, text, file || null)
         if (ok) {
           state.lastPostAt = now()
           state.posts = Number(state.posts ?? 0) + 1
           writeState(state)
-          bridge.log?.info?.(`own-life：她自己的时间发了一条说说「${text.slice(0, 40)}」`)
+          bridge.log?.info?.(`own-life：她自己的时间发了一条说说${file ? '（带图）' : '（没图）'}「${text.slice(0, 40)}」`)
         }
       } catch (e) {
         bridge.log?.warn?.(`own-life：这一轮失败 — ${String(e?.message ?? e).slice(0, 80)}`)
