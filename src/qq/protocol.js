@@ -1353,10 +1353,23 @@ export class ProtocolSupervisor {
       const child = spawn('powershell', ['-NoProfile', '-Command', ps], { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
       const entry = { child, startedAt: Date.now(), exit: null, lines: [] }
       this.procs.set(backendId, entry)
+      // 持续监测并隐藏 LC 内核 QQ 主窗口，直到「成功隐藏过一次主窗口」才停（覆盖 QQ 启动慢的情况，
+      // 避免固定轮询次数用完窗口还没出来、导致有头启动）。最多持续 120 秒兜底。
       const lcPrefix = linkcoreRoot.replace(/\\/g, '\\\\')
-      const hideCmd = 'Add-Type -Name W -Namespace U -MemberDefinition \"[DllImport(\\\"user32.dll\\\")] public static extern bool ShowWindow(IntPtr h,int c);\" -ErrorAction SilentlyContinue; Get-Process QQ -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 -and $_.Path -like \"' + lcPrefix + '*\" } | ForEach-Object { [U.W]::ShowWindow($_.MainWindowHandle,0) | Out-Null }'
-      let hn = 0
-      const hideTimer = setInterval(() => { try { spawn('powershell', ['-NoProfile','-Command', hideCmd], { windowsHide:true, stdio:'ignore' }) } catch (e) {} if (++hn >= 15) clearInterval(hideTimer) }, 2000)
+      const hideOneShot = 'Add-Type -Name W -Namespace U -MemberDefinition \"[DllImport(\\\"user32.dll\\\")] public static extern bool ShowWindow(IntPtr h,int c);\" -ErrorAction SilentlyContinue; $n=0; Get-Process QQ -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 -and $_.Path -like \"' + lcPrefix + '*\" } | ForEach-Object { [U.W]::ShowWindow($_.MainWindowHandle,0) | Out-Null; $n++ }; if ($n -gt 0) { Write-Output \"HID:$n\" } else { Write-Output \"NONE\" }'
+      let hiddenDone = false
+      let hideTicks = 0
+      const hideTick = () => {
+        if (hiddenDone) return
+        try {
+          const ps = spawn('powershell', ['-NoProfile','-Command', hideOneShot], { windowsHide:true, stdio:['ignore','pipe','ignore'] })
+          let out = ''
+          ps.stdout?.on('data', (b) => { out += b })
+          ps.on('close', () => { if (String(out).includes('HID:') || String(out).includes('HID')) { hiddenDone = true; this.log?.info?.('协议端：LC 内核主窗口已隐藏（无头）') } })
+        } catch (e) {}
+        if (hiddenDone || ++hideTicks >= 60) { clearInterval(hideTimer) }
+      }
+      const hideTimer = setInterval(hideTick, 2000)
       if (hideTimer.unref) hideTimer.unref()
       return { ok: true, pid: child.pid, backend: backendId, linkcore: true }
     }
