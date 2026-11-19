@@ -2917,7 +2917,16 @@ window.__ModuleLoader__.load({
               return h('div', { className: 'gd_note', title: raw || 'auto', style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, `模型：${short}`)
             })(),
             h('div', { className: 'gd_note' }, `渠道：${modelCount} 个可用${provs.length ? ` · ${provs.length} 个在用` : ''}`),
-            h('div', { className: 'gd_note' }, `策略：${c.gateway?.strategy ?? '—'}`),
+            (() => {
+              /* 配置里可能还是旧值（free-first / free-only），路由那边会归一成三个新策略之一；
+               * 这里跟 gateway/strategy.js 的 LEGACY 映射保持一致，别把废弃的字符串直接显示出来。 */
+              const raw = String(c.gateway?.strategy ?? 'self-first')
+              const norm = raw === 'free-first' ? 'self-first' : raw === 'free-only' ? 'self-only' : raw
+              const label = norm === 'self-only' ? '只用自备渠道'
+                : norm === 'official-only' ? '只用内置官方'
+                : '自备优先，官方兜底'
+              return h('div', { className: 'gd_note', title: raw }, `策略：${label}`)
+            })(),
             h('div', { className: 'gd_note' }, `地址：${c.gateway?.host ?? '127.0.0.1'}:${c.gateway?.port ?? 18899}/v1`)),
           h('div', null,
             h('div', { className: 'gd_rowlabel', style: { marginBottom: '6px' } }, h('b', null, '决策层')),
