@@ -282,7 +282,7 @@ window.__ModuleLoader__.load({
         'proc.other': '其它',
 
         // ── 模型卡片（侧栏）──────────────────────────────────────────
-        'model.title': '模型与渠道',
+        'model.title': '模型选择',
         'model.llm': 'LLM（纯文本）',
         'model.vlm': 'VLM（能看图）',
         'model.current': '当前模型',
@@ -2467,8 +2467,7 @@ window.__ModuleLoader__.load({
         onClick,
         disabled: busy,
       }, label)
-      return h('section', { style: { marginTop: '18px' } },
-        h('h3', { style: { fontSize: '14px', margin: '0 0 8px' } }, '生图'),
+      return h(Section, { title: '生图' },
         /*
          * 只有**一块**：风格放在最上，渠道与参数交给下面的表单。
          * 之前这里还有一个「渠道 Magpie|不启用」的胶囊行，跟表单里的
@@ -2721,18 +2720,28 @@ window.__ModuleLoader__.load({
           const mlist = allModels
           const mid = (m) => m.channel ? `${m.channel}/${m.provider}/${m.id}` : `${m.provider}/${m.id}`
           const cur = settings.qqModel ?? 'auto'
+          // 2026-11-18：magpie 渠道的模型都是多模态（网关没上报 image 模态，按渠道判）
+          const isMulti = (m) => m && (m.provider === 'magpie' || String(m.id || '').startsWith('magpie/') || m.vision === 'yes')
           const opts = [h('option', { key: 'auto', value: 'auto' }, t('model.auto'))]
           const ids = mlist.map(mid)
           if (cur !== 'auto' && !ids.includes(cur)) opts.push(h('option', { key: 'cur', value: cur }, cur))
-          mlist.forEach((m, i) => opts.push(h('option', { key: ids[i], value: ids[i] }, (m.label ?? m.id) + (m.vision === 'yes' ? ' 👁 多模态' : ''))))
+          mlist.forEach((m, i) => opts.push(h('option', { key: ids[i], value: ids[i] }, (m.label ?? m.id) + (isMulti(m) ? ' 👁 多模态' : ''))))
           const selModel = cur === 'auto' ? null : mlist.find((m) => mid(m) === cur)
-          const noVision = selModel && selModel.vision !== 'yes'
+          const noVision = selModel && !isMulti(selModel)
           return h('div', null,
             h('div', { className: 'gd_modelrow' },
               h('span', { className: 'gd_modelrowlabel' }, t('model.reply')),
               h('select', { className: 'gd_select', value: cur, title: cur, disabled: busy,
                 style: { flex: '1 1 auto', minWidth: 0, width: 'auto' },
-                onChange: (e) => { setLocalOrder(null); apply({ qqModel: e.target.value }) } }, opts)),
+                onChange: (e) => { setLocalOrder(null); apply({ qqModel: e.target.value }) } }, opts),
+              h('span', { className: 'gd_modelrowlabel', style: { marginLeft: '12px' } }, '思考强度'),
+              h('select', {
+                className: 'gd_select', value: effortValue, disabled: busy, title: '思考强度',
+                style: { flex: '0 0 auto', width: 'auto', minWidth: '90px' },
+                onChange: (e) => apply({ effort: e.target.value }),
+              },
+                h('option', { value: '' }, '默认'),
+                currentEfforts.map((e) => h('option', { key: e, value: e }, e)))),
             noVision
               ? h('p', { className: 'gd_note', style: { color: 'var(--dsw-alias-state-warn-primary,#d98)', marginTop: '4px' } },
                 '⚠️ 当前选的是语言模型（无识图能力），发图她看不见；要识图请选带 👁 多模态的模型')
