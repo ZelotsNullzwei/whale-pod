@@ -88,6 +88,9 @@ export function startQzoneRead (bridge, opts = {}) {
         createdTime: Number(m.created_time ?? 0),
         comments: Number(m.cmtnum ?? 0),
         forwards: Number(m.fwdnum ?? 0),
+        /* 配图 URL（url1 高清优先，退回 smallurl）；下载要用它 */
+        pics: (m.pic ?? []).map((x) => String(x?.url1 || x?.url2 || x?.smallurl || '')).filter(Boolean).slice(0, 4),
+        imageDesc: '',
         /* ⚠️ 列表接口的 conlist 是**正文**（type:2），不是评论 —— 评论要单独拉 detail */
         conlist: [],
       }))
@@ -126,6 +129,32 @@ export function startQzoneRead (bridge, opts = {}) {
             try { p.conlist = await fetchPostComments(uin, p.tid, auth) } catch { /* 单条失败不影响整体 */ }
           }
         }
+        /*
+         * 配图识别（2026-11-19 用户：「发的空间图片她能看吗」）。
+         * 只处理**最新一条**、最多 2 张 —— 识图要花钱，也慢。
+         * 下载 → makeImageBlock → _describeForwardImages（跟聊天里看图同一个链路）。
+         */
+        const first = posts.find((p) => (p.pics ?? []).length > 0)
+        if (first && typeof bridge.gateway?.makeImageBlock === 'function' && typeof bridge._describeForwardImages === 'function') {
+          try {
+            const blocks = []
+            for (const u of (first.pics ?? []).slice(0, 2)) {
+              const resp = await fetchWithProxyFallback(u, { timeoutMs: 20000, headers: { Referer: 'https://user.qzone.qq.com/' } })
+              if (!resp?.ok) continue
+              const buf = Buffer.from(await resp.arrayBuffer())
+              if (buf.length > 6 * 1024 * 1024) continue
+              const mt = /\.png$/i.test(u) ? 'image/png' : 'image/jpeg'
+              const blk = await bridge.gateway.makeImageBlock({ base64: buf.toString('base64'), mediaType: mt, name: 'qzone' })
+              if (blk) blocks.push(blk)
+            }
+            if (blocks.length) {
+              first.imageDesc = String(await bridge._describeForwardImages(blocks) || '').slice(0, 300)
+              if (first.imageDesc) bridge.log?.info?.('qzone-read：识别了说说配图（' + first.imageDesc.slice(0, 40) + '）')
+            }
+          } catch (e) {
+            bridge.log?.warn?.('qzone-read：配图识别失败 — ' + String(e?.message ?? e).slice(0, 60))
+          }
+        }
         cache = { at: Date.now(), uin, posts, error: '' }
         writeCache()
         const totalC = posts.reduce((n, p) => n + p.comments, 0)
@@ -149,6 +178,7 @@ export function startQzoneRead (bridge, opts = {}) {
           '## 你自己的空间动态（真实数据，别编）',
           '你最近一条说说：「' + String(p.content).slice(0, 60) + '」（' + p.comments + ' 条评论、' + p.forwards + ' 次转发）',
         ]
+        if (p.imageDesc) lines.push('配图内容是：' + String(p.imageDesc).slice(0, 200))
         const cs = (p.conlist ?? []).filter((x) => x.con)
         if (cs.length) {
           lines.push('评论区：')
