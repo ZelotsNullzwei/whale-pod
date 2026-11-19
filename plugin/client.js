@@ -4328,7 +4328,7 @@ window.__ModuleLoader__.load({
     function LogSection({ t }) {
       const logs = usePoll(() => api('/logs?n=200'), [], 5000)
       const lines = logs.data?.lines ?? []
-      return h(Section, { title: t('section.logs'), hint: t('section.logsHint') , collapsible: true, defaultOpen: false },
+      return h(Section, { title: t('section.logs'), hint: t('section.logsHint') , collapsible: true, defaultOpen: true },
         lines.length === 0
           ? h('p', { className: 'gd_note' }, t('logs.empty'))
           : h('pre', { className: 'gd_logs' },
