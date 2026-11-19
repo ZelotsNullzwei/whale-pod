@@ -37,6 +37,16 @@ function unwrapJsonp (text) {
   try { return JSON.parse(body) } catch { return null }
 }
 
+/** 按**字节头**判断图片类型 —— QZone 的图 URL 没有扩展名，猜不准。 */
+export function sniffMime (buf) {
+  const b = Buffer.isBuffer(buf) ? buf : Buffer.from(buf ?? [])
+  if (b.length >= 3 && b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return 'image/jpeg'
+  if (b.length >= 8 && b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47) return 'image/png'
+  if (b.length >= 6 && b[0] === 0x47 && b[1] === 0x49 && b[2] === 0x46) return 'image/gif'
+  if (b.length >= 12 && b[0] === 0x52 && b[1] === 0x49 && b[2] === 0x46 && b[3] === 0x46
+    && b[8] === 0x57 && b[9] === 0x45 && b[10] === 0x42 && b[11] === 0x50) return 'image/webp'
+  return 'image/jpeg'
+}
 export function startQzoneRead (bridge, opts = {}) {
   try {
     if (!bridge || bridge._qzoneReadTimer) return bridge?._qzoneReadTimer ?? null
@@ -143,7 +153,7 @@ export function startQzoneRead (bridge, opts = {}) {
               if (!resp?.ok) continue
               const buf = Buffer.from(await resp.arrayBuffer())
               if (buf.length > 6 * 1024 * 1024) continue
-              const mt = /\.png$/i.test(u) ? 'image/png' : 'image/jpeg'
+              const mt = sniffMime(buf)
               const blk = await bridge.gateway.makeImageBlock({ base64: buf.toString('base64'), mediaType: mt, name: 'qzone' })
               if (blk) blocks.push(blk)
             }

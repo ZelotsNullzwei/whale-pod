@@ -21,6 +21,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { fetchWithProxyFallback } from '../net.js'
+import { sniffMime } from './qzoneRead.js'
 
 const DEFAULTS = {
   enabled: true,
@@ -159,7 +160,7 @@ export function startQzoneFriends (bridge, opts = {}) {
                 if (!ir?.ok) continue
                 const buf = Buffer.from(await ir.arrayBuffer())
                 if (buf.length > 6 * 1024 * 1024) continue
-                const mt = /\.png$/i.test(u) ? 'image/png' : 'image/jpeg'
+                const mt = sniffMime(buf)
                 let blk = null
                 try { blk = await bridge.gateway.makeImageBlock({ base64: buf.toString('base64'), mediaType: mt, name: 'friend' }) } catch { blk = null }
                 /* 附件层不可用时（makeImageBlock 返回 null）退化成自带 dataUrl 的块：
