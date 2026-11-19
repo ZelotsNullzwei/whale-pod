@@ -70,7 +70,12 @@ export function parseFriendPosts (html, selfUin) {
     const b = t.slice(starts[k], k + 1 < starts.length ? starts[k + 1] : t.length)
     const tid = (/data-tid="([0-9a-f]+)"/.exec(b) ?? [])[1] || ''
     const owner = (/data-uin="(\d+)"/.exec(b) ?? [])[1] || ''
-    if (!tid || !owner || owner === String(selfUin)) continue
+    /* 广告/无效块：owner=0、tid=0、没有 func_friend_feed 的一律跳过。
+     * 实测 feeds3 里混着「男人30就爱整点爽游玩玩」这种传奇页游广告，
+     * 它们的 data-uin/data-tid 都是 0，还会被误挂到上一条好友的昵称上。 */
+    const isFriendFeed = /data-functype="func_friend_feed"/.test(b)
+    if (!tid || tid === '0' || !owner || owner === '0' || !isFriendFeed) continue
+    if (owner === String(selfUin)) continue
     if (seen.has(tid)) continue
     const info = /class="f-info"[^>]*>([\s\S]*?)<\/div>/.exec(b)
     const text = stripTags(info ? info[1] : '').slice(0, 200)
