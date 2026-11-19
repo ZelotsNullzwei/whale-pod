@@ -88,13 +88,28 @@ export function startQzoneRead (bridge, opts = {}) {
         createdTime: Number(m.created_time ?? 0),
         comments: Number(m.cmtnum ?? 0),
         forwards: Number(m.fwdnum ?? 0),
-        conlist: (m.conlist ?? []).slice(0, 5).map((c) => ({
+        /* ⚠️ 列表接口的 conlist 是**正文**（type:2），不是评论 —— 评论要单独拉 detail */
+        conlist: [],
+      }))
+    }
+
+    /** 拉某条说说下的**真实评论**（detail 接口；列表接口那个 conlist 是正文）。 */
+    const fetchPostComments = async (uin, tid, auth) => {
+      const url = 'https://user.qzone.qq.com/proxy/domain/taotao.qq.com/cgi-bin/emotion_cgi_msgdetail_v6'
+        + '?uin=' + encodeURIComponent(uin)
+        + '&tid=' + encodeURIComponent(tid)
+        + '&not_trunc_con=1&g_tk=' + encodeURIComponent(auth.bkn) + '&format=json'
+      const j = await fetchCgi(url, auth)
+      if (!j || Number(j.code) !== 0) return []
+      return (j.conlist ?? [])
+        .filter((c) => Number(c.type ?? 0) !== 2)   // type 2 = 正文，不是评论
+        .slice(0, 5)
+        .map((c) => ({
           con: String(c.con ?? '').slice(0, 120),
           name: String(c.name ?? ''),
           uin: String(c.uin ?? ''),
           time: Number(c.createTime ?? c.created_time ?? 0),
-        })),
-      }))
+        }))
     }
 
     const refresh = async () => {
@@ -105,6 +120,12 @@ export function startQzoneRead (bridge, opts = {}) {
         if (!uin) throw new Error('bridge.selfId 为空')
         const auth = await getAuth()
         const posts = await fetchMyPosts(uin, auth, Number(c.maxPosts ?? 5))
+        /* 只有真有评论的那几条才去拉详情（省请求、也少触发风控） */
+        for (const p of posts.slice(0, 2)) {
+          if (p.comments > 0) {
+            try { p.conlist = await fetchPostComments(uin, p.tid, auth) } catch { /* 单条失败不影响整体 */ }
+          }
+        }
         cache = { at: Date.now(), uin, posts, error: '' }
         writeCache()
         const totalC = posts.reduce((n, p) => n + p.comments, 0)
