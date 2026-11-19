@@ -45,6 +45,7 @@ import { fetchWithProxyFallback } from '../net.js'
 /* QQ 空间主动草稿调度器（2026-11-10）：独立模块，避免和正在改动的本文件冲突 */
 import { startQzoneProactive, QZONE_CONFIRM_TTL_MS } from './qzoneProactive.js'
 import { startOwnLife } from './ownLife.js'
+import { startQzoneRead } from './qzoneRead.js'
 import { InteractionTracker, BegState, decideBeg } from './beg.js'
 import { ProactiveScheduler, ProactiveState } from './proactive.js'
 import { extractFindImageMarkers, stripFindImageMarkers, resolveFindImage, findImageKey, isDuplicateFindImage } from './imageFindMarkers.js'
@@ -2422,6 +2423,16 @@ export class QQBridge {
      */
     try { startOwnLife(this, { home: opts.home }) } catch (e) {
       this.log?.warn?.(`own-life：挂载失败 — ${String(e?.message ?? e).slice(0, 80)}`)
+    }
+
+    /*
+     * ★ QQ 空间**只读**（2026-11-19）：自己的说说 + 评论/转发数。
+     * 用 NapCat 现成的 get_cookies 拿登录态，自己调 QZone 网页 CGI ——
+     * 不动那份改过的遗产版 NapCat。只读，不点赞不评论。
+     * 实现见 `src/qq/qzoneRead.js`。
+     */
+    try { startQzoneRead(this, { home: opts.home }) } catch (e) {
+      this.log?.warn?.(`qzone-read：挂载失败 — ${String(e?.message ?? e).slice(0, 80)}`)
     }
 
     const file = opts.home ? `${opts.home}/proactive.json` : null
@@ -10560,6 +10571,8 @@ const drewRecently = __drawRecentMs > 0 && lastDrewAt > 0 && Date.now() - lastDr
          *   这里把对面会话的**长期摘要**挂进来，人格仍按会话各用各的。
          */
         this._crossLongDigest(msg.scope),
+        /* ★ 她自己空间的最新说说 + 评论数（只读，2026-11-19） */
+        this._qzoneReadDigest?.() ?? '',
         /* ★ 同一个人：私聊里也要认得群里的那个名字（2026-11-08） */
         this._aliasHint(msg),
         /* ★ 明日方舟外号：认得出在说谁（2026-11-08） */
