@@ -48,6 +48,7 @@ import { startOwnLife } from './ownLife.js'
 import { startQzoneRead } from './qzoneRead.js'
 import { startQzoneLike } from './qzoneLike.js'
 import { startQzoneComment } from './qzoneComment.js'
+import { startQzoneFriends } from './qzoneFriends.js'
 import { InteractionTracker, BegState, decideBeg } from './beg.js'
 import { ProactiveScheduler, ProactiveState } from './proactive.js'
 import { extractFindImageMarkers, stripFindImageMarkers, resolveFindImage, findImageKey, isDuplicateFindImage } from './imageFindMarkers.js'
@@ -2454,6 +2455,15 @@ export class QQBridge {
      */
     try { startQzoneComment(this, { home: opts.home }) } catch (e) {
       this.log?.warn?.(`qzone-comment：挂载失败 — ${String(e?.message ?? e).slice(0, 80)}`)
+    }
+
+    /*
+     * ★ 好友动态只读（2026-11-19 用户：「好友的说说图片能看见吗」）。
+     * feeds3 → 正文 + 头像外的图 → 最新一条识图，塞进提示词。
+     * 和自己说说那条（qzoneRead）互补：一个看自己，一个看朋友。
+     */
+    try { startQzoneFriends(this, { home: opts.home }) } catch (e) {
+      this.log?.warn?.(`qzone-friends：挂载失败 — ${String(e?.message ?? e).slice(0, 80)}`)
     }
 
     const file = opts.home ? `${opts.home}/proactive.json` : null
@@ -10594,6 +10604,8 @@ const drewRecently = __drawRecentMs > 0 && lastDrewAt > 0 && Date.now() - lastDr
         this._crossLongDigest(msg.scope),
         /* ★ 她自己空间的最新说说 + 评论数（只读，2026-11-19） */
         this._qzoneReadDigest?.() ?? '',
+        /* ★ 朋友们最近发的空间（含最新一条的配图内容） */
+        this._qzoneFriendsDigest?.() ?? '',
         /* ★ 同一个人：私聊里也要认得群里的那个名字（2026-11-08） */
         this._aliasHint(msg),
         /* ★ 明日方舟外号：认得出在说谁（2026-11-08） */
