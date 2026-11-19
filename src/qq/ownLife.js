@@ -132,13 +132,16 @@ export function startOwnLife(bridge, opts = {}) {
         '想干嘛干嘛：发条说说、写两句日记、发会儿呆，也可以什么都不干。',
         '',
         c.allowPost
-          ? '想发说说 → 输出一行 [说说:一句话]。要求：不超过 60 字，只讲今天具体的一件小事，'
+          ? '想发说说 → 输出一行标记。两种：'
+            + '\n  · 想配一张你自己的照片（自拍 / 对镜穿搭）→ [自拍说说:一句话]'
+            + '\n  · 只讲一件小事、不需要照片 → [说说:一句话]'
+            + '\n  两种都要求：不超过 60 字，只讲今天具体的一件事，'
             + '不要出现「你/您/说说/空间/图/拍」，不要感叹号，不要标签，不要第二句抒情。'
           : '今天不发说说。',
         '什么都不想做 → 输出 [SILENT]。',
         '',
-        '⚠️ 说说正文里不要提发图/拍照，也不要写「喏」「给你看」这类话。',
-        '（配图会按你写的这件事自动生成一张，你不用管。）',
+        '⚠️ 正文里不要提发图/拍照，也不要写「喏」「给你看」这类话。',
+        '（[自拍说说] 会按你写的内容生成一张照片，你不用管怎么拍。）',
       ].join('\n')
     }
 
@@ -187,7 +190,8 @@ export function startOwnLife(bridge, opts = {}) {
           return
         }
         const { items } = extractQQMarkers(raw)
-        const q = items.find((x) => x.id === 'qzone')
+        const q = items.find((x) => x.id === 'qzone' || x.id === 'qzoneSelfie')
+        const wantSelfie = q?.id === 'qzoneSelfie'
         if (!q) {
           bridge.log?.info?.(`own-life：没发说说（她的时间，未用出口）——「${raw.slice(0, 40)}」`)
           return
@@ -209,11 +213,13 @@ export function startOwnLife(bridge, opts = {}) {
           return
         }
         /*
-         * 配图：按**这条说说的内容**推画面（主体词 / 她自己的描述 / 日程）。
-         * 生图约 20–30 秒，失败就只发文字 —— 不能因为没图就不发。
+         * 配图：**只有 [自拍说说] 才生成**（2026-11-19 用户：「自拍就分享照片吧，
+         * 单纯发字讲事的说说就不配图了」）。
+         * 画面从这条说说的内容推（主体词 / 她自己的描述 / 当日日程），
+         * 生图 20–30 秒，失败就只发文字 —— 不能因为没图就不发。
          */
         let file = ''
-        if (c.imageEnabled !== false) {
+        if (wantSelfie && c.imageEnabled !== false) {
           try {
             file = await bridge._makeQzoneImage?.(scope, text, null) || ''
           } catch (e) {

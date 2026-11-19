@@ -7518,7 +7518,7 @@ const drewRecently = __drawRecentMs > 0 && lastDrewAt > 0 && Date.now() - lastDr
          * 不同步做的原因：生图 20 秒，会把她的聊天回复拖到 30 秒。
          */
         try {
-          const qItem = msg.__qzoneResolved ? null : marks.items.find((x) => x.id === 'qzone')
+          const qItem = msg.__qzoneResolved ? null : marks.items.find((x) => x.id === 'qzone' || x.id === 'qzoneSelfie')
           /*
            * ★ **聊天里不再发说说**（2026-11-19 用户：「只留一个」）。
            *
@@ -7527,7 +7527,7 @@ const drewRecently = __drawRecentMs > 0 && lastDrewAt > 0 && Date.now() - lastDr
            * 这里把标记**剥掉但不执行** —— 留一句日志，方便确认模型还在写它。
            */
           if (qItem) {
-            marks.items = marks.items.filter((x) => x.id !== 'qzone')
+            marks.items = marks.items.filter((x) => x.id !== 'qzone' && x.id !== 'qzoneSelfie')
             this.log.info?.(`bridge：聊天里的 [说说] 不再发（改由她自己的时间）——「${String(qItem.arg ?? '').slice(0, 30)}」`)
           }
         } catch { /* 剥不干净就按老路走 */ }
