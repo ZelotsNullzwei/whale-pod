@@ -1073,6 +1073,10 @@ window.__ModuleLoader__.load({
 /* ── 渠道优先级列表（侧栏模型卡片）───────────────────────────── */
 .gd_chlist{display:flex;flex-direction:column;gap:8px}
 /* ── 模态大类切换（LLM / VLM）────────────────────────────────── */
+.gd_navtabs{display:flex;gap:6px;flex-wrap:wrap;margin:6px 0 12px}
+.gd_navtab{padding:6px 14px;border-radius:9px;border:1px solid var(--dsw-alias-border-l1);background:transparent;color:var(--dsw-alias-label-secondary);font-size:12.5px;font-family:inherit;cursor:pointer}
+.gd_navtab:hover{border-color:var(--dsw-alias-border-l2);color:var(--dsw-alias-label-primary)}
+.gd_navtab.on{border-color:var(--dsw-alias-state-business-primary);background:color-mix(in srgb,var(--dsw-alias-state-business-primary) 13%,transparent);color:var(--dsw-alias-label-primary);font-weight:600}
 .gd_modaltabs{display:flex;gap:6px}
 .gd_modaltab{flex:1;padding:7px 9px;border-radius:9px;border:1px solid var(--dsw-alias-border-l1);background:transparent;color:var(--dsw-alias-label-secondary);font-size:12px;font-family:inherit;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:5px;transition:border-color .12s,background .12s}
 .gd_modaltab:hover:not(:disabled){border-color:var(--dsw-alias-border-l2);color:var(--dsw-alias-label-primary)}
@@ -1225,12 +1229,27 @@ window.__ModuleLoader__.load({
 `
 
     // ── 小组件 ─────────────────────────────────────────────────────────────
-    function Section({ title, hint, children }) {
+    function Section({ title, hint, children, collapsible, defaultOpen = true }) {
+      // 2026-11-19：设置页收纳——collapsible 时标题可点折叠（默认展开，兼容旧用法）
+      const [open, setOpen] = useState(defaultOpen)
+      if (!collapsible) {
+        return h('section', { className: 'gd_sec' },
+          h('div', { className: 'gd_sechead' },
+            h('h3', { className: 'gd_sectitle' }, title),
+            hint === undefined ? null : h('span', { className: 'gd_sechint' }, hint)),
+          children)
+      }
       return h('section', { className: 'gd_sec' },
-        h('div', { className: 'gd_sechead' },
+        h('div', {
+          className: 'gd_sechead gd_foldhead',
+          onClick: () => setOpen((v) => !v),
+          role: 'button', tabIndex: 0,
+          onKeyDown: (event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); setOpen((v) => !v) } },
+        },
+          h('span', { className: `gd_chevron${open ? ' open' : ''}` }, '▸'),
           h('h3', { className: 'gd_sectitle' }, title),
           hint === undefined ? null : h('span', { className: 'gd_sechint' }, hint)),
-        children)
+        open ? children : null)
     }
 
     /**
@@ -1631,6 +1650,7 @@ window.__ModuleLoader__.load({
       const { t } = props
       const status = usePoll(() => api('/status'), [], 4000)
       const qq = usePoll(() => api('/qq'), [], 4000)
+      const cfgPoll = usePoll(() => api('/config'), [], 15000)
       // 活跃天数随 /status 一起回来（不用多开一个轮询）
       const activity = status.data?.activity ?? null
       const [busy, setBusy] = useState(false)
@@ -1997,8 +2017,28 @@ window.__ModuleLoader__.load({
         // 费用按模型官网价折算，与走哪个渠道无关 —— 看的是"这些用量按原价值多少"。
         enabled ? h(UsageCards, { t }) : null,
 
-        /* ── 模型 / 画图（两排：上排只显示，下排可点；画图不可用就整排不出现）── */
-        enabled ? h(ModelDrawRows, { t }) : null,
+        /* 模型选择已统一到「设置 → 鲸舱 → 模型选择」，侧栏不再显示（2026-11-19） */
+
+        // ── 主动发说说 / 加好友 两个总开关（详细参数在设置页）──────────
+        (() => {
+          const cfgData = cfgPoll.data?.config ?? {}
+          const qqq = cfgData.qq ?? {}
+          /* 2026-11-19：旧 qzoneProactive 已删除，开关改控制 ownLife（她自己的时间） */
+          const qzOn = qqq.ownLife?.enabled !== false
+          const friendOn = qqq.groupAdmin?.friendRequest !== false   // 默认开，显式 false 才关
+          const saveCfg = (patch) => api('/config', {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(patch),
+          }).then(() => cfgPoll.reload()).catch(() => {})
+          const sw = (label, on, onToggle) => h('div', {
+            className: 'gd_row', style: { padding: '8px 0', alignItems: 'center' },
+          },
+            h('div', { className: 'gd_rowlabel', style: { flex: 1 } }, h('b', null, label)),
+            h(Toggle, { checked: on, onChange: onToggle }))
+          return h('div', null,
+            sw('她自己的时间（自动发说说）', qzOn, (v) => saveCfg({ 'qq.ownLife.enabled': v })),
+            sw('自动加好友（同意好友申请）', friendOn, (v) => saveCfg({ 'qq.groupAdmin.friendRequest': v })))
+        })(),
 
         // ── 最近消息流（可折叠；默认展开 —— 这是常看的部分）───────────
         enabled ? h(Fold, {
@@ -2467,7 +2507,7 @@ window.__ModuleLoader__.load({
         onClick,
         disabled: busy,
       }, label)
-      return h(Section, { title: '生图' },
+      return h(Section, { title: '生图' , collapsible: true },
         /*
          * 只有**一块**：风格放在最上，渠道与参数交给下面的表单。
          * 之前这里还有一个「渠道 Magpie|不启用」的胶囊行，跟表单里的
@@ -2712,6 +2752,7 @@ window.__ModuleLoader__.load({
       return h(Section, {
         title: t('model.title'),
         hint: flash === null ? null : flash.text,
+        collapsible: true,
       },
         // ── 回复 / 识图 / 生图 三个用途模型（2026-11-18）────────────
         //   各存各的字段；识图/生图首项「跟随回复(=空)」。候选统一用全部模型池。
@@ -2820,6 +2861,66 @@ window.__ModuleLoader__.load({
     // ── 设置页（低频配置 + NapCat + 日志）──────────────────────────────────
     // 只留：NapCat 管理、QQ 地址/白名单、决策参数、日志。
     // 「看」的部分（状态灯/消息流/启停）都在侧栏仪表盘。
+    /*
+     * 设置页「概览」首页（2026-11-19）：仿 web 主页的大致预览。
+     *   顶部一排统计卡（运行时长/渠道/模型/调用/tokens/金额/在线）
+     *   + 网关 / 用量按来源·渠道 简要。
+     * 数据全部来自现有 /usage /status /qq /config 接口。
+     */
+    function OverviewPanel({ t }) {
+      const usage = usePoll(() => api('/usage'), [], 8000)
+      const status = usePoll(() => api('/status'), [], 8000)
+      const qq = usePoll(() => api('/qq'), [], 5000)
+      const cfg = usePoll(() => api('/config'), [], 15000)
+      const modelsPoll = usePoll(() => api('/models'), [], 30000)
+      const u = usage.data?.usage ?? {}
+      const modelCount = (modelsPoll.data?.models ?? []).length
+      const s = status.data ?? {}
+      const q = qq.data ?? {}
+      const c = cfg.data?.config ?? {}
+      const fmtDur = (ms) => {
+        const n = Number(ms) || 0
+        if (n < 1000) return '0s'
+        const s2 = Math.floor(n / 1000)
+        const d = Math.floor(s2 / 86400), h = Math.floor((s2 % 86400) / 3600), m = Math.floor((s2 % 3600) / 60), sec = s2 % 60
+        if (d > 0) return `${d}天${h}h`
+        if (h > 0) return `${h}h${m}m`
+        if (m > 0) return `${m}m${sec}s`
+        return `${sec}s`
+      }
+      const fmtTok = (n) => {
+        const v = Number(n) || 0
+        if (v >= 1e6) return (v / 1e6).toFixed(2) + 'M'
+        if (v >= 1e3) return (v / 1e3).toFixed(v >= 1e4 ? 0 : 1) + 'K'
+        return String(v)
+      }
+      const online = q.online === true || q.connected === true
+      const provs = Array.isArray(s.providers) ? s.providers : []
+      const card = (label, value, sub, tone) => h('div', { className: 'gd_count' },
+        h('b', { style: tone === 'ok' ? { color: 'var(--dsw-alias-state-success-primary)' } : (tone === 'accent' ? { color: 'var(--dsw-alias-state-business-primary)' } : null) }, value),
+        h('span', null, label),
+        sub ? h('i', { style: { display: 'block', fontSize: '10.5px', opacity: 0.7, marginTop: '2px' } }, sub) : null)
+      return h('div', { className: 'gd_stack' },
+        h('div', { className: 'gd_grid gd_grid3', style: { gridTemplateColumns: 'repeat(auto-fit,minmax(120px,1fr))' } },
+          card('运行时长', fmtDur(u.uptimeMs), null, 'accent'),
+          card('tokens 用量', fmtTok(u.tokensTotal), `入 ${fmtTok(u.tokensIn)} / 出 ${fmtTok(u.tokensOut)}`),
+          card('预计金额', '¥' + (Number(u.costCny) || 0).toFixed(2), u.costUsd ? `≈$${Number(u.costUsd).toFixed(2)}` : null),
+          card('QQ', online ? '在线' : '离线', q.selfName || null, online ? 'ok' : null)),
+        h('div', { className: 'gd_grid gd_grid3', style: { marginTop: '10px' } },
+          h('div', null,
+            h('div', { className: 'gd_rowlabel', style: { marginBottom: '6px' } }, h('b', null, 'LLM 网关')),
+            h('div', { className: 'gd_note' }, `地址：${c.gateway?.host ?? '127.0.0.1'}:${c.gateway?.port ?? 18899}/v1`),
+            h('div', { className: 'gd_note' }, `策略：${c.gateway?.strategy ?? '—'}`)),
+          h('div', null,
+            h('div', { className: 'gd_rowlabel', style: { marginBottom: '6px' } }, h('b', null, '决策层')),
+            h('div', { className: 'gd_note' }, `顺序：${s.decision?.order ?? 'model → rule'}`),
+            h('div', { className: 'gd_note' }, `阈值：${s.decision?.threshold ?? 0.5}`)),
+          h('div', null,
+            h('div', { className: 'gd_rowlabel', style: { marginBottom: '6px' } }, h('b', null, '按渠道用量')),
+            (Array.isArray(u.byProvider) ? u.byProvider.slice(0, 4) : []).map((x) => h('div', { className: 'gd_note', key: x.id }, `${x.id}：${fmtTok(x.calls)} 次 · ${fmtTok((x.tokensIn ?? 0) + (x.tokensOut ?? 0))} tok`)))) ,
+        h('p', { className: 'gd_note', style: { marginTop: '8px' } }, '详细配置见上方各 tab。'))
+    }
+
     function SettingsPage(props) {
       const { t } = props
       const status = useAsync(() => api('/status'), [])
@@ -2851,6 +2952,7 @@ window.__ModuleLoader__.load({
        * 这个 state 让顶部那行显示 1.8 秒的 ✓ 已保存，然后自动消失。
        */
       const [justSaved, setJustSaved] = useState(false)
+      const [tab, setTab] = useState('overview')   // 设置页导航：model/behavior/content/memory/persona/advanced
 
       const cfg = config.data?.config
       const qq = cfg?.qq ?? {}
@@ -3015,10 +3117,23 @@ window.__ModuleLoader__.load({
               h('span', { className: 'gd_repobtnstar' }, '★'),
               t('repo.star')))),
 
+        // ── 设置页导航条（tab 切换，2026-11-19）──────────────────────
+        h('div', { className: 'gd_navtabs' },
+          [['overview','概览'],['model','模型'],['behavior','行为'],['content','内容'],['memory','记忆'],['persona','人设'],['advanced','高级']].map(([id,label]) =>
+            h('button', {
+              key: id,
+              className: `gd_navtab${tab === id ? ' on' : ''}`,
+              onClick: () => setTab(id),
+            }, label))),
+
         toast === null ? null : h('p', { className: toast.ok ? 'gd_note' : 'gd_err' }, toast.text),
 
+        // 概览首页
+        h('div', { style: tab !== 'overview' ? { display: 'none' } : null }, h(OverviewPanel, { t })),
+
         // ── NapCat 协议端 ───────────────────────────────────────────────
-        h(Section, { title: t('section.napcat'), hint: t('section.napcatHint') },
+        h('div', { style: tab !== 'advanced' ? { display: 'none' } : null },
+        h(Section, { title: t('section.napcat'), hint: t('section.napcatHint') , collapsible: true, defaultOpen: false },
           h('div', { className: 'gd_grid' },
             h(KV, { label: t('status.napcat'), value: napcatRunning ? t('running') : t('stopped') }),
             h(KV, { label: t('installed'), value: (napStatus.installed ?? []).includes('napcat') ? t('installed') : t('notInstalled') })),
@@ -3093,13 +3208,14 @@ window.__ModuleLoader__.load({
           },
             (napcatLogs.data?.lines ?? []).length === 0
               ? h('p', { className: 'gd_note' }, t('napcat.logsEmpty'))
-              : h('pre', { className: 'gd_logs' }, (napcatLogs.data?.lines ?? []).slice(-80).join('\n')))),
+              : h('pre', { className: 'gd_logs' }, (napcatLogs.data?.lines ?? []).slice(-80).join('\n'))))),
 
         // ── 模型与渠道（配置在这里；侧栏只显示一行当前模型）──────────────
-        h(ModelCards, { t }),
+        h('div', { style: tab !== 'model' ? { display: 'none' } : null },
+          h(ModelCards, { t }),
 
-        // ── 生图渠道（2026-11-05，跟对话渠道完全分开）──────────────────
-        h(DrawChannelCard, { t }),
+          // ── 生图渠道（2026-11-05，跟对话渠道完全分开）──────────────────
+          h(DrawChannelCard, { t })),
 
         // ── 启动行为 ────────────────────────────────────────────────────
         //
@@ -3109,16 +3225,18 @@ window.__ModuleLoader__.load({
         // 关闭后的语义要说清楚：不是「关掉机器人」，而是「不自动启动」——
         // 已经跑着的进程不受影响，想用时在侧栏点「一键启动」。
         // 用户点开关时最容易误解的就是这一点。
-        h(Section, { title: t('section.startup'), hint: t('section.startupHint') },
+        h('div', { style: tab !== 'behavior' ? { display: 'none' } : null },
+        h(Section, { title: t('section.startup'), hint: t('section.startupHint') , collapsible: true, defaultOpen: false },
           h(Row, { label: t('startup.autoStart'), hint: t('startup.autoStartHint') },
             h(Toggle, {
               checked: cfg.autoStart !== false,
               disabled: busy,
               onChange: (v) => apply({ autoStart: v }),
             })),
-          h('p', { className: 'gd_note' }, t('startup.note'))),
+          h('p', { className: 'gd_note' }, t('startup.note')))),
 
         // ── QQ 配置 ─────────────────────────────────────────────────────
+        h('div', { style: tab !== 'behavior' ? { display: 'none' } : null },
         h(Section, { title: t('section.qq'), hint: t('section.qqHint') },
           h(Row, { label: t('qq.enabled') },
             h(Toggle, { checked: qq.enabled === true, disabled: busy, onChange: (v) => apply({ 'qq.enabled': v }) })),
@@ -3191,13 +3309,14 @@ window.__ModuleLoader__.load({
               value: qq.allow?.groups ?? [],
               disabled: busy,
               onCommit: (v) => apply({ 'qq.allow.groups': v }),
-            }))),
+            })))),
 
         // ── 联网搜索 ────────────────────────────────────────────────────
         //
         // 这块是**唯一会真花钱**的部分（搜索走 DeepSeek 官方付费 API，
         // 每次 ¥0.005 + 总结的 token），所以放在显眼位置、能一键关掉。
-        h(Section, { title: t('section.search'), hint: t('section.searchHint') },
+        h('div', { style: tab !== 'content' ? { display: 'none' } : null },
+        h(Section, { title: t('section.search'), hint: t('section.searchHint') , collapsible: true, defaultOpen: false },
           h(Row, { label: t('search.enabled'), hint: t('search.enabledHint') },
             h(Toggle, {
               checked: sr.enabled !== false,
@@ -3299,7 +3418,7 @@ window.__ModuleLoader__.load({
               numeric: true,
               disabled: busy,
               onCommit: (v) => apply({ 'search.lowBalanceCny': Number(v) || 2 }),
-            }))),
+            })))),
 
         /*
          * ★★ **B 站视频：看画面 / 只听**（2026-11-03，用户点名要的）。
@@ -3315,7 +3434,8 @@ window.__ModuleLoader__.load({
          *
          * 分镜图是 B 站自己的 `x/player/videoshot` 给的，**不需要装 ffmpeg**。
          */
-        h(Section, { title: t('section.bili'), hint: t('section.biliHint') },
+        h('div', { style: tab !== 'content' ? { display: 'none' } : null },
+        h(Section, { title: t('section.bili'), hint: t('section.biliHint') , collapsible: true, defaultOpen: false },
           h(Row, { label: t('bili.visual'), hint: t('bili.visualHint') },
             h(Select, {
               value: bilibiliCfg?.visual === 'visual' ? 'visual' : 'audio',
@@ -3325,7 +3445,7 @@ window.__ModuleLoader__.load({
                 { value: 'visual', label: t('bili.visualOpt') },
               ],
               onCommit: (v) => apply({ 'bilibili.visual': v }),
-            }))),
+            })))),
 
         /*
          * ★★ **车牌（漫画）：看内页**（2026-11-03，用户要求"继续 UI 设计"）。
@@ -3349,7 +3469,8 @@ window.__ModuleLoader__.load({
          *
          * ⚠️ **配置挂在顶层 `jmRead`**，不是 `qq.jmRead` —— 见上面 `jmCfg` 的注释。
          */
-        h(Section, { title: t('section.jm'), hint: t('section.jmHint') },
+        h('div', { style: tab !== 'content' ? { display: 'none' } : null },
+        h(Section, { title: t('section.jm'), hint: t('section.jmHint') , collapsible: true, defaultOpen: false },
           h(Row, { label: t('jm.enabled'), hint: t('jm.enabledHint') },
             h(Select, {
               value: jmCfg?.enabled === false ? 'off' : 'on',
@@ -3366,7 +3487,7 @@ window.__ModuleLoader__.load({
               numeric: true,
               disabled: busy,
               onCommit: (v) => apply({ 'jmRead.maxShots': Math.max(1, Number(v) || 6) }),
-            }))),
+            })))),
 
         // ── 环境依赖（哪些功能要本机装东西）──────────────────────────────
         //
@@ -3389,14 +3510,15 @@ window.__ModuleLoader__.load({
          *    语法直接报 Unexpected token 'const'。）
          *    要用局部变量就得**内联**，或者把逻辑提到组件函数外面。
          */
-        h(Section, { title: t('section.deps'), hint: t('section.depsHint') },
+        h('div', { style: tab !== 'advanced' ? { display: 'none' } : null },
+        h(Section, { title: t('section.deps'), hint: t('section.depsHint') , collapsible: true, defaultOpen: false },
           h(Row, { label: t('deps.browser'), hint: t('deps.browserHint') },
             h('span', {
               className: `gd_cap ${status?.caps?.browser?.ok ? 'ok' : 'bad'}`,
             },
             status?.caps?.browser?.ok
               ? t('deps.browserOk').replace('{name}', status.caps.browser.name ?? '')
-              : t('deps.browserMissing')))),
+              : t('deps.browserMissing'))))),
 
         // ── 贴吧订阅 ──────────────────────────────────────────────────
         //
@@ -3430,7 +3552,8 @@ window.__ModuleLoader__.load({
         // ⚠️ `TextField` 的 value 传**空串**：它内部 `useEffect(..., [value])`
         //    只在 value 变时重置草稿。提交后 `apply()` 会 `data.reload()`
         //    整页重挂载，草稿自然清空 —— 不用额外塞状态。
-        h(Section, { title: t('section.forums'), hint: t('section.forumsHint') },
+        h('div', { style: tab !== 'content' ? { display: 'none' } : null },
+        h(Section, { title: t('section.forums'), hint: t('section.forumsHint') , collapsible: true, defaultOpen: false },
           h(Row, { label: t('forums.list'), hint: t('forums.listHint') },
             h('div', { className: 'gd_forumwrap' },
               forums.length
@@ -3461,10 +3584,11 @@ window.__ModuleLoader__.load({
                   if (add.length === 0) return
                   apply({ 'proactive.tiebaForums': [...forums, ...add] })
                 },
-              })))),
+              }))))),
 
         // ── 决策与人格 ──────────────────────────────────────────────────
-        h(Section, { title: t('section.decision'), hint: t('section.decisionHint') },
+        h('div', { style: tab !== 'advanced' ? { display: 'none' } : null },
+        h(Section, { title: t('section.decision'), hint: t('section.decisionHint') , collapsible: true, defaultOpen: false },
           // 决策模式：从自由输入改成下拉。
           //
           // 为什么改：这四个值是**枚举**，手打容易写错（`Model`、`rule `、
@@ -3618,19 +3742,16 @@ window.__ModuleLoader__.load({
                 catch (error) { setToast({ ok: false, text: String(error?.message ?? error) }) }
                 finally { setBusy(false) }
               },
-            }, t('memory.clear')))),
+            }, t('memory.clear'))))),
 
         // ── 记忆管理（按会话）───────────────────────────────────────────
-        h(MemorySection, { t, setToast }),
+        h('div', { style: tab !== 'memory' ? { display: 'none' } : null }, h(MemorySection, { t, setToast })),
 
         // ── 主动行为（讨钱 / 空闲发言）────────────────────────────────
-        h(ActiveSection, { t, setToast }),
+        h('div', { style: tab !== 'behavior' ? { display: 'none' } : null }, h(ActiveSection, { t, setToast })),
 
         // ── 人格编辑器 ──────────────────────────────────────────────────
-        h(PersonaSection, { t, setToast, status }),
-
-        // ── 运行日志 ────────────────────────────────────────────────────
-        h(LogSection, { t }))
+        h('div', { style: tab !== 'persona' ? { display: 'none' } : null }, h(PersonaSection, { t, setToast, status })))
     }
 
     /**
@@ -3653,6 +3774,10 @@ window.__ModuleLoader__.load({
 
       const pro = cfg.data?.config?.proactive ?? {}
       const beg = cfg.data?.config?.beg ?? {}
+      const qz = cfg.data?.config?.qq?.ownLife ?? {}
+      const ga = cfg.data?.config?.qq?.groupAdmin ?? {}
+      const fr = ga.friendRequest
+      const frg = ga.friendGreeting
 
       /** 提交扁平点号路径（后端 /config 按这个格式吃）。 */
       const save = async (patch, okText) => {
@@ -3746,8 +3871,33 @@ window.__ModuleLoader__.load({
                   disabled: busy,
                   onCommit: (v) => save({ 'beg.checkIntervalMinutes': Number(v) || 60 }, t('active.saved')),
                 }),
-              ))))
+              )),
+            /* ── 她自己的时间（qq.ownLife，2026-11-19 起唯一发说说链路）── */
+            h('div', { style: { marginTop: '18px' } },
+              head('她自己的时间', qz.enabled !== false),
+              row('开启', '每隔一段时间叫醒她自己决定发不发说说（侧栏也有快速开关）',
+                h(Toggle, { checked: qz.enabled !== false, disabled: busy,
+                  onChange: (on) => save({ 'qq.ownLife.enabled': on }, on ? '已开启她自己的时间' : '已关闭她自己的时间') })),
+              row('每天最多发几条', '防止刷屏',
+                h(TextField, { value: qz.postDailyMax ?? 1, numeric: true, disabled: busy,
+                  onCommit: (v) => save({ 'qq.ownLife.postDailyMax': Number(v) || 1 }, t('active.saved')) })),
+              row('安静时段（起-止，小时）', '如 3 到 8 表示 3:00–8:00 不叫醒',
+                h('div', { style: { display: 'flex', gap: '6px' } },
+                  h(TextField, { value: qz.quietStart ?? 3, numeric: true, disabled: busy,
+                    onCommit: (v) => save({ 'qq.ownLife.quietStart': Number(v) || 0 }, t('active.saved')) }),
+                  h(TextField, { value: qz.quietEnd ?? 8, numeric: true, disabled: busy,
+                    onCommit: (v) => save({ 'qq.ownLife.quietEnd': Number(v) || 8 }, t('active.saved')) })))),
+            /* ── 自动加好友（qq.groupAdmin.friendRequest，2026-11-19）── */
+            h('div', { style: { marginTop: '18px' } },
+              head('自动加好友', fr !== false),
+              row('同意好友申请', '别人加她就自动通过（侧栏也有快速开关）',
+                h(Toggle, { checked: fr !== false, disabled: busy,
+                  onChange: (on) => save({ 'qq.groupAdmin.friendRequest': on }, on ? '已开启自动加好友' : '已关闭自动加好友') })),
+              row('同意后自动打招呼', '通过好友后主动问一句',
+                h(Toggle, { checked: frg !== false, disabled: busy,
+                  onChange: (on) => save({ 'qq.groupAdmin.friendGreeting': on }, t('active.saved')) })))))
     }
+
     /**
      * 记忆管理：列出活跃会话（短期）与长期摘要，支持按会话清空。
      * 8 秒轮询；全部清空的核弹按钮留在上面的决策区（那是"低频且危险"的）。
@@ -3786,7 +3936,7 @@ window.__ModuleLoader__.load({
        */
       const ev = mem.data?.events ?? null
       const eventScopes = mem.data?.eventScopes ?? []
-      return h(Section, { title: t('mem.title'), hint: t('mem.hint') },
+      return h(Section, { title: t('mem.title'), hint: t('mem.hint') , collapsible: true, defaultOpen: false },
         mem.status === 'error'
           ? h('p', { className: 'gd_err' }, mem.error)
           : h('div', null,
@@ -4132,7 +4282,7 @@ window.__ModuleLoader__.load({
       }
 
       const entries = list?.detailed ?? []
-      return h(Section, { title: t('persona.editor'), hint: t('persona.editorHint') },
+      return h(Section, { title: t('persona.editor'), hint: t('persona.editorHint') , collapsible: true, defaultOpen: false },
         h('div', { className: 'gd_actions' },
           h('button', { className: 'gd_btn primary', onClick: create }, t('persona.new')),
           editing === null ? null : h('span', { className: 'gd_note' }, `${t('persona.edit')}：${editing.name}`)),
@@ -4176,7 +4326,7 @@ window.__ModuleLoader__.load({
     function LogSection({ t }) {
       const logs = usePoll(() => api('/logs?n=200'), [], 5000)
       const lines = logs.data?.lines ?? []
-      return h(Section, { title: t('section.logs'), hint: t('section.logsHint') },
+      return h(Section, { title: t('section.logs'), hint: t('section.logsHint') , collapsible: true, defaultOpen: false },
         lines.length === 0
           ? h('p', { className: 'gd_note' }, t('logs.empty'))
           : h('pre', { className: 'gd_logs' },

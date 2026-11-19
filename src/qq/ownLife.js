@@ -25,7 +25,7 @@
  */
 import fs from 'node:fs'
 import path from 'node:path'
-import { checkQzoneText } from './qzoneProactive.js'
+import { checkQzoneText } from './qzoneText.js'
 import { extractQQMarkers } from './qqActions.js'
 
 const DEFAULTS = {

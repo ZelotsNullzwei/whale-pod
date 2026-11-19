@@ -43,7 +43,7 @@ import FACE_TABLE from './faces.json' with { type: 'json' }
 /* 下载生成图也要走代理兜底（2026-11-10：代理开着但没跑 → 裸 fetch 必失败 → 整条裁剪流水线被跳过） */
 import { fetchWithProxyFallback } from '../net.js'
 /* QQ 空间主动草稿调度器（2026-11-10）：独立模块，避免和正在改动的本文件冲突 */
-import { startQzoneProactive, QZONE_CONFIRM_TTL_MS } from './qzoneProactive.js'
+import { QZONE_CONFIRM_TTL_MS } from './qzoneText.js'
 import { startOwnLife } from './ownLife.js'
 import { startQzoneRead } from './qzoneRead.js'
 import { startQzoneLike } from './qzoneLike.js'
@@ -1768,10 +1768,10 @@ export class QQBridge {
      * 且三张参考图全戴白蕾丝女仆头带 —— 提示词写了「不戴头饰」也压不过参考图。
      *
      * 换参考图之前，先把配图关掉（配置项，改回 true 即恢复）：
-     *   qq.qzoneProactive.imageEnabled = false
+     *   qq.ownLife.imageEnabled = false
      */
-    if ((this.cfg?.qzoneProactive?.imageEnabled ?? this.cfg?.qq?.qzoneProactive?.imageEnabled) === false) {
-      this.log?.info?.('bridge：说说配图已关闭（qq.qzoneProactive.imageEnabled=false）→ 这条只发文字')
+    if ((this.cfg?.ownLife?.imageEnabled ?? this.cfg?.qq?.ownLife?.imageEnabled) === false) {
+      this.log?.info?.('bridge：说说配图已关闭（qq.ownLife.imageEnabled=false）→ 这条只发文字')
       return ''
     }
     /* ★ bridge 的 cfg 是**扁平**的（bridgeCfgOf = {...cfg.qq}）——image 在顶层，不在 cfg.qq.image */
@@ -1971,83 +1971,7 @@ export class QQBridge {
     }
   }
 
-  /**
-   * **先给他看图确认，再发**（2026-11-08 用户：「叫她发的话应该先和我发照片确认，然后再发」）。
-   *
-   * 流程：生成配图 → 私聊发图 + 一句询问 → 存 pending；
-   * 他说「发吧/行/可以」→ `_sendQzoneNow` 发出去；
-   * 他说「换一张/别发」→ 丢掉重来或取消。
-   */
-  async _askQzoneConfirm({ scope, content, imageUrl = '', eventId = '', imagePlan = null }) {
-    const say = String(content ?? '').trim()
-    if (!say) return
-    let file = await this._materializeImage(imageUrl)
-    if (!file) file = await this._makeQzoneImage(scope, say, imagePlan)
-    /*
-     * 配图偶发失败（上游 MCP 偶发 bad arguments）→ 重试一次（2026-11-11）。
-     * 用户明确要"带配图"，不能因为一次抖动就只发文字。
-     */
-    if (!file && this.cfg?.qq?.qzoneProactive?.imageEnabled !== false) {
-      await new Promise((r) => setTimeout(r, 1500))
-      file = await this._makeQzoneImage(scope, say, imagePlan)
-    }
-    if (!this._qzonePending) this._qzonePending = new Map()
-    this._qzonePending.set(String(scope), { scope: String(scope), content: say, file, at: Date.now(), eventId: String(eventId ?? '') })
-    const userId = String(scope).startsWith('private:') ? String(scope).slice('private:'.length) : ''
-    if (!userId) return
-    /*
-     * 预览必须**带上正文**（2026-11-11 用户："她不知道她自己要发？"）——
-     * 之前只发"这段发空间行吗？"，正文没给，等于让人确认一段看不见的话。
-     */
-    const text = file
-      ? `这条说说配这张图，发空间行吗？\n「${say}」`
-      : `我要发这条说说：\n「${say}」\n发空间行吗？`
-    try {
-      /* noInterrupt：预览是「问题+正文+图」一整条，被打断就只剩半句话 */
-      await this._send({ scope, kind: 'private', userId, images: [] }, text, file ? { url: file } : null, null, { noInterrupt: true })
-    } catch (e) {
-      this.log.warn?.(`bridge：发确认图失败 — ${String(e?.message ?? e).slice(0, 60)}`)
-    }
-    /*
-     * 2026-11-16：**把这条"已发说说预览、等他确认"记进她自己记忆**。
-     * 现场：她生成了草稿+图、私聊发了预览（用户看得到），但这条没进她的记忆，
-     * 于是用户问「那不是问我发空间吗」时她一脸懵——不记得自己刚发过预览在等确认。
-     * 记一条 isMe 消息，后续上下文里她就知道"我刚问了发不发空间，在等他回"。
-     */
-    try {
-      const mem = this.memory?.get?.(scope)
-      mem?.push?.(makeMessage({
-        id: `qzone-preview-${Date.now()}`,
-        sender: String(this.selfId ?? ''),
-        senderName: String(this.selfName ?? ''),
-        isMe: true,
-        at: Date.now(),
-        text: `（我把这条说说先发给他看了，正在等他确认发不发空间：「${say.slice(0, 100)}」）`,
-      }))
-    } catch { /* 记不进也不影响发预览 */ }
-  }
-
-  /**
-   * 他在私聊回的这句，是"确认发"还是"不发了"。
-   * @returns {'yes'|'no'|null}
-   */
-  _qzoneAnswer(text) {
-    const t = String(text ?? '').replace(/\s+/g, '')
-    if (!t || t.length > 12) return null
-    /*
-     * 1) **疑问句先排除**（2026-11-10 修）。
-     *    现场：发说说前会私聊问"这张发空间行吗？"，用户复述「这行吗」
-     *    以前因为含「行」被判成 yes → 直接公开。现在带问号/吗/呢/正反问一律"不确认"。
-     *    ⚠️ 放在否定判断之前：「行不行」是问句（→null），而「不行」仍是否定（→no）。
-     */
-    if (/[?？]|吗|呢|发不发|行不行|可不可以|好不好/.test(t)) return null
-    /* 2) 否定优先（「不行」「换一张」绝不能当确认） */
-    if (/(不发|不行|别发|不要发|别了|换一张|重拍|算了|不好看|删了|先不|不用)/.test(t)) return 'no'
-    /* 3) 只认**明确**的确认短句 */
-    if (/^(发|发吧|发呀|发出去|发了|发一下|可以发|就这个|这个可以|好|好的|好呀|行|行吧|行啊|嗯|嗯嗯|确认|确定|可以)$/.test(t)) return 'yes'
-    if (/(发吧|发出去|可以发|就这个|确认发)/.test(t)) return 'yes'
-    return null
-  }
+  /* 旧的说说确认链路（_askQzoneConfirm / _qzoneAnswer）已于 2026-11-19 删除 */
 
   async _postQzoneWithImage({ scope, content }) {
     const say = String(content ?? '').trim()
@@ -2406,15 +2330,11 @@ export class QQBridge {
       this._summaryTimer.unref?.()
     }
     /*
-     * ★ QQ 空间「主动发说说」（2026-11-10）
-     *
-     * 和主动聊天**分开**：自己的每日上限、冷却、时间窗；
-     * 而且**只出草稿** —— 生成文字+配图先发私聊给他看，他说「发」才发。
-     * 实现全在 `src/qq/qzoneProactive.js`，这里只挂一个启动点。
+     * ⚠️ 旧的「主动发说说」调度器（qzoneProactive.js）**已整体删除**（2026-11-19）。
+     * 它的「生成草稿 → 私聊预览 → 等他回「发」」链路和聊天通道抢资源，
+     * 而且界面上那个开关能一键把它复活 —— 用户：「不用旧的了」。
+     * 现在发说说只有一条路：下面的 ownLife。
      */
-    try { startQzoneProactive(this, { home: opts.home }) } catch (e) {
-      this.log?.warn?.(`qzone-proactive：挂载失败 — ${String(e?.message ?? e).slice(0, 80)}`)
-    }
 
     /*
      * ★ 「她自己的生活」静默唤醒（2026-11-19）
@@ -5143,46 +5063,9 @@ ${drewNote}
      */
     const tStart = Date.now()
     /*
-     * ★★ **说说确认闸**（2026-11-08 用户：「先和我发照片确认，然后再发」）。
-     *
-     * 她写了 [说说:…] 之后不会直接发：先把配图发到私聊问一句，等他点头。
-     * 这里处理他的回答（只有私聊、只有 30 分钟内的 pending 才算）。
+     * ⚠️ 说说确认闸已删除（2026-11-19）：旧的「草稿预览 + 等他回「发」」链路整体下线。
+     * 发说说只有 ownLife 一条路（她自己的时间，自己决定发不发）。
      */
-    if (String(msg.scope ?? '').startsWith('private:')) {
-      try {
-        const pq = this._qzonePending?.get?.(String(msg.scope ?? ''))
-        /*
-         * ⚠️ **过期的要删掉，不是只跳过**（2026-11-10 修，评审指出）。
-         *
-         * 主动说说调度器看到 `_qzonePending` 非空就暂停起草；
-         * 而这条 30 分钟后本来就**不再接受**（下面那句 if），
-         * 只跳过不删 → 没人回的旧预览会把之后的主动草稿**永远卡住**。
-         */
-        if (pq && Date.now() - Number(pq.at ?? 0) > QZONE_CONFIRM_TTL_MS) {
-          this._qzonePending.delete(String(msg.scope ?? ''))
-          this.log.info?.('bridge：说说确认已过期（超过 30 分钟）→ 清掉')
-        }
-        if (pq && Date.now() - pq.at < QZONE_CONFIRM_TTL_MS) {
-          const ans = this._qzoneAnswer(msg.text)
-          if (ans === 'yes') {
-            this._qzonePending.delete(String(msg.scope ?? ''))
-            this.log.info?.(`bridge：他确认了 → 发说说「${String(pq.content).slice(0, 20)}」`)
-            void this._sendQzoneNow(pq.scope, pq.content, pq.file).catch(() => {})
-            /* 2026-11-13：不再硬编码"发上了"，交给正常人格回复（语气自然） */
-            msg.__qzoneJustPosted = true
-            msg.__qzonePostedText = String(pq.content ?? '')
-            msg.__qzoneResolved = true
-          } else if (ans === 'no') {
-            this._qzonePending.delete(String(msg.scope ?? ''))
-            this.log.info?.('bridge：他说不发 → 丢掉这条说说')
-            /* 2026-11-13：不再硬编码"那就不发了"，交给正常人格回复 */
-            msg.__qzoneJustDiscarded = true
-            msg.__qzoneDiscardedText = String(pq.content ?? '')
-            msg.__qzoneResolved = true
-          }
-        }
-      } catch { /* 确认链出错就正常聊 */ }
-    }
     /*
      * 私聊表情包：**不再拦**（2026-11-13 用户：「有字的接 + 纯表情也回表情」）。
      *   原来这里纯表情直接 return（不回），有字表情包也被一并误杀。

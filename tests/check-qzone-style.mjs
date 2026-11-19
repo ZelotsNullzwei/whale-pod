@@ -5,7 +5,7 @@
  * 发布前 6 项检查：事实依据 / 一件事 / 无虚构词 / 无营业腔 / 无内部词与第二人称 / 1-2 行且≤40 字。
  */
 import assert from 'node:assert/strict'
-import { qzoneTextFromFact, checkQzoneText } from '../src/qq/qzoneProactive.js'
+import { qzoneTextFromFact, checkQzoneText } from '../src/qq/qzoneText.js'
 
 let pass = 0, fail = 0
 const ok = (name, fn) => {

@@ -5,7 +5,7 @@
  * 生活小事改后置拍物（不硬画手/人）。所以 selfie→mirror_selfie、scene→rear_selfie。
  */
 import assert from 'node:assert/strict'
-import { CONTENT_RATIO, pickContentType, composeContent } from '../src/qq/qzoneProactive.js'
+import { CONTENT_RATIO, pickContentType, composeContent } from '../src/qq/qzoneText.js'
 import { planShot } from '../src/photo/index.js'
 
 let pass = 0, fail = 0

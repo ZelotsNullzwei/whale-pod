@@ -59,7 +59,7 @@ ok('★ 目标文件已是半截 JSON 时，save() 仍能写出可解析的新�
 
 console.log('\n=== 4. 其它状态文件也应是原子写（2026-11-10 扫查补） ===')
 ok('★ 说说状态（drafts/去重基准）', () => {
-  const src = read(new URL('../src/qq/qzoneProactive.js', import.meta.url))
+  const src = read(new URL('../src/qq/qzoneText.js', import.meta.url))
   assert.match(src, /\$\{stateFile\}\.tmp/, '缺 .tmp 写入')
   assert.match(src, /fs\.renameSync\(tmp, stateFile\)/, '缺 rename 收尾')
 })

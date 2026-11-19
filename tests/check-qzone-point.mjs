@@ -1,6 +1,6 @@
 /** 看点过滤器（2026-11-11 用户：「这些内容都没有什么看点」） */
 import assert from 'node:assert/strict'
-import { hasContentPoint } from '../src/qq/qzoneProactive.js'
+import { hasContentPoint } from '../src/qq/qzoneText.js'
 
 let pass = 0, fail = 0
 const ok = (name, fn) => {

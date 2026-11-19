@@ -11,7 +11,7 @@
  * 单个弱词（代码/测试/模型/API/接口/服务器/配置）→ 放行。
  */
 import assert from 'node:assert/strict'
-import { isPublicSafeMaterial, scrubMaterialText } from '../src/qq/qzoneProactive.js'
+import { isPublicSafeMaterial, scrubMaterialText } from '../src/qq/qzoneText.js'
 
 let pass = 0, fail = 0
 const ok = (name, fn) => {

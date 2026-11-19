@@ -4,7 +4,7 @@
  */
 import assert from 'node:assert/strict'
 import { HOME_ROOMS, roomForActivity, roomScene, homeEnvelope } from '../src/memory/home.js'
-import { composeContent } from '../src/qq/qzoneProactive.js'
+import { composeContent } from '../src/qq/qzoneText.js'
 
 let pass = 0, fail = 0
 const ok = (name, fn) => {
