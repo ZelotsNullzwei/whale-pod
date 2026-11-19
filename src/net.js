@@ -162,7 +162,42 @@ export async function fetchWithProxyFallback(url, opts = {}) {
      * 这里包成标准 Response，所有调用方无需改动。
      */
     try {
-      return new Response(parsed.body, { status: parsed.status, headers: parsed.headers })
+      /*
+       * ⚠️ 包装成 Response 时**别让 body 处于 locked 状态**（2026-11-19 修）。
+       *
+       * 现场：表情标签那批图全部「图片响应体读不出来（类型不支持）」，
+       * 诊断打印 `res=Response body=ReadableStream bodyUsed=true locked=true`。
+       * 根因：`fetchDirect` 的 body 是 **Node Readable 流**，
+       * `new Response(流)` 构造时就把这个流锁住/消费掉了，
+       * 下游 `res.arrayBuffer()` 和 `getReader()` 全都读不到东西。
+       *
+       * 兜底通道的数据本来就已经完整在内存里，所以先**把流读成 Buffer**，
+       * 再返回一个带 `arrayBuffer()/text()/json()` 的普通对象，
+       * 下游按 Buffer 那条路走，不经过任何流。
+       */
+      let body = parsed?.body
+      if (body && typeof body.on === 'function' && !Buffer.isBuffer(body)) {
+        body = await new Promise((resolve, reject) => {
+          const parts = []
+          body.on('data', (c) => parts.push(Buffer.isBuffer(c) ? c : Buffer.from(c)))
+          body.on('end', () => resolve(Buffer.concat(parts)))
+          body.on('error', reject)
+        })
+      }
+      if (Buffer.isBuffer(body) || body instanceof Uint8Array) {
+        const buf = Buffer.isBuffer(body) ? body : Buffer.from(body)
+        return {
+          ok: parsed.status >= 200 && parsed.status < 300,
+          status: parsed.status,
+          headers: new Headers(parsed.headers ?? {}),
+          body: buf,
+          bodyUsed: false,
+          arrayBuffer: async () => buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength),
+          text: async () => buf.toString('utf8'),
+          json: async () => JSON.parse(buf.toString('utf8')),
+        }
+      }
+      return new Response(body, { status: parsed.status, headers: parsed.headers })
     } catch {
       return parsed
     }

@@ -44,12 +44,18 @@ export function stickerKey(url) {
 
 /** 把模型吐出来的一行标签切成数组（容忍中英文逗号、顿号、空格、换行）。 */
 export function splitTags(text) {
-  return String(text ?? '')
+  const out = String(text ?? '')
     .split(/[\n,，、;；|]+/)
     .map((s) => s.trim().replace(/^[-*·\d.、\s]+/, '').trim())
     .filter(Boolean)
     .filter((s) => s.length <= 12) // 太长的多半是解释，不是标签
-    .slice(0, MAX_TAGS)
+  /*
+   * 只去**完全重复**的词（2026-11-19：`嘲笑、大笑、嘲笑` → `嘲笑、大笑`）。
+   * ⚠️ 不合并近义词 —— 用户明确要求保留细微差别
+   *   （「保留吧，表情意义不一样，有细微差距」）。
+   */
+  const seen = new Set()
+  return out.filter((s) => (seen.has(s) ? false : (seen.add(s), true))).slice(0, MAX_TAGS)
 }
 
 /**

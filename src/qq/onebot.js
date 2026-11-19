@@ -871,6 +871,40 @@ export class OneBotClient {
     }
   }
 
+  /**
+   * 删除收藏表情（NapCat `delete_custom_face`，2026-11-18 实测可用）。
+   *
+   * ⚠️ **参数必须是完整 `resId`**：`<uin>_0_0_0_<MD5>_0_0`。
+   *    只传 32 位 MD5 协议端也回「操作成功」，但**什么都没删**（实测过），
+   *    所以调用方必须用 `fetch_custom_face_detail()` 拿 `resId`。
+   *
+   * @param {string[]} resIds 完整 resId 列表
+   * @returns {Promise<{ok:boolean, raw:any}>}
+   */
+  async deleteCustomFaces(resIds) {
+    const ids = (Array.isArray(resIds) ? resIds : [resIds]).map(String).filter(Boolean)
+    if (ids.length === 0) return { ok: false, raw: { error: 'no ids' } }
+    try {
+      const res = ids.length === 1
+        ? await this._sendPreferHttp('delete_custom_face', { res_id: ids[0] })
+        : await this._sendPreferHttp('delete_custom_face', { ids })
+      const ok = res?.status === 'ok' && (res?.retcode === 0 || res?.retcode === undefined)
+      return { ok, raw: res }
+    } catch (e) {
+      return { ok: false, raw: { error: String(e?.message ?? e) } }
+    }
+  }
+
+  /** 收藏表情详情（含 resId / md5 / url / 本地路径）。 */
+  async fetchCustomFaceDetails() {
+    try {
+      const res = await this._sendPreferHttp('fetch_custom_face_detail', {})
+      return Array.isArray(res?.data) ? res.data : []
+    } catch {
+      return []
+    }
+  }
+
   async _sendPreferHttp(action, params) {
     if (this.cfg.httpUrl) {
       try { return await this.callHttp(action, params) } catch (e) {
@@ -1062,7 +1096,9 @@ export class OneBotClient {
     // 下载（带大小限制）
     try {
       const ctl = new AbortController()
-      const timer = setTimeout(() => ctl.abort(), 15000)
+      /* 超时可配（大 GIF 单张要 20s 上下，打标签那条路会传更长，2026-11-19） */
+      const dlTimeout = Number(opts.timeoutMs ?? 15000)
+      const timer = setTimeout(() => ctl.abort(), dlTimeout)
       // ⚠️ 用带代理兜底的 fetch：本机装过代理软件时 HTTP_PROXY 会残留在
       //    环境变量里，代理一关所有请求就 ECONNREFUSED（2026-10-25 实测：
       //    QQ 图片、联网搜索全挂，而 QQ 连接正常因为走 NO_PROXY）。
@@ -1136,9 +1172,33 @@ export class OneBotClient {
        *   · Web ReadableStream         → getReader 读到底
        *   · Buffer / Uint8Array        → 直接用
        */
-      const buf = await readBodyAsBuffer(res)
+      let buf = await readBodyAsBuffer(res)
+      /*
+       * ★ 读不出来就**重新下载一次**（2026-11-19 实测：bodyUsed=true / locked=true）。
+       *
+       * 现场：表情标签那批图稳定报「图片响应体读不出来」，诊断打印
+       * `res=Response bodyUsed=true locked=true` —— 响应体在我们读之前就被消费了
+       * （超时中断 / 复用连接 / 中间层读过一次都会这样）。
+       * 拿一个已消费的 Response 无论怎么读都读不出来，唯一可靠的解法是**再取一次**。
+       * 只重试一次，避免放大流量。
+       */
       if (!buf) {
-        this.log.warn?.('onebot：图片响应体读不出来（类型不支持）')
+        try {
+          const r2 = await fetchWithProxyFallback(target, {
+            timeoutMs: 20000,
+            log: (m) => this.log.info?.(`onebot：${m}`),
+          })
+          if (r2?.ok) buf = await readBodyAsBuffer(r2)
+        } catch { /* 下面统一报错 */ }
+      }
+      if (!buf) {
+        /* 诊断信息：下次再失败时能直接看出 res 是什么形状（2026-11-19） */
+        const body = res?.body ?? res
+        this.log.warn?.('onebot：图片响应体读不出来（类型不支持）'
+          + ` res=${res?.constructor?.name ?? typeof res}`
+          + ` body=${body?.constructor?.name ?? typeof body}`
+          + ` bodyUsed=${res?.bodyUsed} locked=${body?.locked}`
+          + ` hasAB=${typeof res?.arrayBuffer}`)
         return null
       }
       if (buf.length > maxBytes) {
@@ -1200,11 +1260,25 @@ async function readBodyAsBuffer(res) {
   if (body instanceof Uint8Array) return Buffer.from(body)
 
   // ② Response 自己会转 —— 最省事，一次拷完，也让运行时管背压
-  if (typeof res.arrayBuffer === 'function') {
+  /*
+   * ⚠️ **arrayBuffer() 失败后不能再 getReader()**（2026-11-19 修）。
+   *
+   * 现场：表情标签那批图全部报
+   *   `图片下载异常 — Invalid state: ReadableStream is locked`
+   * 原因就是这里：arrayBuffer() 因为超时/中断 reject 了，但流已经被它锁住，
+   * 接着往下走 ③ 再 getReader() 就必然抛 "ReadableStream is locked"。
+   *
+   * 所以：只在一个流没被读过、也没被锁的时候尝试一次；失败就**直接返回 null**，
+   * 让调用方当"这张没下到"处理，而不是拿一个锁死的流去二次读。
+   */
+  if (typeof res.arrayBuffer === 'function' && res.bodyUsed !== true && body?.locked !== true) {
     try {
       return Buffer.from(await res.arrayBuffer())
-    } catch { /* 落到下面按流处理 */ }
+    } catch {
+      return null
+    }
   }
+  if (body?.locked === true) return null
 
   // ③ Web ReadableStream：getReader 读到底
   if (typeof body?.getReader === 'function') {

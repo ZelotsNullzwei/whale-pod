@@ -3325,6 +3325,7 @@ ${drewNote}
         this.selfId = String(d?.user_id ?? '')
         this.selfName = String(d?.nickname ?? 'WhalePod')
         this.log.info?.(`bridge：已登录为 ${this.selfName}(${this.selfId})`)
+        void this._preloadGroupNames()
       } catch (e) {
         this.log.warn?.(`bridge：取登录信息失败 — ${String(e?.message ?? e)}`)
       }
@@ -3339,6 +3340,44 @@ ${drewNote}
    * 缓存 10 分钟，既让 prompt 里能带上群名（模型知道自己在哪个群，
    * 对判断语气有帮助），又不给协议端添压力。
    */
+  /**
+   * 预拉「我在哪些群」（2026-11-19）。
+   *
+   * 起因：新好友附言写「我是来自群聊“神秘黄豆群”的…」，
+   * 她在私聊里回「本鱼没在什么黄豆群里」——**其实她就在那个群**
+   * （704291282 的群名就是“神秘黄豆群”）。
+   * 私聊提示词里从来没有「我加入了哪些群」这份事实，她只能瞎猜。
+   */
+  async _preloadGroupNames() {
+    try {
+      const res = await this.onebot.call('get_group_list', {}, 10000)
+      const list = Array.isArray(res?.data) ? res.data : []
+      if (!this._groupNames) this._groupNames = new Map()
+      const now = Date.now()
+      for (const g of list) {
+        if (g?.group_id) this._groupNames.set(String(g.group_id), { name: g.group_name, at: now })
+      }
+      if (list.length) {
+        this.log.info?.(`bridge：已知自己在 ${list.length} 个群：${list.map((g) => g.group_name).join('、')}`)
+      }
+    } catch (e) {
+      this.log.debug?.(`bridge：预拉群列表失败 — ${String(e?.message ?? e)}`)
+    }
+  }
+
+  /** 「你在的群」提示（同步读缓存，不阻塞生成）。 */
+  _myGroupsHint() {
+    const m = this._groupNames
+    if (!m || typeof m.entries !== 'function' || m.size === 0) return ''
+    const rows = [...m.entries()]
+      .filter(([, v]) => v?.name)
+      .map(([id, v]) => `「${v.name}」(${id})`)
+    if (rows.length === 0) return ''
+    return '## 你在的群\n'
+      + rows.join('、')
+      + '\n有人提到这些群名时，那就是**你自己所在的群**，别否认、别装不知道。\n'
+  }
+
   async groupName(groupId) {
     if (!groupId) return undefined
     if (!this._groupNames) this._groupNames = new Map()
@@ -4281,6 +4320,25 @@ ${drewNote}
    * ⚠️ 加群邀请**不自动同意** —— 那等于让机器人随便进群，
    *    和"被动被加好友"是两件完全不同的事。
    */
+  /**
+   * 群管理配置。
+   *
+   * ⚠️ **兼容两种嵌套**（2026-11-19 修）：
+   *   配置默认写在 `qq.reply.groupAdmin`（见 config/store.js），
+   *   但 bridge 的 cfg 是 `{...cfg.qq}` 扁平化后的对象 ——
+   *   于是 `this.cfg.groupAdmin` 永远是 undefined，
+   *   `friendRequest === false` / `ban === false` 这些开关**全部失效**
+   *   （默认值是 true，所以表面上"功能正常"，其实关不掉）。
+   *   这里同时读两处，谁是对象用谁。
+   */
+  _groupAdminCfg() {
+    const a = this.cfg?.groupAdmin
+    if (a && typeof a === 'object') return a
+    const b = this.cfg?.reply?.groupAdmin
+    if (b && typeof b === 'object') return b
+    return {}
+  }
+
   async _onRequest(ev) {
     const rt = String(ev?.request_type ?? '?')
     const flag = ev?.flag
@@ -4300,7 +4358,7 @@ ${drewNote}
       this.log.warn?.('bridge：好友申请没有 flag，无法处理')
       return
     }
-    if (this.cfg.groupAdmin?.friendRequest === false) {
+    if (this._groupAdminCfg().friendRequest === false) {
       this.log.info?.('bridge：好友申请自动同意已关闭')
       return
     }
@@ -4308,19 +4366,48 @@ ${drewNote}
     // 频率：同一个人一小时只处理一次
     const now = Date.now()
     if (!this._friendReqAt) this._friendReqAt = new Map()
+    /*
+     * ⚠️ **并发去重**（2026-11-19 实测）：
+     * 同一条好友申请协议端会在几百毫秒内推 3~5 次。
+     * 原来只靠 `_friendReqAt`（**成功之后**才写），几个重复事件同时进来时
+     * 都还没写，于是全都往下走 —— 第一次成功，后面全部
+     * `set_friend_add_request 失败：No such request`，日志里还会重复打「已同意」。
+     * 这里用一个**进行中集合**先占位，处理完再放掉。
+     */
+    if (!this._friendReqBusy) this._friendReqBusy = new Set()
+    const busyKey = `${userId}:${String(flag)}`
+    if (this._friendReqBusy.has(busyKey) || this._friendReqBusy.has(`u:${userId}`)) {
+      this.log.info?.(`bridge：${userId} 的好友申请正在处理/重复推送，跳过`)
+      return
+    }
+    this._friendReqBusy.add(busyKey)
+    this._friendReqBusy.add(`u:${userId}`)
+    const releaseBusy = () => {
+      try {
+        this._friendReqBusy.delete(busyKey)
+        this._friendReqBusy.delete(`u:${userId}`)
+      } catch { /* 忽略 */ }
+    }
     const last = Number(this._friendReqAt.get(userId) ?? 0)
     if (last > 0 && now - last < 3600_000) {
       this.log.info?.(`bridge：${userId} 一小时内申请过，这次跳过`)
+      releaseBusy()
       return
     }
 
     try {
-      // 备注用对方的申请附言（他要是说了自己是谁，以后好认）
-      await this.onebot.handleFriendRequest(flag, true, comment || undefined)
+      /*
+       * ⚠️ **不要把申请附言当备注**（2026-11-19 实测踩坑）。
+       *
+       * 现场：附言「我是来自群聊“神秘黄豆群”的Nz(Xperia)」被当成 remark 传下去，
+       * 结果好友列表里对方备注直接变成这一整句，很难看。
+       * 附言是**验证消息**，不是名字。备注留空，QQ 会自己用对方昵称。
+       */
+      await this.onebot.handleFriendRequest(flag, true)
       this._friendReqAt.set(userId, now)
-      this.log.info?.(`bridge：已同意 ${userId} 的好友申请`)
+      this.log.info?.(`bridge：已同意 ${userId} 的好友申请` + (comment ? `（附言「${comment}」仅记录，不设备注）` : ''))
       // 通过后打个招呼 —— 刚加好友一句话都不说挺冷的
-      if (this.cfg.groupAdmin?.friendGreeting !== false) {
+      if (this._groupAdminCfg().friendGreeting !== false) {
         const name = this.selfName ?? '蓝色大肥鱼'
         try {
           await this.onebot.sendPrivate(userId, `${name}同意了你的好友申请。有事说事，没事别戳。`)
@@ -4328,6 +4415,8 @@ ${drewNote}
       }
     } catch (e) {
       this.log.warn?.(`bridge：同意好友申请失败 — ${String(e?.message ?? e)}`)
+    } finally {
+      releaseBusy()
     }
   }
 
@@ -7233,7 +7322,7 @@ const drewRecently = __drawRecentMs > 0 && lastDrewAt > 0 && Date.now() - lastDr
      *    提示词里已经写明：只在**被明确要求**时才禁言。
      */
     let banNote = null
-    if (this.cfg.groupAdmin?.ban !== false) {
+    if (this._groupAdminCfg().ban !== false) {
       const marks = extractBanMarkers(text)
       if (marks.length > 0) {
         text = stripBanMarkers(text)
@@ -7294,7 +7383,7 @@ const drewRecently = __drawRecentMs > 0 && lastDrewAt > 0 && Date.now() - lastDr
      * 不许含引号/反斜杠/纯符号（见 validateNickname）。
      */
     let nickNote = null
-    if (this.cfg.groupAdmin?.nickname !== false) {
+    if (this._groupAdminCfg().nickname !== false) {
       const marks = extractNicknameMarkers(text)
       if (marks.length > 0) {
         text = stripNicknameMarkers(text)
@@ -10596,6 +10685,8 @@ const drewRecently = __drawRecentMs > 0 && lastDrewAt > 0 && Date.now() - lastDr
         msg.kind === 'private' ? this._recentGroupDigest() : '',
         // ★ 群里也知道私下聊过什么（知道就行，别主动提 —— 见人格那条）
         msg.kind === 'group' ? this._recentPrivateDigest() : '',
+        // ★ 我在哪些群（2026-11-19：她在私聊否认自己在“神秘黄豆群”，其实就在）
+        this._myGroupsHint(),
         /*
          * ★ 长期记忆两边共享（2026-11-06 用户：「人格不一样，记忆相同」）。
          *   上面两条只覆盖最近 30 分钟的原始对话；隔天就断片。
