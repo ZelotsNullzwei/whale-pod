@@ -1342,14 +1342,16 @@ export class ProtocolSupervisor {
     /*
      * ── WhalePod-LC 自建内核优先（D:\\WhalePod-LC）───────────────
      * 我们的自建内核（SnowCatQQ 源码构建的 napcat.mjs + winmm 注入，跑在官方 QQ 9.9.37 内）。
-     * 目录里有 QQ.exe 则优先用它：Start-Process QQ.exe --enable-logging + 隐藏窗口。
+     * 目录里有 QQ.exe 则优先用它：Start-Process QQ.exe（无 console 窗，-WindowStyle Hidden）+ 持续隐藏主窗口。
      * running() 仍靠 3000/3001 端口探测。
      */
     const linkcoreRoot = process.env.WHALEPOD_LC_ROOT || 'D:\\WhalePod-LC'
     const lcQQ = path.join(linkcoreRoot, 'QQ.exe')
     if (backendId === 'napcat' && fs.existsSync(lcQQ)) {
       this.log.info?.('协议端：使用 WhalePod-LC 自建内核启动（' + lcQQ + '）')
-      const ps = 'Start-Process -FilePath \'' + lcQQ + '\' -ArgumentList \'--enable-logging\' -WorkingDirectory \'' + linkcoreRoot + '\''
+      // 注意：不要再带 --enable-logging —— 它会弹一个 QQ 的 console 黑窗（看着像"有头"）。
+      // winmm 注入不依赖该参数；去掉后无 console 窗，主窗口再由下方 hideTick 持续隐藏。
+      const ps = 'Start-Process -FilePath \'' + lcQQ + '\' -WorkingDirectory \'' + linkcoreRoot + '\' -WindowStyle Hidden'
       const child = spawn('powershell', ['-NoProfile', '-Command', ps], { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
       const entry = { child, startedAt: Date.now(), exit: null, lines: [] }
       this.procs.set(backendId, entry)
