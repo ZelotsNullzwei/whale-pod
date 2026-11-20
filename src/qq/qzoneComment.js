@@ -63,7 +63,11 @@ export function checkCommentText (text, recent = []) {
   const s = String(text ?? '').trim()
   if (!s) return '空'
   if (s.length < 4) return '太短（<4 字）'
-  if (s.length > 50) return '太长（>50 字）'
+  if (s.length > 40) return '太长（>40 字）'
+  /* 2026-11-20 实测：她真发出去过「（往被子里缩了缩）那赖到几点赖到几点⏎⏎你总不能一直躺着吧」——
+   * 评论区不是聊天，动作旁白和分段都不该出现，看着就是 AI 写的。 */
+  if (/[\r\n]/.test(s)) return '多行（评论区只能一行）'
+  if (/[（(【\[][^）)】\]]{0,30}[）)】\]]/.test(s)) return '含括注/动作旁白'
   if (/https?:\/\/|www\.|@\S+/.test(s)) return '含链接/@'
   if (/[A-Za-z0-9]{8,}/.test(s) && /(qq|vx|微信|号)/i.test(s)) return '疑似联系方式'
   if (/^(哈+|呵+|嗯+|哦+|啊+)[。.!！~～]*$/.test(s)) return '纯语气词'
@@ -204,7 +208,8 @@ export function startQzoneComment (bridge, opts = {}) {
         '他说：「' + String(comment.content).slice(0, 100) + '」',
         '',
         '要求：',
-        '· 一句话，4–30 字，口语，像随手回一句',
+        '· **只要一行**，4–30 字，口语，像随手回一句',
+        '· **不许换行**，**不许用括号写动作或神态**（不要「（笑了笑）」「（往被子里缩）」这种）',
         '· **不要**提发图/拍照，不要用感叹号，不要 @ 人，不要表情包标记',
         '· 不要问「你是谁」这类客套话',
         '· 不想回就输出 [SILENT]',
