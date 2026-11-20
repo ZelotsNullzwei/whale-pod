@@ -364,8 +364,8 @@ export const DEFAULTS = {
        *   both    —— 两者都开，谁先连上就用谁
        */
       mode: 'forward',
-      wsUrl: 'ws://127.0.0.1:3001',
-      httpUrl: 'http://127.0.0.1:3000',
+      wsUrl: 'ws://127.0.0.1:18801',
+      httpUrl: 'http://127.0.0.1:18800',
       accessToken: '',
       /** reverse 模式：我们监听的地址（协议端要填这个） */
       reverseHost: '127.0.0.1',

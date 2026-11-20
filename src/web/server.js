@@ -2199,10 +2199,14 @@ async function startQqBridge({ store, state, log, decision, memory, longMemory, 
 
     // ── 1. 先确保协议端在跑 ──────────────────────────────────
     // supervisor.start 是幂等的：已在运行会返回已有 pid。
+    // ⚠️ LinkCore 接管模式：qq.supervisor.enabled === false 时，WhalePod 只当 OneBot 客户端，
+    //    不再自己起/复用内核（内核由 LinkCore 托管，连 cfg.qq.onebot 指定的 LinkCore 端口）。
     let napcat = false
     try {
       const sup = state.supervisor
-      if (sup?.start) {
+      if (cfg.qq?.supervisor?.enabled === false) {
+        log.info?.('QQ：supervisor 已禁用（LinkCore 接管内核），WhalePod 仅作 OneBot 客户端')
+      } else if (sup?.start) {
         const r = await sup.start('napcat')
         napcat = r?.pid !== undefined || sup.running?.('napcat') === true
         if (napcat) log.info?.('QQ：协议端已就绪')
