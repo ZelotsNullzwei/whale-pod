@@ -228,6 +228,7 @@ export function startQzoneComment (bridge, opts = {}) {
       const mem = {
         recent: () => [],
         sinceLastMessage: () => Number.POSITIVE_INFINITY,
+        sinceMyLast: () => undefined,
         lastMessageAt: 0,
         consecutiveTurns: 0,
         totalPushed: 0,

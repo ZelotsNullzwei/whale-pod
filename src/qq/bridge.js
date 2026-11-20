@@ -9644,7 +9644,7 @@ const drewRecently = __drawRecentMs > 0 && lastDrewAt > 0 && Date.now() - lastDr
      */
     let peopleText = ''
     try {
-      peopleText = this.people?.toPrompt?.({ self: msg.sender, limit: 6 }) ?? ''
+      if (!msg.__qzoneComment) peopleText = this.people?.toPrompt?.({ self: msg.sender, limit: 6 }) ?? ''
     } catch (e) {
       this.log.debug?.(`bridge：人物档案注入失败（跳过）：${String(e?.message ?? e)}`)
     }
@@ -9662,7 +9662,7 @@ const drewRecently = __drawRecentMs > 0 && lastDrewAt > 0 && Date.now() - lastDr
      */
     let eventsText = ''
     try {
-      eventsText = this.events?.toPrompt?.(msg.scope) ?? ''
+      if (!msg.__qzoneComment) eventsText = this.events?.toPrompt?.(msg.scope) ?? ''
     } catch (e) {
       this.log.debug?.(`bridge：事件记忆注入失败（跳过）：${String(e?.message ?? e)}`)
     }
@@ -10641,7 +10641,7 @@ const drewRecently = __drawRecentMs > 0 && lastDrewAt > 0 && Date.now() - lastDr
         //    余额只要低于阈值，**每一次生成**都挂着「钱包只剩 ¥X」，
         //    它自然每条回复都念叨钱包。
         //    现在交给 buildBalanceHint 判 `warned`，下一项再更新状态。
-        buildBalanceHint({
+        msg.__qzoneComment ? '' : buildBalanceHint({
           low: this._balanceLow,
           warned: this._balanceWarned,
           cny: this._balance?.cny ?? 0,
@@ -10652,7 +10652,7 @@ const drewRecently = __drawRecentMs > 0 && lastDrewAt > 0 && Date.now() - lastDr
         // ★ 群里也知道私下聊过什么（知道就行，别主动提 —— 见人格那条）
         msg.kind === 'group' && !msg.__qzoneComment ? this._recentPrivateDigest() : '',
         // ★ 我在哪些群（2026-11-19：她在私聊否认自己在“神秘黄豆群”，其实就在）
-        this._myGroupsHint(),
+        msg.__qzoneComment ? '' : this._myGroupsHint(),
         /*
          * ★ 长期记忆两边共享（2026-11-06 用户：「人格不一样，记忆相同」）。
          *   上面两条只覆盖最近 30 分钟的原始对话；隔天就断片。
@@ -10664,24 +10664,24 @@ const drewRecently = __drawRecentMs > 0 && lastDrewAt > 0 && Date.now() - lastDr
         /* ★ 朋友们最近发的空间（含最新一条的配图内容） */
         msg.__qzoneComment ? '' : (this._qzoneFriendsDigest?.() ?? ''),
         /* ★ 同一个人：私聊里也要认得群里的那个名字（2026-11-08） */
-        this._aliasHint(msg),
+        msg.__qzoneComment ? '' : this._aliasHint(msg),
         /* ★ 明日方舟外号：认得出在说谁（2026-11-08） */
-        this._arknightsAliasHint(msg.text),
+        msg.__qzoneComment ? '' : this._arknightsAliasHint(msg.text),
         /* ★ 我离线过多久（2026-11-07） */
-        this._offlineHint(),
+        msg.__qzoneComment ? '' : this._offlineHint(),
         /* ★ 订阅的吧在聊什么（2026-11-07） */
-        this._forumDigest(),
+        msg.__qzoneComment ? '' : this._forumDigest(),
         /* ★ NGA 话题（走搜索，2026-11-08） */
-        this._ngaDigest(),
+        msg.__qzoneComment ? '' : this._ngaDigest(),
         /* ★ 刚拍过就别再问怎么拍（2026-11-07） */
-        this._recentDrewHint(msg.scope),
+        msg.__qzoneComment ? '' : this._recentDrewHint(msg.scope),
         /*
          * ★ 长期档案（2026-11-06）：只增不减，摘要重写也不会丢。
          *   可见性按会话过滤：群只看 group+shared，私聊看全部。
          */
-        renderFacts(msg.scope),
+        msg.__qzoneComment ? '' : renderFacts(msg.scope),
         // ★ 群里没头没尾的开场 → 最多回一个「？」或一个表情（2026-11-05）
-        this._groupNoiseHint(msg, mem),
+        msg.__qzoneComment ? '' : this._groupNoiseHint(msg, mem),
 
         /*
          * ⚠️ 这里曾经是「你来就负责说，别再纠结说不说」（2026-10-29 改）。
