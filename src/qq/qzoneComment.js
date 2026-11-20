@@ -154,8 +154,8 @@ export function startQzoneComment (bridge, opts = {}) {
       }))
     }
 
-    /** 发一条评论（实测可用的那条路）。 */
-    const postComment = async (uin, tid, content, auth) => {
+    /** 发一条**平级**评论（实测可用的那条路）。 */
+    const postFlat = async (uin, tid, content, auth) => {
       const url = 'https://user.qzone.qq.com/proxy/domain/taotao.qzone.qq.com/cgi-bin/emotion_cgi_re_feeds'
         + '?g_tk=' + encodeURIComponent(auth.bkn)
       const body = new URLSearchParams({
@@ -182,6 +182,62 @@ export function startQzoneComment (bridge, opts = {}) {
       const j = parseCallback(text)
       const ok = Number(j?.code ?? -1) === 0
       return { ok, code: j?.code ?? null, message: String(j?.msg ?? text.slice(0, 80)) }
+    }
+
+    /*
+     * ★ **二级回复**（2026-11-20 实测打通，空间里显示成「蓝色大鲸鱼 回复 Null_zwei.: …」）。
+     *
+     * 和发评论不是同一套参数，三处都不一样：
+     *   ① topicId **不带 __1**：`{uin}_{tid}`
+     *   ② format=json（不是 fs）+ 必须带 qzreferrer
+     *   ③ content 前面要加 `@{uin:对方,nick:对方昵称,auto:1} ` —— **@提及写在正文里**，
+     *      再配上 commentId / replyUin / commentUin 三个参数
+     *
+     * ⚠️ 踩过的坑：只加 commentId/replyUin、不加 @前缀 —— 服务端返回一段 HTML，
+     *    **但评论照样以平级形式发出去了**，同一条话在说说下面出现两次。
+     *    所以这里**只发一次**，失败就退化成平级。
+     */
+    const postReply = async (uin, tid, content, auth, replyTo) => {
+      const qzRef = 'https://user.qzone.qq.com/' + uin
+      const url = 'https://user.qzone.qq.com/proxy/domain/taotao.qzone.qq.com/cgi-bin/emotion_cgi_re_feeds'
+        + '?g_tk=' + encodeURIComponent(auth.bkn)
+      const nick = String(replyTo.name || replyTo.uin).replace(/[{}:,]/g, '')
+      const mention = '@{uin:' + String(replyTo.uin) + ',nick:' + nick + ',auto:1}'
+      const body = new URLSearchParams({
+        hostUin: uin,
+        topicId: uin + '_' + tid,
+        content: mention + ' ' + content,
+        format: 'json',
+        qzreferrer: qzRef,
+        commentId: String(replyTo.id),
+        replyUin: String(replyTo.uin),
+        commentUin: String(replyTo.uin),
+      }).toString()
+      const resp = await fetchWithProxyFallback(url, {
+        method: 'POST',
+        timeoutMs: 20000,
+        headers: { ...headers(auth, uin), 'Content-Type': 'application/x-www-form-urlencoded' },
+        body,
+      })
+      const text = String(await resp.text())
+      const j = parseCallback(text)
+      const ok = Number(j?.code ?? -1) === 0
+      return { ok, code: j?.code ?? null, message: String(j?.msg ?? text.slice(0, 80)) }
+    }
+
+    /** 发评论：给了 replyTo 就走二级回复，失败退化成平级。 */
+    const postComment = async (uin, tid, content, auth, replyTo = null) => {
+      if (replyTo && replyTo.id && replyTo.uin) {
+        try {
+          const r = await postReply(uin, tid, content, auth, replyTo)
+          if (r.ok) return { ...r, mode: 'reply' }
+          bridge.log?.warn?.('qzone-comment：二级回复失败 code=' + String(r.code) + ' → 退化成平级评论')
+        } catch (e) {
+          bridge.log?.warn?.('qzone-comment：二级回复异常（' + String(e?.message ?? e).slice(0, 60) + '）→ 退化成平级')
+        }
+      }
+      const f = await postFlat(uin, tid, content, auth)
+      return { ...f, mode: 'flat' }
     }
 
     /** 从 qzone-read 的缓存里找这条说说的配图描述（qzoneRead 已经识过图了，别重复花钱）。 */
