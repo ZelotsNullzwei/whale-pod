@@ -107,9 +107,29 @@ export async function createAttachmentSupport(opts = {}) {
     return { makeImageBlock: null, attachmentStore: null, error: msg }
   }
 
+  /**
+   * 按 base64 字节头嗅探真实图片 MIME。
+   * 上游（QQ/协议端）给的 dataUrl MIME 可能是错的（声明 jpeg 实际 webp/png/gif），
+   * 会让 DSH store 的 "Declared image type does not match its bytes" 校验拒绝入库。
+   * 这里以**真实字节**为准，嗅不出再回退声明值。
+   */
+  function sniffImageMediaType(base64, fallback) {
+    try {
+      const head = Buffer.from(String(base64).slice(0, 32), 'base64')
+      if (head.length >= 3 && head[0] === 0xFF && head[1] === 0xD8 && head[2] === 0xFF) return 'image/jpeg'
+      if (head.length >= 8 && head[0] === 0x89 && head[1] === 0x50 && head[2] === 0x4E && head[3] === 0x47) return 'image/png'
+      if (head.length >= 6 && head[0] === 0x47 && head[1] === 0x49 && head[2] === 0x46) return 'image/gif'
+      if (head.length >= 12 && head[0] === 0x52 && head[1] === 0x49 && head[2] === 0x46 && head[3] === 0x46 && head[8] === 0x57 && head[9] === 0x45 && head[10] === 0x42 && head[11] === 0x50) return 'image/webp'
+      if (head.length >= 2 && head[0] === 0x42 && head[1] === 0x4D) return 'image/bmp'
+    } catch { /* 嗅探失败用回退 */ }
+    return fallback
+  }
+
   /** @type {(o:{base64:string,mediaType?:string,name?:string})=>Promise<object|null>} */
   async function makeImageBlock({ base64, mediaType = 'image/jpeg', name } = {}) {
     if (!attachmentStore || !base64) return null
+    // 按真实字节头纠正 mediaType（修「Declared image type does not match its bytes」）
+    mediaType = sniffImageMediaType(base64, mediaType)
     try {
       const refs = await coreMod.admitEncodedImages(attachmentStore, [
         { data: base64, mediaType, ...(name ? { name } : {}) },
