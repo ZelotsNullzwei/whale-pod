@@ -188,7 +188,7 @@ function extractLook(o = {}) {
    */
   if (String(framing?.framing ?? '') !== '全身') {
     clothing = clothing
-      .split(/[，,]/)
+      .split(/[，,+＋]/)
       .map((s) => s.trim())
       .filter((s) => {
         if (!s) return false
@@ -271,17 +271,17 @@ function composeFrontSelfiePrompt(o = {}) {
   const looksHome = /(家居|睡裙|睡衣|吊带|短裤|光脚|拖鞋)/.test(clothing)
   const temp = OUTSIDE && looksHome ? '；临时出门：外面套一件外套、换帆布鞋，别换成整套外出服' : ''
   const locationWho = OUTSIDE ? '她在外面' : '她在自己家'
+  /* 2026-11-20 精简：参考图已锁长相，去掉长篇外貌；地点/场景/质感压成两三句，模型更听话画成真·前置自拍。 */
   return [
-    '一张柔和明亮的生活自拍照片，第一人称手机前置视角，画面里看不到手机和持机的手。',
+    '一张手机前置摄像头自拍。',
     '',
-    '一位成年女性，蓝色长卷发（发尾靛蓝渐变）、蓝色瞳孔、头顶一缕呆毛、耳侧蓝白鲸鱼鳍形耳饰；脸和身形以人物参考图为准。',
+    '第一人称视角，镜头贴在她脸前方，画面里只有她本人正对镜头（脸和上半身），看不到手机、看不到持机的手、绝没有第二个人或拍摄者。',
     '',
-    `今天穿着：${clothing}${hairText ? `，发型：${hairText}` : ''}${temp}。`,
+    `她以参考图为准（同一个人的脸和身形），穿${clothing}${hairText ? `，${hairText}` : ''}${temp}。`,
     '',
-    ...(moodLine(o.mood, 'selfie') ? [moodLine(o.mood, 'selfie'), ''] : []),
-    `地点：${locationWho}。她${/洗手台|浴室|刷牙|洗脸/.test(String(scene)) ? '站在洗手台前' : '在室内'}。${clean ? `画面：${clean}。` : ''}`,
+    `${locationWho}，${clean ? clean + '，' : ''}自然生活感。`,
     '',
-    `环境与质感：${lightShortOf(slot)}真实手机前置镜头拍摄，自然生活质感，画面干净温暖，不要插画感和 3D 渲染感。`,
+    `${lightShortOf(slot)}真实手机前置拍摄，画面干净温暖，不要插画感和 3D 渲染感。`,
     '',
     '【输出】竖版 9:16，单张。',
   ].join('\n')

@@ -6491,7 +6491,12 @@ const drewRecently = __drawRecentMs > 0 && lastDrewAt > 0 && Date.now() - lastDr
             try {
               const plan = this.dayPlan?.today?.()
               const v = plan?.[currentSlot().id]
-              return v ? String(v).replace(/\s+/g, ' ').slice(0, 70) : ''
+              if (!v) return ''
+              /* 2026-11-20：整段日程太长会把图带偏（"两点多叠衣服…三点多泡茶…"）。只取**最后一个分句**＝此刻正在做的事。 */
+              const full = String(v).replace(/\s+/g, ' ')
+              const clauses = full.split(/[；;]/).map(s => s.trim()).filter(Boolean)
+              const cur = clauses.length ? clauses[clauses.length - 1] : full
+              return cur.slice(0, 40)
             } catch { return '' }
           })()
           /*
