@@ -154,6 +154,7 @@ export function planShot(o = {}) {
    * ★ 动作池：模糊动作（伸懒腰/护肤/化妆…）补一条**具体、单手成立**的动作描写，
    *   否则模型容易退化成坐着/对镜自拍。2026-11-12 用户「动作补充任务」。
    */
+  const __rawScene = String(scene)  // ⚠️ 动作池会覆盖 scene，先存原始值（2026-11-20：抽动作要用它）
   let actionSpec = null
   if (!sceneOnly && needsActionDetail(scene)) {
     const act = actionForScene(scene)
@@ -500,7 +501,7 @@ export function planShot(o = {}) {
 
   /* ⑦ 组装提示词 */
   const prompt = composePhotoPrompt({
-    plan, framing, scene: sceneFixed, outfit, hair, weather, mood,
+    plan, framing, scene: sceneFixed, sceneRaw: __rawScene, outfit, hair, weather, mood,
     continuity: note, hasRef: Boolean(refImage), anime, bodyOverride, sceneOnly,
     expression,
     pose: posePlan,

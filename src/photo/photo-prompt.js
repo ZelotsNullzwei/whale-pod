@@ -256,7 +256,7 @@ function moodLine(mood, kind = 'selfie') {
 }
 
 function composeFrontSelfiePrompt(o = {}) {
-  const { plan = {}, scene = '', slot = '' } = o
+  const { plan = {}, scene = '', slot = '' } = o  // o.sceneRaw 另取（原始 scene）
   const { clothing, hairText } = extractLook(o)
   const clean = String(scene)
     .replace(/不(?:出门|出去)|没(?:出门|出去)|不用(?:出门|出去)/g, '')
@@ -277,7 +277,7 @@ function composeFrontSelfiePrompt(o = {}) {
    *   全塞 → 模型被长句带崩（伸懒腰三只手）。
    */
   const __act = (() => {
-    const st = String(scene).match(/此刻状态[:：]\s*([\s\S]*)$/)
+    const st = String(o.sceneRaw || scene).match(/此刻状态[:：]\s*([\s\S]*)$/)  // 用原始 scene，避免被 sceneFixed 改写污染
     const raw = st ? st[1] : ''
     // 整段状态里按分号切成几条，取**最后一条**（= 此刻正在做的事）
     const clauses = raw.split(/[；;]/).map((x) => x.trim()).filter(Boolean)
@@ -288,8 +288,14 @@ function composeFrontSelfiePrompt(o = {}) {
      * 直接取最后一段会拿到"删了"这种碎片，所以要按动词挑。
      */
     const parts = last.split(/[，,。]/).map((x) => x.trim()).filter((x) => x.length >= 3)
-    const POSTURE = /(坐|站|躺|趴|靠|蹲|跪|窝|盘腿|侧身|倚|抱|举|拿着|端着)/
-    const act = parts.find((x) => POSTURE.test(x)) || parts.sort((a, b) => b.length - a.length)[0] || ''
+    const POSTURE = /(坐|站|躺|趴|靠|蹲|跪|窝|盘腿|侧身|倚|抱着|举着|拿着|端着)/
+    /*
+     * ⚠️ 只认**真含姿势动词**的那一小段；找不到就**留空**。
+     * 绝不能退回"最长片段"——那会把 prompt 内部注释（「手臂要和肩膀连得上」）抽进去，
+     * 实测出成"她正在手臂要和肩膀连得上"，动作直接丢失（2026-11-20）。
+     */
+    const BAD = /(连得上|必须|不得|不能|契约|负向|参考图|画面里)/  // 只排真正的内部注释词
+    const act = parts.find((x) => POSTURE.test(x) && !BAD.test(x)) || ''
     return act
       .replace(/^(她|刚刚|刚才|现在)/, '')
       // 去掉时间前缀：阿拉伯「3点40」和中文「三点四十 / 七点零五」都算
