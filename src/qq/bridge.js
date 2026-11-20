@@ -3165,7 +3165,10 @@ ${drewNote}
        *    发出去 —— 实测就是这样翻的车。
        */
       const gen = await this._generate(full, mem, scene, self)
-      const clean = String(gen?.text ?? '').trim()
+      // ⚠️ 必须 let：下面剥画图标记那段会 `clean = clean2` 回写。
+      //    原来写成 const → 每次主动发言都抛 "Assignment to constant variable."
+      //    （2026-11-20 日志实测 17:35:57），主动发言一条都发不出去。
+      let clean = String(gen?.text ?? '').trim()
       if (!clean || clean.includes(SILENT)) {
         this.log.info?.('proactive：模型选择不说')
         return false
@@ -3677,24 +3680,75 @@ ${drewNote}
    * @param {number} ttlMs 多久没再收到"正在输入"就算停了
    * @returns {boolean}
    */
+  /** 取一条 typing 记录的时间戳（兼容旧的「直接存 number」写法）。 */
+  _typingAt(rec) {
+    return typeof rec === 'number' ? rec : Number(rec?.at ?? 0)
+  }
+
+  /**
+   * 对方**此刻是不是正在打字**（不看会话 —— 兼容旧调用/旧测试）。
+   *
+   * ⚠️ 新代码请用 `_isTypingIn(scope, userId)`：typing 信号现在带会话归属，
+   *    只看 uid 会把「他在群里打字」算成「他在私聊打字」（反之亦然）。
+   */
   _isTyping(userId, ttlMs = 4000) {
     // 0 = 关掉这个判据（和 mergeWindowMs / typingHoldMs 的约定一致）
     if (!(ttlMs > 0)) return false
     const m = this._typing
     if (!m || m.size === 0) return false
     const key = String(userId)
-    const at = m.get(key)
+    const rec = m.get(key)
     const now = Date.now()
     // 顺手清掉过期的（聊天的人多了不会把 Map 撑大）
     if (m.size > 20) {
-      for (const [k, v] of m) if (now - v > ttlMs) m.delete(k)
+      for (const [k, v] of m) if (now - this._typingAt(v) > ttlMs) m.delete(k)
     }
-    if (!at) return false
-    if (now - at > ttlMs) {
+    if (rec === undefined) return false
+    if (now - this._typingAt(rec) > ttlMs) {
       m.delete(key)
       return false
     }
     return true
+  }
+
+  /**
+   * 对方**在这个会话里**是不是正在打字（2026-11-20 加）。
+   *
+   * 背景：`input_status` 事件里 `group_id` 恒为 0（NapCat 写死），拿不到会话。
+   * 所以 `_onNotice` 用「这个 uid 最近一条入站消息的 scope」给它归属。
+   * 这里按归属比对：**别的会话在打字，不算这个会话在打字**。
+   *
+   * 归属未知（旧记录只有时间戳）→ 退化成全局判断，行为与旧版一致。
+   */
+  _isTypingIn(scope, userId, ttlMs = 4000) {
+    if (!(ttlMs > 0)) return false
+    const m = this._typing
+    if (!m || m.size === 0) return false
+    const rec = m.get(String(userId))
+    if (rec === undefined) return false
+    const now = Date.now()
+    if (now - this._typingAt(rec) > ttlMs) { m.delete(String(userId)); return false }
+    const s = typeof rec === 'number' ? null : rec?.scope
+    if (s && scope && String(s) !== String(scope)) return false
+    return true
+  }
+
+  /** 这个 uid 最近一条入站消息属于哪个会话（给 typing 归属用）。 */
+  _typingScopeOf(uid) {
+    const u = String(uid ?? '')
+    if (!u) return null
+    let best = null
+    let bestAt = 0
+    try {
+      for (const [scope, rec] of this._inbound ?? []) {
+        const last = rec?.entries?.[rec.entries.length - 1]
+        if (!last) continue
+        if (String(last.sender ?? '') !== u) continue
+        const at = Number(last.at ?? 0)
+        if (at >= bestAt) { bestAt = at; best = scope }
+      }
+    } catch { /* 取不到就当未知 */ }
+    return best
   }
 
   /**
@@ -3993,7 +4047,7 @@ ${drewNote}
      *    观感上是"停手了才接话"。
      */
     const holdMs = Number(this.cfg.reply?.typingHoldMs ?? 4000)
-    if (holdMs > 0 && buf.who && this._isTyping(buf.who, holdMs)) {
+    if (holdMs > 0 && buf.who && this._isTypingIn(buf.scope, buf.who, holdMs)) {
       const waited = Date.now() - buf.firstAt
       const cap = Number(this.cfg.reply?.typingMaxWaitMs ?? 20000)
       /*
@@ -4643,8 +4697,20 @@ ${drewNote}
       const uid = String(ev?.user_id ?? ev?.operator_id ?? '')
       if (uid) {
         if (!this._typing) this._typing = new Map()
-        this._typing.set(uid, Date.now())
-        this.log.debug?.(`bridge：${uid} 正在输入`)
+        /*
+         * ★★ typing 信号要带**会话归属**（2026-11-20 加）。
+         *
+         * NapCat 的 input_status 事件里 `group_id` 是写死的 0（类里
+         * `group_id = 0`，构造函数不赋值），拿不到会话。所以用
+         * 「这个 uid 最近一条入站消息的 scope」当归属。
+         *
+         * 不归属的后果：同一个人在群里打字，私聊那边的「还在打字——继续等」
+         * 也会被点亮（反之亦然）→ 回复变慢。这是跨会话串扰。
+         */
+        const gid = Number(ev?.group_id ?? 0)
+        const scope = gid > 0 ? `group:${gid}` : (this._typingScopeOf(uid) || `private:${uid}`)
+        this._typing.set(uid, { at: Date.now(), scope })
+        this.log.debug?.(`bridge：${uid} 正在输入（${scope}）`)
       }
       return
     }
@@ -4687,7 +4753,21 @@ ${drewNote}
 
     const targetId = String(ev.target_id ?? '')
     const fromId = String(ev.user_id ?? ev.sender_id ?? '')
-    const groupId = ev.group_id != null ? String(ev.group_id) : null
+    /*
+     * ★★ 群号是**上游猜的**就别信（2026-11-20 修：私聊戳回话发进群）。
+     *
+     * LinkCore 的 ProtocolNormalizer 会在 poke 缺 group_id 时按"最近活跃会话"补一个，
+     * 补过的会打 `__synthGroupId`。旧判据（raw_info 有 ≥2 个 qq 段）把**私聊戳**
+     * 也判成群戳 → 补上最近那个群 → 这里按群发 → 用户私聊戳她，回话进了群。
+     *
+     * 上游已经修了判据，这里再做一层防御：标记为"猜的"就按私聊处理。
+     * 宁可在群里不回这一下，也不能把私聊的话发到群里。
+     */
+    const __synthGroup = ev.__synthGroupId === true || ev.synth_group_id === true
+    const groupId = (ev.group_id != null && !__synthGroup) ? String(ev.group_id) : null
+    if (__synthGroup) {
+      this.log.warn?.('bridge：戳一戳的 group_id 是上游猜的（__synthGroupId）→ 按私聊处理，避免发错会话')
+    }
 
     /*
      * ★ **戳只记「跟她有关」的**（2026-11-07 用户：「和戳相关的只记和她相关的」）。
@@ -6713,6 +6793,13 @@ const drewRecently = __drawRecentMs > 0 && lastDrewAt > 0 && Date.now() - lastDr
           const promptOutfit = /(马尾|扎起|扎成|丸子头)/.test(hairText)
             ? '蓝色发圈（低马尾），' + outfitText
             : outfitText
+          /* 记下这一轮照片的动作/场景，发图后写进 memory（让她记得自己发了什么） */
+          try {
+            msg.__photoAct = [String(hit?.[1] ?? '').trim(), (typeof slotText !== 'undefined' && slotText) ? slotText : '']
+              .filter(Boolean).join('，')
+              .replace(/对着镜头拍一张自拍[，,]?/g, '')
+              .replace(/^[，,、\s]+/, '').slice(0, 40)
+          } catch {}
           const shot = planShot({
             scene: [String(hit?.[1] ?? '').trim(), (typeof slotText !== 'undefined' && slotText) ? ('此刻状态：' + slotText) : '', envAnchor].filter(Boolean).join('；'),
             slot: currentSlot().id,
@@ -7882,7 +7969,33 @@ const drewRecently = __drawRecentMs > 0 && lastDrewAt > 0 && Date.now() - lastDr
        *   读 _send 挂在 msg 上的结构化结果 —— 图段失败会被跳过、正文照发，
        *   sentIds 非空证明不了图发成功。
        */
-      if (coverForSend?.url && msg.__lastSend?.imageSent) drawSent = true
+      if (coverForSend?.url && msg.__lastSend?.imageSent) {
+        drawSent = true
+        /*
+         * ★ **让她记得自己刚发了张什么样的照片**（2026-11-20 用户：「不认识自己」）。
+         *
+         * 现场：她发了张抱臂不情愿的自拍，用户问「何表情」，
+         * 她回「本酱没发啥表情啊」—— 因为 memory 里只有「[图片]」，她自己也不知道画面长啥样。
+         *
+         * 这里把**这一轮的场景/心情**写成一句自述记进去，下一轮她就知道自己发了什么。
+         */
+        try {
+          const __descParts = []
+          const __m = String(msg.__chatMood ?? '').trim()
+          if (__m) __descParts.push('表情' + __m)
+          const __a = String(msg.__photoAct ?? '').trim()
+          if (__a) __descParts.push(__a)
+          const __what = __descParts.length ? __descParts.join('，') : '自拍'
+          mem?.push?.(makeMessage({
+            id: `photo-${Date.now()}`,
+            sender: String(this.selfId ?? ''),
+            senderName: String(this.selfName ?? ''),
+            isMe: true,
+            at: Date.now(),
+            text: `（刚发了张自拍：${__what}）`,
+          }))
+        } catch { /* 记不上不影响发送 */ }
+      }
       /*
        * ★ 剩下的几张：**顺序**画、画一张发一张（2026-11-06）。
        *   最多补 3 张；某张失败就跳过，不影响其它，也绝不影响刚才那条正文。
