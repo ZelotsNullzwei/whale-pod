@@ -271,6 +271,31 @@ function composeFrontSelfiePrompt(o = {}) {
   const looksHome = /(家居|睡裙|睡衣|吊带|短裤|光脚|拖鞋)/.test(clothing)
   const temp = OUTSIDE && looksHome ? '；临时出门：外面套一件外套、换帆布鞋，别换成整套外出服' : ''
   const locationWho = OUTSIDE ? '她在外面' : '她在自己家'
+  /*
+   * 2026-11-20：动作只留**一句短的**（当前状态那半句，≤20字）。
+   *   全删 → 图跟她说的状态对不上（她说坐着、图站着）；
+   *   全塞 → 模型被长句带崩（伸懒腰三只手）。
+   */
+  const __act = (() => {
+    const st = String(scene).match(/此刻状态[:：]\s*([\s\S]*)$/)
+    const raw = st ? st[1] : ''
+    // 整段状态里按分号切成几条，取**最后一条**（= 此刻正在做的事）
+    const clauses = raw.split(/[；;]/).map((x) => x.trim()).filter(Boolean)
+    const last = clauses.length ? clauses[clauses.length - 1] : raw
+    /*
+     * 从这半句里挑**真正的动作**：优先含姿势动词的那一小段
+     * （"三点多泡了杯大麦茶，坐在餐桌边整理手机相册，删了" → "坐在餐桌边整理手机相册"）。
+     * 直接取最后一段会拿到"删了"这种碎片，所以要按动词挑。
+     */
+    const parts = last.split(/[，,。]/).map((x) => x.trim()).filter((x) => x.length >= 3)
+    const POSTURE = /(坐|站|躺|趴|靠|蹲|跪|窝|盘腿|侧身|倚|抱|举|拿着|端着)/
+    const act = parts.find((x) => POSTURE.test(x)) || parts.sort((a, b) => b.length - a.length)[0] || ''
+    return act
+      .replace(/^(她|刚刚|刚才|现在)/, '')
+      // 去掉时间前缀：阿拉伯「3点40」和中文「三点四十 / 七点零五」都算
+      .replace(/^(?:[0-9０-９]+\s*点(?:[0-9０-９]+\s*分|[零一二三四五六七八九十百]+分?|半|多)?|[零一二三四五六七八九十]+\s*点[零一二三四五六七八九十]*分?|凌晨|早上|上午|中午|下午|傍晚|晚上|夜里)[，,、]?\s*/, '')
+      .slice(0, 24)
+  })()
   /* 2026-11-20 精简：参考图已锁长相，去掉长篇外貌；地点/场景/质感压成两三句，模型更听话画成真·前置自拍。 */
   return [
     '一张手机前置摄像头自拍。',
@@ -280,7 +305,7 @@ function composeFrontSelfiePrompt(o = {}) {
     `她以参考图为准（同一个人的脸和身形）。**刘海和发色跟参考图一致**（厚齐刘海盖到眉毛、两侧齐脸颊的鬓发、蓝色），别把刘海画稀、别露大片额头。${hairText ? `发型：${hairText}。` : ''}穿${clothing}${temp}。`,
     '',
     ...(moodLine(o.mood, 'selfie') ? [moodLine(o.mood, 'selfie'), ''] : []),
-    `${locationWho}，自然生活感。`,
+    `${locationWho}，${__act ? `${/^(坐|站|躺|趴|靠|蹲|跪|窝|盘腿|侧身|倚|抱|举|拿|端)/.test(__act) ? '她' : '她正在'}${__act}，` : ''}自然生活感。`,
     '',
     `${lightShortOf(slot)}真实手机前置拍摄，画面干净温暖，不要插画感和 3D 渲染感。`,
     '',
