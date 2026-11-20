@@ -451,7 +451,8 @@ export function planShot(o = {}) {
    *   只喂它就会把蓝瞳画成深色；脸图放第一位锁五官。
    */
   const __personModes = ['front_selfie', 'mirror_selfie']
-  if (!anime && plan.mode === 'mirror_selfie' && framing?.framing !== '全身' && imageCfg.faceRef && refDecision?.strategy !== 'canon') {
+  /* 2026-11-20：前置自拍也脸参考优先（原来只 mirror_selfie 特判，front_selfie 半身时被身体图当主参考→脸漂/不像） */
+  if (!anime && ['front_selfie', 'mirror_selfie'].includes(plan.mode) && framing?.framing !== '全身' && imageCfg.faceRef && refDecision?.strategy !== 'canon') {
     refImage = String(imageCfg.faceRef)
   }
   /* 2026-11-12 用户：每次都要把脸部参考图喂给模型（压 CG 感、锁同一张脸） */
@@ -461,7 +462,7 @@ export function planShot(o = {}) {
    *   之前不判 framing —— 头肩/面部特写也会把整张全身图当第二参考喂进去，
    *   直接推翻 resolver 的 face 决定（reference-manager：喂全身图会把脸和耳鳍细节拉糊）。
    */
-  const __bodyVisibleFraming = ['半身', '三分之二身', '全身'].includes(String(framing?.framing ?? ''))
+  const __bodyVisibleFraming = ['全身'].includes(String(framing?.framing ?? ''))  /* 2026-11-20：只全身才喂身体参考；半身/三分之二喂身体图会稀释脸导致不像 */
   let refImages = (__facePerson && refDecision?.strategy !== 'canon' && __bodyVisibleFraming)
     ? [String(imageCfg.faceRef), imageCfg.bodyRefImage ? String(imageCfg.bodyRefImage) : ''].filter(Boolean)
     : []
