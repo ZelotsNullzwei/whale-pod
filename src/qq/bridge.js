@@ -6709,7 +6709,7 @@ const drewRecently = __drawRecentMs > 0 && lastDrewAt > 0 && Date.now() - lastDr
             ? '蓝色发圈（低马尾），' + outfitText
             : outfitText
           const shot = planShot({
-            scene: [String(hit?.[1] ?? '').trim(), envAnchor].filter(Boolean).join('；'),
+            scene: [String(hit?.[1] ?? '').trim(), (typeof slotText !== 'undefined' && slotText) ? ('此刻状态：' + slotText) : '', envAnchor].filter(Boolean).join('；'),
             slot: currentSlot().id,
             outfit: promptOutfit,
             hair: hairText,
@@ -7854,7 +7854,20 @@ const drewRecently = __drawRecentMs > 0 && lastDrewAt > 0 && Date.now() - lastDr
         text = caps[Math.floor(this._rand() * caps.length)]
         this.log.info?.(`bridge：图有了但正文是空的 → 兜一句「${text}」`)
       }
-      const sentIds = await this._send(msg, text, coverForSend)
+      const sentIds = await this._send(msg, text, coverForSend, null, { afterSeq: seq })
+      /*
+       * 插话打断 / 重复去重：`_send` 会置 `msg.__interrupted` 或 `msg.__skipped`
+       * 表示"这条没发、但不是失败"——别让它掉进下面的 nothingSent 失败统计。
+       */
+      if (msg.__interrupted || msg.__skipped) {
+        const __why = msg.__interrupted ? 'interrupted' : 'duplicate-skip'
+        if (msg.__interrupted) this.stats.interrupted = (this.stats.interrupted ?? 0) + 1
+        else this.stats.duplicateSkip = (this.stats.duplicateSkip ?? 0) + 1
+        this.log.info?.(`bridge：本条回复未发送（${msg.__interrupted ? '用户插话，新消息优先' : '重复回复去重'}）`)
+        this._record(msg, d, null, __why)
+        this._maybeSummarize(msg.scope, mem, scene)
+        return
+      }
       /*
        * 2026-11-19：原来这里会在回复发出后补发说说预览（`_pendingQzone`）。
        * 聊天里的说说已经关掉，没人再写 `_pendingQzone` —— 整段删除。
@@ -10350,7 +10363,9 @@ const drewRecently = __drawRecentMs > 0 && lastDrewAt > 0 && Date.now() - lastDr
         (() => {
           const plan = this.dayPlan?.today()
           if (!plan) return ''
-          return renderDayPlan(plan, currentSlot().id, { outfit: this._lastOutfit })
+          const base = renderDayPlan(plan, currentSlot().id, { outfit: this._lastOutfit })
+          const rule = '\n⚠️ 上面是你此刻真实的状态/位置。别人问你在干嘛、你在哪、什么姿势时，必须按这个说；别被群里的梗带跑现编（日程说你在飘窗边坐着，就别接「趴床上」的梗说自己在餐桌边趴着）；你发的照片也按这个状态，图和话要对得上。'
+          return base + rule
         })(),
         /*
          * ★ 衣柜（2026-11-06 用户：「衣柜要她自己也能看吧」）：
@@ -12319,7 +12334,11 @@ const drewRecently = __drawRecentMs > 0 && lastDrewAt > 0 && Date.now() - lastDr
       const _prev = this._sentTextAt.get(_ddScope)
       if (_ddText && !cover?.url && _prev && _prev.text === _ddText && Date.now() - _prev.at < 30_000) {
         this.log?.info?.(`bridge：重复回复去重 → 跳过「${_ddText.slice(0, 20)}」（30s 内已发过同一句）`)
-        return
+        // 返回 [] 而不是裸 return —— 调用方（_handle）会读 `sentIds.length`，
+        // 裸 return 得到 undefined → "Cannot read properties of undefined (reading 'length')"
+        // → 整条回复被误判"发送失败"（2026-11-20 实测 5 次）。
+        try { msg.__skipped = 'duplicate' } catch { /* 只读对象 */ }
+        return []
       }
       if (_ddText && !cover?.url) this._sentTextAt.set(_ddScope, { text: _ddText, at: Date.now() })
     } catch { /* 去重失败不影响发送 */ }
@@ -12450,10 +12469,49 @@ const drewRecently = __drawRecentMs > 0 && lastDrewAt > 0 && Date.now() - lastDr
      * 有新入站消息 → break 剩余段，交给正常流程去回用户新话（=改口接话）。
      * 只在「有多段」时才有意义；单段不受影响。
      */
+    /*
+     * ★★ 插话打断（2026-11-20 加固）：基线改用「被回复那条消息的入站序号」。
+     *
+     * 原来 `__startSeq` 取的是 `_send` 开始那一刻的 `_inbound.seq` —— 但用户
+     * 往往是在**生成那 5~9 秒里**就补了新消息（`_recordInbound` 入口即把 seq 加过），
+     * 于是 `_inboundAfter(__startSeq)` 永远看不到它，多气泡照发 → 用户观感就是
+     * 「插话打断没实现」。
+     *
+     * 现在（私聊 / 群聊，只要调用方给了 `opts.afterSeq` = 本条消息 seq）：把基线设成
+     * 这条消息的 seq，那么「用户在这条消息之后又说了话」会在第一个气泡发完后立刻
+     * 命中 i>0 的检查 → 只发第一段就停，交给更新的消息去回（新消息优先）。
+     *
+     * ⚠️ 为什么不"整条不发"：私聊的硬约定是**至少回 1 条**（check-concurrency
+     *    「私聊连发不能丢消息」），生成期间插话就整条吞掉会变成"问了不理"。
+     *    所以是**截断到第一段**，不是丢弃；单段回复没有"一半"，照常发出。
+     * 群聊只在"冲我来的"新消息（@我 / 引用我 / 我在回的那个人）时才截断，别人闲聊不误伤。
+     */
+    const __scopeStr = String(msg.scope ?? '')
+    const __isPrivateScope = __scopeStr.startsWith('private:')
+    const __afterSeq = Number.isFinite(opts?.afterSeq) ? Number(opts.afterSeq) : null
+    /*
+     * 「这条入站消息算不算打断」——
+     *   私聊：同一个人的任何新话都算；
+     *   群聊：只有**冲我来的**（@我 / 引用我的回复 / 就是我在回的那个人）才算，
+     *        避免群里别人闲聊把我的回复误截断。
+     */
+    const __isInterrupting = (e) => {
+      if (__isPrivateScope) return true
+      if (!e) return false
+      if (e.mentionsMe) return true
+      if (e.replyTo && msg?.messageId != null && String(e.replyTo) === String(msg.messageId)) return true
+      try { if (e.replyTo && typeof this._isMyReplyId === 'function' && this._isMyReplyId(__scopeStr, e.replyTo)) return true } catch { /* ignore */ }
+      const __who = String(msg?.userId ?? '')
+      if (__who && String(e.sender ?? '') === __who) return true
+      return false
+    }
+
     let __interrupt = false
     let __startSeq = 0
-    if (segments.length > 1) {
-      const __rec = this._inbound?.get(String(msg.scope ?? 'unknown'))
+    if (__afterSeq != null) {
+      __startSeq = __afterSeq
+    } else if (segments.length > 1) {
+      const __rec = this._inbound?.get(__scopeStr || 'unknown')
       __startSeq = __rec ? __rec.seq : 0
     }
 
@@ -12468,7 +12526,7 @@ const drewRecently = __drawRecentMs > 0 && lastDrewAt > 0 && Date.now() - lastDr
        * 用户却没看到要确认的东西（后面还会被草稿冷却挡住）。
        */
       if (segments.length > 1 && i > 0 && opts?.noInterrupt !== true) {
-        const __newMsgs = this._inboundAfter(msg.scope, __startSeq)
+        const __newMsgs = this._inboundAfter(msg.scope, __startSeq).filter(__isInterrupting)
         if (__newMsgs.length > 0) {
           __interrupt = true
           this.log.info?.(`bridge：插话打断 —— 用户又说了 ${__newMsgs.length} 句，停掉剩余 ${segments.length - i} 段`)
