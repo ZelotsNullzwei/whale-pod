@@ -1281,7 +1281,7 @@ export class ProtocolSupervisor {
    */
   _portAlive(backendId) {
     const PORTS = {
-      napcat: [3001, 6099],
+      napcat: [3001, 6099, 18801, 18800], // 18800/18801 = LinkCore 接管模式网关端口
       astrbot: [6185, 6199],
     }[backendId] ?? []
     if (PORTS.length === 0) return false
@@ -1328,6 +1328,45 @@ export class ProtocolSupervisor {
       throw new Error(`${b.name} 需手动启动：${b.install.reason}`)
     }
     if (this.running(backendId)) throw new Error(`${b.name} 已在运行`)
+
+    /*
+     * ── LinkCore 接管：把"协议端"升级成 LinkCore 进程（2026-11-20）──────────
+     * 由 WhalePod 的 supervisor 直接 spawn LinkCore（apps/server/src/main.ts +
+     * server.selfkernel.json）。LinkCore 内部再 spawn QQ + winmm 注入 SnowCat 内核
+     * （3000/3001），并对外提供 OneBot 网关（18800/18801）。
+     * whale-pod 作为父进程：stopAll()/退出时连带杀 LinkCore 进程树 → LinkCore 再杀内核，
+     * 严格父子关系，LinkCore 不单独存活。
+     * 开关：环境变量 WHALEPOD_LC_TAKEOVER（'0' 关闭；默认对 napcat 开启）。
+     * LinkCore 根目录：WHALEPOD_LC_ROOT（默认 D:\\WhalePod-LC 的源码版见 WHALEPOD_LC_PROJECT）。
+     */
+    if (backendId === 'napcat' && process.env.WHALEPOD_LC_TAKEOVER !== '0') {
+      const projectRoot = process.env.WHALEPOD_LC_PROJECT || 'D:\\DSH WorkSpace\\whalepod-link-core'
+      const mainTs = path.join(projectRoot, 'apps', 'server', 'src', 'main.ts')
+      const selfCfg = path.join(projectRoot, 'config', 'server.selfkernel.json')
+      if (fs.existsSync(mainTs) && fs.existsSync(selfCfg)) {
+        this.log.info?.('协议端：以 LinkCore 接管模式启动（' + projectRoot + '）')
+        const env = { ...process.env }
+        for (const k of ['HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy', 'ALL_PROXY', 'all_proxy']) delete env[k]
+        env.NO_PROXY = '*'; env.no_proxy = '*'
+        const child = spawn(process.execPath, ['--experimental-transform-types', mainTs, selfCfg], {
+          cwd: projectRoot, env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'],
+        })
+        const entry = { child, startedAt: Date.now(), exit: null, lines: [] }
+        this.procs.set(backendId, entry)
+        const push = (stream, buf) => {
+          for (const line of String(buf).split(/\r?\n/)) {
+            if (!line.trim()) continue
+            entry.lines.push({ at: Date.now(), stream, text: line.slice(0, 500) })
+            if (entry.lines.length > 800) entry.lines.shift()
+          }
+        }
+        child.stdout?.on('data', (b2) => push('out', b2))
+        child.stderr?.on('data', (b2) => push('err', b2))
+        child.on('exit', (code) => { entry.exit = code ?? 0 })
+        return { ok: true, pid: child.pid, backend: backendId, linkcore: true }
+      }
+      this.log.warn?.('协议端：LinkCore 接管模式但找不到 main.ts/selfkernel.json，回落到内置内核启动')
+    }
 
     /*
      * ── 2026-11-14 SnowCat 接管 ────────────────────────────────────
