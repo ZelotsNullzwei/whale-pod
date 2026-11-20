@@ -279,6 +279,7 @@ function composeFrontSelfiePrompt(o = {}) {
     '',
     `她以参考图为准（同一个人的脸和身形），穿${clothing}${hairText ? `，${hairText}` : ''}${temp}。`,
     '',
+    ...(moodLine(o.mood, 'selfie') ? [moodLine(o.mood, 'selfie'), ''] : []),
     `${locationWho}，自然生活感。`,
     '',
     `${lightShortOf(slot)}真实手机前置拍摄，画面干净温暖，不要插画感和 3D 渲染感。`,
