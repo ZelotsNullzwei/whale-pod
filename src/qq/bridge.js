@@ -9644,7 +9644,7 @@ const drewRecently = __drawRecentMs > 0 && lastDrewAt > 0 && Date.now() - lastDr
      */
     let peopleText = ''
     try {
-      if (!msg.__qzoneComment) peopleText = this.people?.toPrompt?.({ self: msg.sender, limit: 6 }) ?? ''
+      if (!msg.__qzoneComment && !msg.__ownLife) peopleText = this.people?.toPrompt?.({ self: msg.sender, limit: 6 }) ?? ''
     } catch (e) {
       this.log.debug?.(`bridge：人物档案注入失败（跳过）：${String(e?.message ?? e)}`)
     }
@@ -9662,7 +9662,7 @@ const drewRecently = __drawRecentMs > 0 && lastDrewAt > 0 && Date.now() - lastDr
      */
     let eventsText = ''
     try {
-      if (!msg.__qzoneComment) eventsText = this.events?.toPrompt?.(msg.scope) ?? ''
+      if (!msg.__qzoneComment && !msg.__ownLife) eventsText = this.events?.toPrompt?.(msg.scope) ?? ''
     } catch (e) {
       this.log.debug?.(`bridge：事件记忆注入失败（跳过）：${String(e?.message ?? e)}`)
     }
@@ -10658,13 +10658,13 @@ const drewRecently = __drawRecentMs > 0 && lastDrewAt > 0 && Date.now() - lastDr
          *   上面两条只覆盖最近 30 分钟的原始对话；隔天就断片。
          *   这里把对面会话的**长期摘要**挂进来，人格仍按会话各用各的。
          */
-        msg.__qzoneComment ? '' : this._crossLongDigest(msg.scope),
+        msg.__qzoneComment || msg.__ownLife ? '' : this._crossLongDigest(msg.scope),
         /* ★ 她自己空间的最新说说 + 评论数（只读，2026-11-19） */
         msg.__qzoneComment ? '' : (this._qzoneReadDigest?.() ?? ''),
         /* ★ 朋友们最近发的空间（含最新一条的配图内容） */
         msg.__qzoneComment ? '' : (this._qzoneFriendsDigest?.() ?? ''),
         /* ★ 同一个人：私聊里也要认得群里的那个名字（2026-11-08） */
-        msg.__qzoneComment ? '' : this._aliasHint(msg),
+        msg.__qzoneComment || msg.__ownLife ? '' : this._aliasHint(msg),
         /* ★ 明日方舟外号：认得出在说谁（2026-11-08） */
         msg.__qzoneComment ? '' : this._arknightsAliasHint(msg.text),
         /* ★ 我离线过多久（2026-11-07） */
@@ -10679,7 +10679,7 @@ const drewRecently = __drawRecentMs > 0 && lastDrewAt > 0 && Date.now() - lastDr
          * ★ 长期档案（2026-11-06）：只增不减，摘要重写也不会丢。
          *   可见性按会话过滤：群只看 group+shared，私聊看全部。
          */
-        msg.__qzoneComment ? '' : renderFacts(msg.scope),
+        msg.__qzoneComment || msg.__ownLife ? '' : renderFacts(msg.scope),
         // ★ 群里没头没尾的开场 → 最多回一个「？」或一个表情（2026-11-05）
         msg.__qzoneComment ? '' : this._groupNoiseHint(msg, mem),
 

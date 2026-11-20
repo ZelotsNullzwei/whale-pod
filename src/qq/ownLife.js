@@ -131,6 +131,9 @@ export function startOwnLife(bridge, opts = {}) {
         '',
         '想干嘛干嘛：发条说说、写两句日记、发会儿呆，也可以什么都不干。',
         '',
+        '⚠️ **说说公开发的**：素材只从**今天做了什么**和**群里聊到的事**来 ——',
+        '  别把私聊里聊的东西写进去（那是你俩之间的话）。',
+        '',
         c.allowPost
           ? '想发说说 → 输出一行标记。两种：'
             + '\n  · 想配一张你自己的照片（自拍 / 对镜穿搭）→ [自拍说说:一句话]'
@@ -166,7 +169,24 @@ export function startOwnLife(bridge, opts = {}) {
       writeState(state)
 
       try {
-        const mem = memOf(scope)
+        /*
+         * ⚠️ **说说是公开的，素材不从私聊来**（2026-11-20 用户：「群聊内容吧，
+         * 没人会发私密内容」）。
+         *
+         * 原来这里传的是 `memOf(scope)` —— 私聊最近 30 条原文。私聊里什么都聊，
+         * 写进空间就是泄漏（评论那次已经翻过一模一样的车）。
+         * 现在历史清空，素材改成「今日日程 + 群聊摘要」（群聊天然是公开语境）。
+         */
+        const mem = {
+          recent: () => [],
+          sinceLastMessage: () => Number.POSITIVE_INFINITY,
+          sinceMyLast: () => undefined,
+          lastMessageAt: 0,
+          consecutiveTurns: 0,
+          totalPushed: 0,
+          push: () => {},
+          tick: () => {},
+        }
         const self = { id: bridge.selfId, name: bridge.selfName }
         let scene = null
         try { scene = await bridge.sceneOf?.({ scope, kind: 'private' }) } catch { scene = null }
