@@ -277,7 +277,7 @@ function composeFrontSelfiePrompt(o = {}) {
     '',
     '第一人称视角，镜头贴在她脸前方，画面里只有她本人正对镜头，看不到手机、看不到持机的手、绝没有第二个人或拍摄者。',
     '',
-    `她以参考图为准（同一个人的脸和身形），穿${clothing}${hairText ? `，${hairText}` : ''}${temp}。`,
+    `她以参考图为准（同一个人的脸和身形）。**刘海和发色跟参考图一致**（厚齐刘海盖到眉毛、两侧齐脸颊的鬓发、蓝色），别把刘海画稀、别露大片额头。${hairText ? `发型：${hairText}。` : ''}穿${clothing}${temp}。`,
     '',
     ...(moodLine(o.mood, 'selfie') ? [moodLine(o.mood, 'selfie'), ''] : []),
     `${locationWho}，自然生活感。`,
