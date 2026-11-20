@@ -10648,9 +10648,9 @@ const drewRecently = __drawRecentMs > 0 && lastDrewAt > 0 && Date.now() - lastDr
         }),
         (this._balanceWarned = this._balanceLow, ''),
         // ★ 私聊也要知道群里刚发生什么（跨会话同步，2026-11-05）
-        msg.kind === 'private' ? this._recentGroupDigest() : '',
+        msg.kind === 'private' && !msg.__qzoneComment ? this._recentGroupDigest() : '',
         // ★ 群里也知道私下聊过什么（知道就行，别主动提 —— 见人格那条）
-        msg.kind === 'group' ? this._recentPrivateDigest() : '',
+        msg.kind === 'group' && !msg.__qzoneComment ? this._recentPrivateDigest() : '',
         // ★ 我在哪些群（2026-11-19：她在私聊否认自己在“神秘黄豆群”，其实就在）
         this._myGroupsHint(),
         /*
@@ -10658,11 +10658,11 @@ const drewRecently = __drawRecentMs > 0 && lastDrewAt > 0 && Date.now() - lastDr
          *   上面两条只覆盖最近 30 分钟的原始对话；隔天就断片。
          *   这里把对面会话的**长期摘要**挂进来，人格仍按会话各用各的。
          */
-        this._crossLongDigest(msg.scope),
+        msg.__qzoneComment ? '' : this._crossLongDigest(msg.scope),
         /* ★ 她自己空间的最新说说 + 评论数（只读，2026-11-19） */
-        this._qzoneReadDigest?.() ?? '',
+        msg.__qzoneComment ? '' : (this._qzoneReadDigest?.() ?? ''),
         /* ★ 朋友们最近发的空间（含最新一条的配图内容） */
-        this._qzoneFriendsDigest?.() ?? '',
+        msg.__qzoneComment ? '' : (this._qzoneFriendsDigest?.() ?? ''),
         /* ★ 同一个人：私聊里也要认得群里的那个名字（2026-11-08） */
         this._aliasHint(msg),
         /* ★ 明日方舟外号：认得出在说谁（2026-11-08） */

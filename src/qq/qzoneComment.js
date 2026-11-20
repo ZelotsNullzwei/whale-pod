@@ -215,7 +215,25 @@ export function startQzoneComment (bridge, opts = {}) {
         '· 不想回就输出 [SILENT]',
         '· 直接输出回复正文，不要任何前缀或引号',
       ].join('\n')
-      const mem = (() => { try { return bridge._memOf?.(scope) ?? bridge.memory?.get?.(scope) ?? null } catch { return null } })()
+      /*
+       * ⚠️ **绝对不能把私聊记忆喂进来**（2026-11-20 实测翻车）。
+       *
+       * 现场：09:46 私聊在聊赖床（她说「那本鲸可就不起了」），09:47 空间评论生成
+       * 直接接着那句往下写 ——「（往被子里缩了缩）那赖到几点 / 你总不能一直躺着吧」
+       * 发到了空间评论区。用户原话：「那句话是私聊内容的后续，没有隔离发到空间去了」。
+       *
+       * 评论区是**公开**的，跟私聊必须物理隔离：历史一律为空，她只能看到
+       * 「这条说说写了什么 + 谁留了什么言」，没有别的上下文可续写。
+       */
+      const mem = {
+        recent: () => [],
+        sinceLastMessage: () => Number.POSITIVE_INFINITY,
+        lastMessageAt: 0,
+        consecutiveTurns: 0,
+        totalPushed: 0,
+        push: () => {},
+        tick: () => {},
+      }
       let scene = null
       try { scene = await bridge.sceneOf?.({ scope, kind: 'private' }) } catch { scene = null }
       const gen = await bridge._generate(
