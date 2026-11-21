@@ -1390,7 +1390,7 @@ function isMarketFace(d) {
  */
 function extractShareCard(segType, d) {
   const raw = String(
-    typeof d === 'string' ? d : (d?.data ?? d?.content ?? d?.text ?? d?.xml ?? ''),
+    typeof d === 'string' ? d : (d?.data ?? d?.jsonPayload ?? d?.content ?? d?.text ?? d?.xml ?? (d && typeof d === 'object' ? JSON.stringify(d) : '')),
   )
     /* ★ CQ 字符串里的卡片 JSON 含逗号/方括号，会被编码成 &#44; &#91; &#93; &amp; ——
        JSON.parse 前必须先反转义，否则解析失败只剩 [分享]（2026-11-21 B站卡片看不了的真因）。 */
@@ -1714,6 +1714,13 @@ export function parseMessage(raw) {
        *    机器人以为对方"手滑发了条空的"（实测 20:16 那条就是这么来的）。
        */
       else if (t === 'json' || t === 'xml') text += extractShareCard(t, d)
+      /* 2026-11-21：小程序卡片在事件推送里可能是 light_app / ark / app 段（与 get_msg 的 json 不同），
+         原来不认 → 整段忽略 → text 空（B站卡片看不了）。 */
+      else if (t === 'light_app' || t === 'ark' || t === 'app' || t === 'share') text += extractShareCard('json', d)
+      else {
+        // 未知段类型：打到 stderr 便于定位（临时；whale-pod 日志会捕获）
+        try { console.error('[UNKNOWN_SEG] type=' + t + ' data=' + JSON.stringify(d).slice(0, 400)) } catch {}
+      }
       // 其它类型：忽略，不污染文本
     }
   } else if (raw != null) {
