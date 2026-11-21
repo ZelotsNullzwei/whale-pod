@@ -384,7 +384,17 @@ export class OneBotClient {
       //    received 增长、dropped/considered 都是 0、机器人不回复。
       //    只对 message 事件规范化（notice/request 没有消息体）。
       if (msg.post_type === 'message') {
-        try { msg.__normalized = normalizeEvent(msg) } catch (e) {
+        try {
+          msg.__normalized = normalizeEvent(msg)
+          const __iu = msg.__normalized?.imageUrls
+          if (__iu) {
+            this._imageUrlByRef ??= new Map()
+            for (const [k, v] of Object.entries(__iu)) if (k && v) this._imageUrlByRef.set(String(k), String(v))
+            if (this._imageUrlByRef.size > 500) {
+              for (const k of [...this._imageUrlByRef.keys()].slice(0, 100)) this._imageUrlByRef.delete(k)
+            }
+          }
+        } catch (e) {
           this.log.warn?.(`onebot：消息规范化失败 — ${String(e?.message ?? e)}`)
         }
       }
@@ -516,6 +526,8 @@ export class OneBotClient {
        */
       senderName: String(d.sender?.card || d.sender?.nickname || senderId || ''),
       text: parsed.text,
+      // 2026-11-21：引用的是图片时，把图片引用也带回去（上层会补进上下文）
+      images: Array.isArray(parsed.images) ? parsed.images : [],
       at: Number(d.time ? d.time * 1000 : 0),
     }
   }
@@ -1013,6 +1025,10 @@ export class OneBotClient {
      *   会返回图片在**本机的真实文件路径**（nt_data/Pic/.../xxx.jpg）。
      *   所以：只要拿到的是**本地存在文件**，直接读盘，不再走 CDN 下载。
      */
+    /* 2026-11-21：收消息时带的 url 优先 —— NapCat 的 get_image 对某些 GIF 会卡死（>30s） */
+    const __knownUrl = this._imageUrlByRef?.get(target)
+    if (__knownUrl && /^https?:\/\//i.test(__knownUrl)) target = __knownUrl
+
     const { default: fsMod } = await import('node:fs')
     const tryReadLocal = (p) => {
       try {
@@ -1375,7 +1391,11 @@ function isMarketFace(d) {
 function extractShareCard(segType, d) {
   const raw = String(
     typeof d === 'string' ? d : (d?.data ?? d?.content ?? d?.text ?? d?.xml ?? ''),
-  ).trim()
+  )
+    /* ★ CQ 字符串里的卡片 JSON 含逗号/方括号，会被编码成 &#44; &#91; &#93; &amp; ——
+       JSON.parse 前必须先反转义，否则解析失败只剩 [分享]（2026-11-21 B站卡片看不了的真因）。 */
+    .replace(/&#44;/g, ',').replace(/&#91;/g, '[').replace(/&#93;/g, ']').replace(/&amp;/g, '&')
+    .trim()
   let title = ''
   let url = ''
 
@@ -1462,6 +1482,8 @@ function extractShareCard(segType, d) {
 export function parseMessage(raw) {
   const mentions = []
   const images = []
+  /** 图片 ref → 收消息时带的 http url（NapCat 的 get_image 对某些 GIF 会卡死，用它兜底） */
+  const imageUrls = {}
   /**
    * 这条消息里的**表情包**引用（不含普通图片）。
    *
@@ -1523,7 +1545,11 @@ export function parseMessage(raw) {
         // ⚠️ 2026-11-14：**file 优先**。新版 QQ 的 data.url（gchat.qpic.cn）外部下载
         //    一律 400，而 data.file（协议端原生文件名 98E0...jpg）能经 get_image
         //    换到本机真实图片路径。所以保存 file 优先、url 兜底。
-        images.push(data.file || data.file_id || data.path || data.url || '')
+        {
+          const __ref = String(data.file || data.file_id || data.path || data.url || '')
+          images.push(__ref)
+          if (__ref && /^https?:\/\//i.test(String(data.url ?? ''))) imageUrls[__ref] = String(data.url)
+        }
         // 同数组分支：识别"收藏的表情"（NapCat 把它编码成 image 段）
         if (isMarketFace(data)) {
           const ref = String(data.file ?? data.file_id ?? data.path ?? data.url ?? '')
@@ -1612,7 +1638,11 @@ export function parseMessage(raw) {
         //   url       —— enableLocalFile2Url=true 时的 http 地址（最理想）
         //   file      —— 本地路径或文件名
         //   file_id   —— 只有 id，得靠 get_image 换 URL
-        images.push(String(d.file ?? d.file_id ?? d.path ?? d.url ?? ''))
+        {
+          const __ref = String(d.file ?? d.file_id ?? d.path ?? d.url ?? '')
+          images.push(__ref)
+          if (__ref && /^https?:\/\//i.test(String(d.url ?? ''))) imageUrls[__ref] = String(d.url)
+        }
         // ⚠️ NapCat 把**收藏的表情 / 商城表情**也编码成 image 段，
         //    但会额外带 emoji_id / emoji_package_id / summary / key。
         //    不识别的话，它和普通图片一样只显示 [图片] —— 用户发的表情包
@@ -1694,6 +1724,7 @@ export function parseMessage(raw) {
     text: text.trim(),
     mentions,
     images: images.filter(Boolean),
+    imageUrls,
     /** 只属于**表情包**的图片引用（供 bridge 自动收藏；不含普通图片） */
     stickerRefs: [...new Set(stickerRefs.filter(Boolean))],
     /** 合并转发的 id 列表（`get_forward_msg` 的入参） */
@@ -1734,6 +1765,7 @@ export function normalizeEvent(ev) {
     text: parsed.text,
     mentions: parsed.mentions,
     images: parsed.images,
+    imageUrls: parsed.imageUrls,
     /** 只属于表情包的引用（供自动收藏） */
     stickerRefs: parsed.stickerRefs,
     /** 被引用的消息 id（''=没有引用）—— 决策层据此判断"是不是在回我" */

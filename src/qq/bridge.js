@@ -19,6 +19,7 @@
  */
 
 import fs from 'node:fs'
+import { parseMessage } from './onebot.js'
 import { ImageCache } from './imageCache.js'
 import { reviewImage, countLimbs , reviewMatches } from './imageReview.js'
 import { reviewNoPhone, reviewNoBodySubject, pickReviewer, reviewHands, combineCaptureResults } from './captureCheck.js'
@@ -772,6 +773,30 @@ function hashStr(s) {
  *   1. 整段都是工具调用（清完没有实质内容）→ 返回空串，让上层按"没话说"处理
  *   2. 只有部分残留 → 只留下自然语言部分
  */
+/**
+ * 两条短回复是否「几乎一样」（2026-11-21）。
+ * 现场：他连发「吃了吗」「中午饭」，她两次生成出
+ * 「还没等会儿煮」/「还没一会儿煮」——换个词把同一句说了两遍。
+ * 精确去重（===）抓不到，这里按编辑距离兜一层。
+ */
+export function nearSameText(a, b) {
+  const norm = (s) => String(s ?? '').replace(/[\s，。！？、；：,.!?;:~…（）()\[\]【】「」"'“”]/g, '')
+  const x = norm(a), y = norm(b)
+  if (!x || !y) return false
+  if (x === y) return true
+  const max = Math.max(x.length, y.length)
+  if (Math.abs(x.length - y.length) > max * 0.5) return false
+  const dp = Array.from({ length: x.length + 1 }, () => new Array(y.length + 1).fill(0))
+  for (let i = 0; i <= x.length; i++) dp[i][0] = i
+  for (let j = 0; j <= y.length; j++) dp[0][j] = j
+  for (let i = 1; i <= x.length; i++) {
+    for (let j = 1; j <= y.length; j++) {
+      dp[i][j] = Math.min(dp[i - 1][j] + 1, dp[i][j - 1] + 1, dp[i - 1][j - 1] + (x[i - 1] === y[j - 1] ? 0 : 1))
+    }
+  }
+  return 1 - dp[x.length][y.length] / max >= 0.75
+}
+
 export function cleanModelText(raw) {
   let s = String(raw ?? '')
   // ★ 剥「停顿旁白」：她把这当舞台指示反复发（2026-11-05）
@@ -806,7 +831,7 @@ export function cleanModelText(raw) {
   //    模型有时写成 `[ silent ]`、`[Silent]`、`［SILENT］`（全角），
   //    下游按字面量比对就会漏判 —— 那就会把 "SILENT" 这几个字母
   //    当正文发到群里。统一成标准写法，由调用方判断"剥掉后还剩什么"。
-  s = s.replace(/[\[［]\s*silent\s*[\]］]/gi, '[SILENT]')
+  s = s.replace(/[\[［]\s*(?:silent|沉默|不说话|不吭声)\s*[\]］]/gi, '[SILENT]')
 
   // ⑧ 剥掉「媒体描述」——**这是喂给模型看的内部标注，绝不能出现在回复里**。
   //
@@ -886,6 +911,12 @@ export function cleanModelText(raw) {
   }
   // 擦完可能留下孤立的空格/空行
   s = s.replace(/[ \t]{2,}/g, ' ').replace(/\n{3,}/g, '\n\n')
+  /*
+   * 去掉**汉字之间的空格**（2026-11-20）：模型时常在中文短语间敲一个半角空格
+   * （「…荠菜了 荠菜都…」），看着像分段。中文正常不加空格，这里直接并掉；
+   * 英文/数字两侧不动（它们本来该有空格）。
+   */
+  s = s.replace(/([\u4e00-\u9fff\u3000-\u303f\uff00-\uffef])[ \t\u3000]+(?=[\u4e00-\u9fff\u3000-\u303f\uff00-\uffef])/g, '$1')
 
   /*
    * ⑨ 剥掉**时间戳标记**。
@@ -908,8 +939,9 @@ export function cleanModelText(raw) {
   s = s.replace(/[（(][^（）()\n]*?(图|图片)[^（）()\n]*?(没|不|未)[^（）()\n]*?(加载|出来|显示|收到|看到)[^（）()\n]*?[）)]/g, '')
   // ⑧-c 剥掉“假戳旁白”：模型用文字假装戳（（戳了一下）/（戳了戳你）），真戳应由 [戳] 执行
   s = s.replace(/[（(][^（）()\n]*?戳[了一]?[^（）()\n]*?[）)]/g, (mc) => /戳/.test(mc) && /(一下|戳了戳|了戳)/.test(mc) ? '' : mc)
-  s = s.replace(/[（(]\s*\+\s*\d+\s*(秒|分钟|小时|天)\s*[）)]/g, '')
-  s = s.replace(/[（(]\s*\d+\s*(秒|分钟|小时|天)\s*前\s*[）)]/g, '')
+  // 2026-11-20：允许**负号**（（-3秒）/（−3秒）/（－3秒））与可选「前」，且不限行首 —— 之前只认 +，负号会漏
+  // 2026-11-21：删掉「不限行首」的时间注剥离 —— 它会把正文里的「我等了（3 分钟）就走了」改掉。行首形态交给下面的 ^ 规则。
+  // （同上：不限行首的「（N 分钟前）」也删掉，避免误伤正文。）
   /*
    * ⚠️ 第三种形态（2026-10-29 补，用户第二次截图）：
    * ```
@@ -926,7 +958,7 @@ export function cleanModelText(raw) {
    * ⚠️ 不会误伤正常句子 —— 正则要求括号**在时间单位处就结束**：
    *    「（2 天没睡了）」不匹配（后面还有字），只有「（2 天）」才剥。
    */
-  s = s.replace(/^[ \t]*[（(]\s*[+＋\-−]?\s*\d+\s*(秒|分钟|小时|天)\s*(前|之前|以前)?\s*[）)][ \t]*/gm, '')
+  s = s.replace(/^[ \t]*[（(]\s*[+＋\-−–—－]?\s*\d+\s*(秒|分钟|小时|天)\s*(前|之前|以前)?\s*[）)][ \t]*/gm, '')
   /*
    * ⚠️ 第四种形态（2026-10-31 补，日志实测）：
    * ```
@@ -1175,6 +1207,8 @@ export function repairTruncatedMarkers(text) {
   s = s.replace(/\[表情包[:：]?\s*$/, '')
   // 单独一个半开的左括号也要清（如 "好的["）
   s = s.replace(/\[$/, '')
+  // 短回复去句尾句号（聊天不这么打字）
+  if (s.replace(/\s/g, '').length <= 20) s = s.replace(/\s*[。．.]+$/, '')
   return s
 }
 
@@ -1330,11 +1364,13 @@ export function stripWaitMarkers(text) {
     return /^(表情|找图|画图|场景图|插画|换装|换衣服)$/.test(tag) ? m : ''
   })
   // 没有内容的控制标记（无冒号的裸写法）
-  s = s.replace(/[\[［]\s*(?:SILENT|戳|撤回|禁言|改名|发群|换装|换衣服)\s*[\]］]/gi, '')
+  s = s.replace(/[\[［]\s*(?:SILENT|沉默|不说话|不吭声|戳|撤回|禁言|改名|发群|换装|换衣服)\s*[\]］]/gi, '')
   // 残缺的（没有右括号）也从标记处截断
   s = s.replace(/[\[［]\s*(画图|场景图|插画|换装|换衣服)\s*[:：][^\]]*$/, '')
   // 剥掉标记后别留下成串空格 / 行尾空白
   s = s.replace(/[ \t]{2,}/g, ' ').replace(/[ \t]+$/gm, '')
+  // 短回复去掉句尾句号（聊天不这么打字）
+  if (s.replace(/\s/g, '').length <= 20) s = s.replace(/\s*[。．.]+\s*$/, '')
   return { text: s, waits }
 }
 
@@ -2709,6 +2745,16 @@ export class QQBridge {
     return []
   }
 
+  /** 纯图片评论节流：同一会话 gapMs 内只评论一张（默认 25s）。 */
+  _imageReplyDue(scope, gapMs = Number(this.cfg.reply?.imageReplyMinGapMs ?? 25000)) {
+    const key = String(scope ?? '')
+    if (!this._lastImageReplyAt) this._lastImageReplyAt = new Map()
+    const last = Number(this._lastImageReplyAt.get(key) ?? 0)
+    if (Date.now() - last < gapMs) return false
+    this._lastImageReplyAt.set(key, Date.now())
+    return true
+  }
+
   /**
    * 判断「这张图值不值得让生成层看一眼」。
    *
@@ -2831,6 +2877,23 @@ export class QQBridge {
     }
 
     /*
+     * ★★ 群聊：**没有上下文就别看**（2026-11-20 修「接话还是有问题」）。
+     *
+     * 事故：群里每发一张图 → p=0.75「纯图片 → 交给生成层看图」→ 逐张文字点评
+     * （「图也救不了你这嘴」「真拿枪啊，吓唬谁呢」「举手投降也晚了」…）。
+     * 用户原话：「有上下文吗你就接话」。
+     *
+     * 群里的图大多不是给她的。只有**有上下文**才看：
+     *   · @她 / 引用她 → 有
+     *   · 最近在聊鱼/鲸/本鱼/白米饭 → 有（可能在说像不像她）
+     *   · 她 20 秒内刚说过话、且这条是对方紧接着发的（中间没别人插话）→ 有
+     * 否则不看，交给决策层走「表情 / 沉默」。
+     * 私聊不设这道闸（一对一，发图基本是给她看的）。
+     */
+    const isGroupScope = msg.kind === 'group' || String(msg.scope ?? '').startsWith('group:')
+    if (isGroupScope && !this._hasGroupContext(msg, mem)) return false
+
+    /*
      * ① 图是单独发的。
      *
      * 去掉图片标记后还剩多少字 —— 剩得多说明是图文混排，走正常决策。
@@ -2863,6 +2926,40 @@ export class QQBridge {
      */
     const fromKnown = recent.some((m) => !m.isMe && String(m?.sender ?? '') === String(msg.sender ?? ''))
     return fromKnown
+  }
+
+  /**
+   * 群聊里这条算不算「有上下文」（2026-11-20）。
+   *
+   * 用于给「看图接话 / 提问覆盖」这类**主动介入**加闸：群里没被叫、也没接着聊，
+   * 就不要硬接（用户原话「有上下文吗你就接话」）。
+   *
+   * 判据（满足其一）：
+   *   · 被 @ / 引用了她（mentionsMe）
+   *   · 最近 8 条里提到鱼/鲸/本鱼/大肥鱼/白米饭（在说她）
+   *   · 她 20 秒内说过话，且这条是她刚回的那个人紧接着发的、中间没别人插话
+   *
+   * @param {object} msg
+   * @param {object} mem
+   * @returns {boolean}
+   */
+  _hasGroupContext(msg, mem) {
+    if (msg?.mentionsMe) return true
+    const recent = mem?.recent?.(8) ?? []
+    if (recent.some((m) => /本鱼|鲸鱼|大鲸鱼|大肥鱼|白米饭/.test(String(m?.text ?? '')))) return true
+    const me = String(msg?.userId ?? msg?.sender ?? '')
+    const now = Date.now()
+    let idx = -1
+    for (let i = recent.length - 1; i >= 0; i--) { if (recent[i]?.isMe) { idx = i; break } }
+    if (idx >= 0) {
+      const mineAt = Number(recent[idx]?.at ?? 0)
+      if (mineAt && now - mineAt <= 20000) {
+        const after = recent.slice(idx + 1)
+        const others = after.filter((m) => !m.isMe && String(m?.sender ?? '') !== me)
+        if (others.length === 0) return true
+      }
+    }
+    return false
   }
 
   /**
@@ -4504,7 +4601,7 @@ ${drewNote}
     } catch { return null }
   }
 
-  /** 被戳时那句回话：模型现编，失败回退固定池。 */
+  /** 旧版被戳回话（模型现编）。2026-11-21 起不再调用：戳一戳只回「？」或表情。 */
   async _pokeLine(scope = '') {
     try {
       const llm = this.gateway
@@ -4783,17 +4880,15 @@ ${drewNote}
     const selfStr = String(this.selfId ?? '')
     const scopeOfPoke = (uid) => (groupId ? `group:${groupId}` : `private:${uid}`)
     const notePoke = (fromName, toName, fromUid) => {
-      try {
-        const scope = scopeOfPoke(fromUid)
-        this.memory?.get?.(scope)?.push?.({
-          sender: String(fromUid),
-          senderName: String(fromName),
-          text: `（${fromName} 戳了 ${toName} 一下）`,
-          at: Date.now(),
-          isMe: false,
-        })
-        this.log.info?.(`bridge：${fromName} 戳了 ${toName} 一下 → 已记进上下文`)
-      } catch { /* 记不上不影响别的 */ }
+      /*
+       * 2026-11-21：**不写进对话上下文**。
+       * 原来把「（番茄 戳了你一下）」当成一条 isMe:false 的消息塞进记忆，
+       * 结果下一条正常消息（比如发图）生成时，模型被这条戳记录带偏 ——
+       * 实测她对着图说了「别戳了别戳了」。
+       * 戳一戳只做一次性反应（「？」/表情），不参与后续聊天。
+       */
+      void scopeOfPoke(fromUid)
+      this.log.info?.(`bridge：${fromName} 戳了 ${toName} 一下（不写上下文）`)
     }
     const nameOfPoke = (uid) => this._nameFromMemory(scopeOfPoke(uid), uid) || uid
 
@@ -4831,6 +4926,14 @@ ${drewNote}
      *   · 没有（冷场） → 落到下面的常规反应（干嘛 / ？ / 戳回去）。
      */
     const pokeScope = groupId ? `group:${groupId}` : `private:${fromId}`
+    /* 2026-11-21：同一会话 20 秒内只回一次 —— 连戳不刷屏 */
+    const __pokeLast = Number(this._pokeReplyAt?.get?.(pokeScope) ?? 0)
+    if (Date.now() - __pokeLast < 20_000) {
+      this.log.info?.(`bridge：${pokeScope} 20 秒内已回过戳一戳 → 忽略`)
+      return
+    }
+    this._pokeReplyAt ??= new Map()
+    this._pokeReplyAt.set(pokeScope, Date.now())
     const chat = this._recentChatState(pokeScope)
     /* 2026-11-11 用户：私聊戳一戳必须真的戳回去，不能变成聊天文字 */
     /* 2026-11-14 用户：「打完字的时候戳 = 催促」——私聊也认（原来只 group）。 */
@@ -4842,7 +4945,7 @@ ${drewNote}
      * 末尾再补一句"戳我干啥"，看着前言不搭后语。
      * 她刚说完话时被戳，那是"喂/还有事？"，不是催她补话。
      */
-    if (chat.fresh && chat.lastFromHim) {
+    if (cfg.smartNudge === true && chat.fresh && chat.lastFromHim) {
       this.log.info?.(
         `bridge：被 ${fromId} 戳了，但那边 ${Math.round(chat.ageMs / 1000)} 秒前还在聊 → 当成催促，直接接话`,
       )
@@ -4915,7 +5018,9 @@ ${drewNote}
          */
         : ['？', '干嘛', '怎么了', '有事？', '戳我干嘛', '嗯？']
       const __pokeScope = groupId ? `group:${groupId}` : `private:${fromId}`
-      said = (await this._pokeLine(__pokeScope)) ?? lines2[Math.floor(Math.random() * lines2.length)]
+      /* 2026-11-21：只回「？」或一个表情，不再让模型现编（那样太不自然） */
+      said = Math.random() < 0.5 ? '？' : '[表情包]'
+      void __pokeScope
       /*
        * ★ 走 `_send` 统一出口（2026-11-10）。
        * 原来直接 `onebot.sendGroup/sendPrivate` —— 绕过剥标记、环境过滤、跨轮去重，
@@ -4944,7 +5049,7 @@ ${drewNote}
     this.log.info?.(
       `bridge：被 ${fromId} 戳了 → ${said ? `说了「${said}」` : (ok ? '戳回去了' : '戳回去失败')}`,
     )
-    this._recordPoke(groupId, fromId, said, ok ? 'poke-back' : 'poke-failed')
+    this._recordPoke(groupId, fromId, said, said ? 'poke-reply' : (ok ? 'poke-back' : 'poke-failed'))
   }
 
   /**
@@ -4971,6 +5076,7 @@ ${drewNote}
   /** 把戳一戳记进最近交互（Web 界面能看到）。 */
   _recordPoke(groupId, fromId, reply, outcome) {
     const back = outcome === 'poke-back'
+    const replied = outcome === 'poke-reply' || back
     this.recent.unshift({
       at: Date.now(),
       scope: groupId ? `group:${groupId}` : `private:${fromId}`,
@@ -4979,12 +5085,12 @@ ${drewNote}
       images: [],
       mentionsMe: true,
       decision: {
-        reply: back,
+        reply: replied,
         // ⚠️ 不要写死 1 —— 显示「概率 1」却说沉默，看着像坏了。
         //    这里给的是"本次是否理会"的**实际结果**，概率沿用配置值，
         //    用户一眼能对上是"撞上了那 25% 没理"。
-        probability: back ? 1 : 0,
-        reason: back ? '被戳了一下，戳回去' : '被戳了一下，本次随机不理',
+        probability: replied ? 1 : 0,
+        reason: back ? '被戳了一下，戳回去' : (outcome === 'poke-reply' ? '被戳了一下，回了个「？」/表情' : '被戳了一下，本次随机不理'),
         provider: 'poke',
       },
       reply: reply ?? null,
@@ -5151,6 +5257,7 @@ ${drewNote}
       return {
         sender: hit.isMe ? '' : String(hit.senderName ?? ''),
         text: String(hit.text ?? ''),
+        images: Array.isArray(hit.images) ? hit.images : [],
         isMe: Boolean(hit.isMe),
         source: 'memory',
       }
@@ -5167,6 +5274,7 @@ ${drewNote}
       const q = {
         sender: String(got.senderName ?? ''),
         text: String(got.text ?? ''),
+        images: Array.isArray(got.images) ? got.images : [],
         isMe: Boolean(this.selfId) && String(got.sender ?? '') === String(this.selfId),
         source: 'get_msg',
       }
@@ -5644,7 +5752,32 @@ ${drewNote}
        *   （纯图 → 交给生成层看图），部位/要图逻辑根本没轮到 → 她只撩了一句。
        */
       const wantsPicText = classifyDrawIntent(msg.text ?? '').wantsPic
-      if (!wantsPicText && this._shouldLookAtImage(msg, mem)) {
+      /*
+       * ★ 2026-11-21：**无文字的真图片 → 看图评论**。
+       *   原来纯 `[图片]` 走决策层的纯媒体分支 → p=0.18 直接沉默，
+       *   用户反馈「发无文字的图片她不回复也不评价」。
+       *   表情包（[表情包]/[表情:]）不算，仍按斗图/情绪那条路。
+       *   群聊加一个节流，避免连发一堆图时每张都评论（刷屏）。
+       */
+      const __rawMsgText = String(msg.text ?? '')
+      const isPureRealImage = /\[图片\]/.test(__rawMsgText)
+        && !/\[表情包|\[表情:/.test(__rawMsgText)
+        && __rawMsgText.replace(/\[[^\]]*\]/g, '').trim().length === 0
+        && (msg.images ?? []).length > 0
+      if (!wantsPicText && isPureRealImage) {
+        const __isPriv = String(msg.scope ?? '').startsWith('private:')
+        if (__isPriv || this._imageReplyDue(msg.scope)) {
+          d = {
+            reply: true,
+            probability: Number(this.cfg.reply?.imageReplyProbability ?? 0.7),
+            provider: 'image',
+            reason: '纯图片（无文字）→ 看图评论',
+            delayMs: 0,
+          }
+        } else {
+          d = { reply: false, probability: 0, provider: 'image', reason: '纯图片 → 刚评论过，先不刷', delayMs: 0 }
+        }
+      } else if (!wantsPicText && this._shouldLookAtImage(msg, mem)) {
         /*
          * ⚠️ 字段名必须是 `provider` / `reason` —— 这是 `decision.explain()`
          *    读的（见 decision/index.js）。写成 source/why 的话日志里
@@ -5656,6 +5789,21 @@ ${drewNote}
           provider: 'image',
           reason: '纯图片 → 交给生成层看图判断像不像自己',
           delayMs: 0,
+        }
+      } else if (String(msg.scope ?? '').startsWith('private:') && !msg.isMe) {
+        /*
+         * ★★ 私聊**必回**，不再调决策模型（2026-11-20，用户口径）。
+         *
+         * 「模型判断私聊肯定是必定接话，不用判断」。
+         * 原来私聊也要先问一次模型「该不该接」（虽然提示词恒 reply），
+         * 等于每条白花一次 LLM 往返 1~3s —— 这段省掉。
+         * 纯表情/图片在更上面就走掉了（回表情 or 沉默），到不了这里。
+         */
+        d = {
+          reply: true,
+          probability: 1,
+          provider: 'private-always',
+          reason: '私聊必回（不调决策模型）',
         }
       } else {
         d = await this.decision.shouldReply(input)
@@ -5694,6 +5842,7 @@ ${drewNote}
          */
         mentionsMe: Boolean(msg.mentionsMe),
         atSomeoneElse: /@\S+/.test(String(msg.text ?? '')) && !msg.mentionsMe,
+        quotedOther: Boolean(msg.replyTo) && !msg.mentionsMe,
       })
       if (d !== before) {
         this.log.info?.(
@@ -5821,6 +5970,24 @@ ${drewNote}
     // 4. 生成回复
     let text
     let cover = null
+    /*
+     * ★★ 私聊「新消息优先」（2026-11-20）：这条还在排队/生成时，对方又发了新消息
+     * → 这条旧回复**不发了**，让最新那条去答。
+     * 否则就是实测那样：用户连发几条，它一条条答旧问题、永远慢半拍。
+     * 被合并成一条的连发不受影响（seq=最后一条，newer=0）。
+     */
+    if (String(msg.scope ?? '').startsWith('private:') && !msg.isMe) {
+      const __newerIn = this._inboundAfter(msg.scope, seq)
+      if (__newerIn.length > 0) {
+        this.stats.privateNewer = (this.stats.privateNewer ?? 0) + 1
+        this.log.info?.(`bridge：私聊又来了 ${__newerIn.length} 条新消息 → 这条旧回复不回（新消息优先）`)
+        this._record(msg, d, null, 'private-newer')
+        this._maybeSummarize(msg.scope, mem, scene)
+        return
+      }
+    }
+    /* 私聊流式发送器（在 try 里创建，但 try 外面还要用 —— 所以声明在这） */
+    let __streamer = null
     try {
       /*
        * ★ **他在要画面**（2026-11-04）：私聊里「我看看 / 什么样子 / 你在干嘛」
@@ -5867,7 +6034,19 @@ ${drewNote}
           + '⚠️ **画面里不要出现手机以外的设备**（支架、三脚架、相机）；'
           + '自拍时你举着的那只手/手机可以入画，对镜自拍时镜子里必须能看到手机。'
         : ''
-      const gen = await this._generateGuarded(msg, mem, scene, self, seq, null, picNote)
+      /*
+       * 私聊走**流式首气泡**（2026-11-20）：第一块一收全就发，后面按字数跟进。
+       * 群聊先不做（用户在定群聊逻辑），仍走整段生成。
+       */
+      const __streamPrivate = String(msg.scope ?? '').startsWith('private:')
+        && !msg.__extraMarks
+      if (__streamPrivate) {
+        __streamer = this._makeStreamSender(msg, tStart, d, seq)
+      }
+      const gen = await this._generateGuarded(
+        msg, mem, scene, self, seq, null, picNote,
+        __streamer ? __streamer.onDelta : null,
+      )
       // ⚠️ 生成途中就已经过时了 —— 不再往下走（见 `_generateGuarded`）
       if (gen?.__stale) {
         this.stats.superseded = (this.stats.superseded ?? 0) + 1
@@ -5918,8 +6097,8 @@ ${drewNote}
     //
     //    正确做法：剥掉标记，**看剩下的还有没有实质内容**。
     const rawText = String(text ?? '')
-    const hadSilent = /[\[［]\s*[SILENTsilent]{6}\s*[\]］]/.test(rawText)
-    const stripped = rawText.replace(/[\[［]\s*[SILENTsilent]{6}\s*[\]］]/g, '').trim()
+    const hadSilent = /[\[［]\s*(?:SILENT|silent|沉默|不说话|不吭声)\s*[\]］]/.test(rawText)
+    const stripped = rawText.replace(/[\[［]\s*(?:SILENT|silent|沉默|不说话|不吭声)\s*[\]］]/g, '').trim()
     if (!stripped) {
       this.stats.silent++
       /*
@@ -5934,6 +6113,28 @@ ${drewNote}
        *
        * 分开之后：`persona-declined` 多 = 它有主见；`empty-after-clean` 多 = 清理规则太狠。
        */
+      /*
+       * ★★ 私聊「不想接」→ 用无语表情 / 两个字兜一下（2026-11-20 用户口径）。
+       * 群里照旧：沉默就是沉默，不硬发。
+       */
+      if (hadSilent && String(msg.scope ?? '').startsWith('private')) {
+        const said = await this._sendSpeechless(msg, d)
+        if (said) {
+          try {
+            mem.push(makeMessage({
+              sender: this.selfId ?? '0',
+              senderName: this.selfName,
+              text: said,
+              at: Date.now(),
+              isMe: true,
+              provider: null,
+              model: null,
+            }))
+          } catch { /* 记不上不影响 */ }
+          this._maybeSummarize(msg.scope, mem, scene)
+          return
+        }
+      }
       this._record(msg, d, null, hadSilent ? 'persona-declined' : 'empty-after-clean')
       if (hadSilent) {
         this.log.info?.(`bridge：人格选择不说（[SILENT]）— ${msg.scope}`)
@@ -5985,7 +6186,7 @@ ${drewNote}
           + '（回答新问题 / 接新的话茬 / 往下推进），要么只输出 [SILENT]。',
         )
         const againText = String(again?.text ?? '')
-          .replace(/[\[［]\s*[SILENTsilent]{6}\s*[\]］]/g, '')
+          .replace(/[\[［]\s*(?:SILENT|silent|沉默|不说话|不吭声)\s*[\]］]/g, '')
           .trim()
         if (againText && !this._selfRepeatOf(againText, mem)) {
           text = againText
@@ -7828,7 +8029,7 @@ const drewRecently = __drawRecentMs > 0 && lastDrewAt > 0 && Date.now() - lastDr
               stripNicknameMarkers(stripBanMarkers(stripTagMarkers(String(again?.text ?? '')))),
             ),
           ).text
-            .replace(/[\[［]\s*[SILENTsilent]{6}\s*[\]］]/g, '')
+            .replace(/[\[［]\s*(?:SILENT|silent|沉默|不说话|不吭声)\s*[\]］]/g, '')
             .trim()
           if (againText && !this._falseClaim(againText, did, msg?.text)) {
             text = againText
@@ -7946,7 +8147,40 @@ const drewRecently = __drawRecentMs > 0 && lastDrewAt > 0 && Date.now() - lastDr
         text = caps[Math.floor(this._rand() * caps.length)]
         this.log.info?.(`bridge：图有了但正文是空的 → 兜一句「${text}」`)
       }
-      const sentIds = await this._send(msg, text, coverForSend, null, { afterSeq: seq })
+      /*
+       * 私聊走了流式：第一块在生成途中就发出去了，这里只收尾（尾块 + 配图）。
+       * 群聊 / 带附加图 / 成组消息仍走原来的整段 `_send`。
+       */
+      let sentIds
+      if (__streamer) {
+        sentIds = await __streamer.finish({ text, cover: coverForSend })
+        if (__streamer.st.silent && !__streamer.st.sentAny) {
+          // 私聊「不想接」→ 无语表情 / 两个字兜一下
+          const said = await this._sendSpeechless(msg, d)
+          if (said) {
+            try {
+              mem.push(makeMessage({
+                sender: this.selfId ?? '0',
+                senderName: this.selfName,
+                text: said,
+                at: Date.now(),
+                isMe: true,
+                provider: null,
+                model: null,
+              }))
+            } catch { /* 记不上不影响 */ }
+            this._maybeSummarize(msg.scope, mem, scene)
+            return
+          }
+          this.stats.silent++
+          this.log.info?.(`bridge：人格选择不说（[SILENT]）— ${msg.scope}`)
+          this._record(msg, d, null, 'persona-declined')
+          this._maybeSummarize(msg.scope, mem, scene)
+          return
+        }
+      } else {
+        sentIds = await this._send(msg, text, coverForSend)
+      }
       /*
        * 插话打断 / 重复去重：`_send` 会置 `msg.__interrupted` 或 `msg.__skipped`
        * 表示"这条没发、但不是失败"——别让它掉进下面的 nothingSent 失败统计。
@@ -8883,9 +9117,9 @@ const drewRecently = __drawRecentMs > 0 && lastDrewAt > 0 && Date.now() - lastDr
    *
    * @returns {Promise<object|null>} 正常返回 `_generate` 的结果；过时返回 `{__stale:true,count,waitedMs}`
    */
-  async _generateGuarded(msg, mem, scene, self, seq, extraBlocks = null, extraNote = '') {
+  async _generateGuarded(msg, mem, scene, self, seq, extraBlocks = null, extraNote = '', onDelta = null) {
     const t0 = Date.now()
-    const genP = this._generate(msg, mem, scene, self, extraBlocks, extraNote)
+    const genP = this._generate(msg, mem, scene, self, extraBlocks, extraNote, 0, onDelta)
       .then((v) => ({ ok: true, v }), (e) => ({ ok: false, e }))
 
     const scope = String(msg?.scope ?? '')
@@ -9091,6 +9325,30 @@ const drewRecently = __drawRecentMs > 0 && lastDrewAt > 0 && Date.now() - lastDr
     }
   }
 
+  /**
+   * deadair 补话前的「上下文」判定（2026-11-20）。
+   *
+   * 只在她**真的在这段对话里**时才补话：
+   *   · 这条 @/引用了她 → 在
+   *   · 她 30 秒内说过话，且之后只跟着**同一个人**的发言（当前这条就是那个人的）→ 在
+   * 其余（她没说过、或说完别人插了话、或隔了很久）→ 不在，不补。
+   *
+   * 事故背景：群里隔了 6 分钟有人问「啥东西?」，她硬补「车都不懂，还问车啥」——
+   * 对方回「有上下文吗你就接话」。见 `_armDeadAir` 的注释。
+   */
+  _deadAirHasContext(msg, mem) {
+    if (msg?.mentionsMe) return true
+    const me = String(msg?.userId ?? msg?.sender ?? '')
+    const recent = mem?.recent?.(10) ?? []
+    let idx = -1
+    for (let i = recent.length - 1; i >= 0; i--) { if (recent[i]?.isMe) { idx = i; break } }
+    if (idx < 0) return false
+    const mineAt = Number(recent[idx]?.at ?? 0)
+    if (!mineAt || Date.now() - mineAt > 30000) return false
+    const after = recent.slice(idx + 1).filter((m) => !m.isMe)
+    return after.every((m) => String(m?.sender ?? '') === me)
+  }
+
   _cancelDeadAir(scope) {
     const key = String(scope ?? '')
     const t = this._deadAirTimers?.get(key)
@@ -9101,6 +9359,21 @@ const drewRecently = __drawRecentMs > 0 && lastDrewAt > 0 && Date.now() - lastDr
     const c = this._deadAirCfg()
     if (!c.enabled) return
     if (String(msg?.kind ?? '') !== 'group') return
+    /*
+     * ★★ 没有上下文就别补话（2026-11-20 修「没上文但是他接话了」）。
+     *
+     * 事故（群 704291282，日志实锤）：
+     *   17:22:40 deadair：沉默后 8 秒没人接 → 补「没车就歇着呗。」
+     *   17:28:32 deadair：沉默后 8 秒没人接 → 补「车都不懂，还问车啥」
+     * 第二条是隔了 6 分钟、另一个群友随口问「啥东西?」时硬补的 —— 对方直接怼
+     * 「有上下文吗你就接话」。冷场补话不看她有没有资格接，这是根子。
+     *
+     * 现在：不在她的对话里就不补（判定见 `_deadAirHasContext`）。
+     */
+    if (!this._deadAirHasContext(msg, mem)) {
+      this.log.info?.('bridge/deadair：这条不在她的对话里（没上下文）→ 不补话')
+      return
+    }
     /*
      * 决策层已经判了沉默时，表情包也必须尊重这次沉默。
      * 以前冷场补话会把原始消息（含表情图）重新交给模型，绕过沉默结果，
@@ -9655,7 +9928,8 @@ const drewRecently = __drawRecentMs > 0 && lastDrewAt > 0 && Date.now() - lastDr
               id: mid,
               sender: String(m.user_id ?? m.sender?.user_id ?? ''),
               senderName: String(m.sender?.card || m.sender?.nickname || ''),
-              text: String(m.raw_message ?? '').replace(/\[CQ:[^\]]*\]/g, '[图片]'),
+              // 用 parseMessage 统一解析（保留 B站/分享卡片链接；原来粗暴把 CQ 码替成 [图片] 会吃掉卡片 URL）
+              text: parseMessage(Array.isArray(m.message) ? m.message : String(m.raw_message ?? '')).text,
               at: Number(m.time ?? 0) * 1000 || Date.now(),
               isMe: String(m.user_id ?? m.sender?.user_id ?? '') === String(this.selfId ?? ''),
               images: imgs,
@@ -9743,7 +10017,7 @@ const drewRecently = __drawRecentMs > 0 && lastDrewAt > 0 && Date.now() - lastDr
     }
   }
 
-  async _generate(msg, mem, scene, self, extraBlocks = null, extraNote = '', attempt = 0) {
+  async _generate(msg, mem, scene, self, extraBlocks = null, extraNote = '', attempt = 0, onDelta = null) {
     const long = this.longMemory?.get(msg.scope)
     const memoryText = long?.toPrompt() ?? ''
 
@@ -10301,7 +10575,20 @@ const drewRecently = __drawRecentMs > 0 && lastDrewAt > 0 && Date.now() - lastDr
      * 语义就是"这条没有图可看" —— 见那里的 `preRef !== undefined ? preRef : …`。
      */
     const proactiveNoImage = !String(msg?.text ?? '').trim() && Boolean(msg?.speakHint)
-    const imgReferrer = proactiveNoImage ? null : this._pickReferencedImage(mem.recent(8))
+    let imgReferrer = proactiveNoImage ? null : this._pickReferencedImage(mem.recent(8))
+    /*
+     * ★ 2026-11-21：**引用里的图**也要补上。
+     *   现场：他引用一张图、正文是空的 → 只拿到「（引用…：[图片]）」,
+     *   没有图片本体 → 她回「本鲸没看见那图」。
+     *   原来 `_pickReferencedImage` 只认「这个/那张」这种指代，认不出引用。
+     */
+    if (!imgReferrer && !proactiveNoImage) {
+      const qimgs = Array.isArray(msg?.quote?.images) ? msg.quote.images : []
+      if (qimgs.length > 0) {
+        imgReferrer = { images: qimgs, text: String(msg?.quote?.text ?? ''), stickerRefs: [], isMe: false }
+        this.log.info?.(`bridge：这条引用了图 → 补上引用里的 ${qimgs.length} 张`)
+      }
+    }
     // 去掉媒体标记后还剩不剩文字（@ 段也算文字）
     const textPart = lastText
       .replace(/\[表情包(?::[^\]]*)?\]/g, '')
@@ -10328,14 +10615,14 @@ const drewRecently = __drawRecentMs > 0 && lastDrewAt > 0 && Date.now() - lastDr
         // ── 纯表情包：看懂梗，自己说，不复述 ───────────────────
         ? `## 这条是表情包
 
-**先看懂它在说什么梗，然后用你自己的话接一句。**
+**当它是纯表情：看懂就行，回一个相近的表情，不要打字。**
 
 表情包通常分两种，**处理方式完全不同**：
 
 **A. 有字的梗图**（图上有句吐槽/台词/段子）
-看懂那句话在表达什么，然后**用你自己的话回应那个意思**。
-✅ 对：「这说的不就是上班吗」「有被冒犯到」
-❌ 错：把图上的字念一遍 / 「图上写着 xxx」
+图上的字是梗本身，**不是对你说的**：不要读、不要复述、不要解释、不要对号入座。
+**和 B 一样处理：回一个相近的表情，不打字。**
+（只有当前话题正好接得上时，才允许用一句话顺着聊；不要提图上的字。）
 
 **B. 没字的情绪图**（只有表情、动作、脸）
 **只回一个表情，不要打字。** 直接发 [表情包] 或 [表情:N]。
@@ -10353,7 +10640,7 @@ const drewRecently = __drawRecentMs > 0 && lastDrewAt > 0 && Date.now() - lastDr
 后者是把图翻译成文字，是**最典型的机器人行为**。
 判断标准：你的回复里如果出现了**对图内容的任何转述**，就是错的。
 
-一句话：**B 类只发图不说话；A 类只说意思不念字。**
+一句话：**A/B 两类都只发图，不打字；不要读、不要复述图上的字。**
 ⚠️ 消息里形如「（对方发了个QQ表情：流泪（id=5））」「（你发了个QQ表情：微笑（id=14））」的括号是**系统注解**，
 不是对话内容，绝对不要写进回复里。`
         : hasWords
@@ -10363,9 +10650,12 @@ const drewRecently = __drawRecentMs > 0 && lastDrewAt > 0 && Date.now() - lastDr
 **先回应文字部分**（对方说了什么、@ 了谁、问了什么）—— 这才是重点。
 图是补充材料，不要一上来就分析画面。
 
-如果图里有**文字**（截图、聊天记录、表情包上的字），先把它读出来、
-提炼出**对方可能想给你看的那个点**（某个数字、某句话、某个荒诞之处），
-用一句话点出来就够了。
+如果图里有**文字**，先分清是哪一类：
+- **梗图/表情包上的字**（人物 + 一行大字，比如「何意味」「难道说」）→
+  **那不是对方在跟你说话，是图的一部分**。不要读、不要解释、不要对号入座
+  （别说「嫌本鱼笨」这种），也别把图上的字当成问题来回答。
+- **聊天记录 / 文档 / 表格截图**（整屏都是字、有对话框或表格）→ 才读关键信息，
+  用一句话点出对方可能想给你看的那个点。
 
 ⚠️ 不要复述画面细节（「图里有个穿裙子的女孩」这种没人要听）。
 ⚠️ 消息里形如「（对方发了个QQ表情：流泪（id=5））」「（你发了个QQ表情：微笑（id=14））」的括号是**系统注解**，
@@ -10378,9 +10668,12 @@ const drewRecently = __drawRecentMs > 0 && lastDrewAt > 0 && Date.now() - lastDr
 那是在点评画工，不是在看图；会让人误以为图没加载出来。只回应画面内容/角色，不评价画质。
 ⚠️ 不管哪种情况，**回复都要短** —— 一两句话，别写成说明文。
 
-**① 图上有文字吗？**（截图、聊天记录、梗图上的字）
+**① 图上有文字吗？**
 
-有字 → **看懂了，用一句话点出你最有反应的那一点。**
+⚠️ **梗图/表情包上的字，一律不读。** 那是图的一部分，不是对方在跟你说话 ——
+不念、不解释、不对号入座（别说「在说我」「嫌我笨」这种）。
+只有当图明显是**聊天记录 / 文档 / 表格截图**（整屏文字、有对话框或表格）时，才读关键信息，
+用一句话点出来。
 
 ⚠️ **只挑一个点，一两句话说完。真人看图不会做数据提取。**
 下面是**真实的反例**（都是它自己发过的，太长太满）：
@@ -10409,6 +10702,7 @@ const drewRecently = __drawRecentMs > 0 && lastDrewAt > 0 && Date.now() - lastDr
 **③ 既没字也不像你 → 那就是斗图。** 只回表情，不打字 ——
 直接发一个 [表情包]（或 [表情:N]）。
 不要配「哈哈」「确实」这种字，那等于斗图认输。
+⚠️ 也别客观描述表情/画面（「笑得这么开心」这种不行）；想怼就顺着怼一句（「你才痴呆」），否则就只回表情。
 
 ⚠️ 不要描述画面内容（对方自己知道图里是什么）。
 ⚠️ 消息里形如「（对方发了个QQ表情：流泪（id=5））」「（你发了个QQ表情：微笑（id=14））」的括号是**系统注解**，
@@ -10422,7 +10716,10 @@ const drewRecently = __drawRecentMs > 0 && lastDrewAt > 0 && Date.now() - lastDr
     const answeredName = String(msg?.senderName ?? '').trim()
     const answeredText = String(msg?.text ?? '').replace(/\s+/g, ' ').trim().slice(0, 60)
 
+    const __recentTxt = (mem?.recent?.(8) ?? []).map((m) => String(m?.text ?? '')).join(' ') + ' ' + String(msg?.text ?? '')
+    const __intimate = this._isIntimateCtx(__recentTxt)
     const system = this.persona.buildSystemPrompt({
+      intimate: __intimate,
       /*
        * ★ **按会话取人格**（2026-11-01）：群聊和私聊可以是不同角色文件。
        *   用户要的是「群里还是那只鱼鱼，私聊换一版」——
@@ -11316,7 +11613,16 @@ const drewRecently = __drawRecentMs > 0 && lastDrewAt > 0 && Date.now() - lastDr
         if ((t === 'text-delta' || t === 'text' || t === 'reasoning-delta') && ttftMs === null) {
           ttftMs = Date.now() - t0
         }
-        if (t === 'text-delta' || t === 'text') text += chunk.text ?? ''
+        if (t === 'text-delta' || t === 'text') {
+          text += chunk.text ?? ''
+          /*
+           * 流式回调（2026-11-20）：让上层能「边生成边发」。
+           * 回调抛错不能影响生成 —— 它只是"顺便通知一声"。
+           */
+          if (typeof onDelta === 'function' && chunk.text) {
+            try { onDelta(String(chunk.text), text) } catch { /* 通知失败不影响生成 */ }
+          }
+        }
         else if (t === 'reasoning-delta' || t === 'reasoning') reason += chunk.text ?? ''
         else if (t === 'usage') usage = chunk.usage ?? chunk
         else if (t === 'finish') {
@@ -12306,6 +12612,16 @@ const drewRecently = __drawRecentMs > 0 && lastDrewAt > 0 && Date.now() - lastDr
 
   /** 私密语境下，有身体/声音描写却没 ♡/🖤 → 句末补 ♡ */
   /** 「在做」语境判定（沿用 _ensureSceneSymbol 的 doing 口径，日常一律不命中） */
+  /** 当前是不是**亲密场景**（按最近内容判，不看人格名）—— 场景走原代码：不压短、不按逗号拆。 */
+  _isIntimateNow(msg) {
+    try {
+      const recent = (this._memOf?.(msg?.scope)?.recent?.(8) ?? this.memory?.get?.(msg?.scope)?.recent?.(8) ?? [])
+        .map((m) => String(m?.text ?? '')).join(' ')
+      const ctx = recent + ' ' + String(msg?.text ?? '') + ' ' + String(this._lastBotText?.get(String(msg?.scope ?? '')) ?? '')
+      return this._isIntimateCtx(ctx) === true
+    } catch { return false }
+  }
+
   _isIntimateCtx(ctx = '') {
     return /(做爱|做的时候|操|干你|插进|插着|顶到|顶进|顶得|舔|含住|咬住|揉|摸你|摸我|进你|进我|射|高潮|呻吟|要去了|受不了|自己动|坐下去|压上去|骑上来|脱光|光着身子|湿透|硬了|弄出来)/.test(String(ctx ?? ''))
   }
@@ -12419,6 +12735,144 @@ const drewRecently = __drawRecentMs > 0 && lastDrewAt > 0 && Date.now() - lastDr
     return { text: x, dropped: x !== before.trim() }
   }
 
+  /**
+   * **流式分段发送器**（2026-11-20，用户口径 A+B）。
+   *
+   * ## 要解决的问题
+   * 原来：等整段生成完 → 切段 → 一段段发。第一句明明 1 秒就出来了，
+   * 却要等整段（5~7s）才开始发 —— 用户观感「回复没跟上」。
+   *
+   * ## 现在的行为（只用于私聊）
+   *   · **第一块立刻发**：模型吐出第一个换行前的文字就发出去，不等整段；
+   *   · **后续块按字数等**：`_bubbleGapMs(上一块)` —— 长句等久点，短句快；
+   *   · **插话立刻停**：每次发下一块前查「第一块发出后对方有没有说话」，
+   *     有就丢弃剩余（真·说到一半被打断）。
+   *
+   * ⚠️ 基线取的是**第一块发出那一刻**的入站序号，不是本条消息的序号 ——
+   *    否则"生成期间对方补一句"就会把整轮截断（之前踩过：分段全没了）。
+   *
+   * ⚠️ 标记保护：块尾有未闭合的 `[`（`[画图:…` / `[表情包:…`）就先不发，
+   *    等它闭合，避免把标记发成半截字面量。
+   */
+  _makeStreamSender(msg, tStart, d, baseSeq = null) {
+    const scope = String(msg?.scope ?? '')
+    const reply = this.cfg.reply ?? {}
+    const self = this
+    /*
+     * ⚠️ 打断基线 = **被回复那条消息的入站序号**（不是"第一块发出那一刻"）。
+     * 用发出时刻当基线，会漏掉"生成期间 / 第一块刚发时对方就插话"的情况 ——
+     * 那些消息的 seq 已被算进基线里，之后永远查不到（用户实测「没打断貌似」）。
+     */
+    const st = { raw: '', sentUpTo: 0, sentAny: false, interrupted: false, silent: false, startSeq: (Number.isFinite(Number(baseSeq)) ? Number(baseSeq) : null), prevBlock: '', ids: [] }
+
+    const unclosedMarker = (s) => {
+      const open = (s.match(/[\[［]/g) ?? []).length
+      const close = (s.match(/[\]］]/g) ?? []).length
+      return open > close
+    }
+
+    const sendBlock = async (block) => {
+      /*
+       * ⚠️ 流式块**没走** `cleanModelText`（那是在整段生成后剥的），
+       * 所以时间注 `（+5 秒）` / `（3 秒前）` 会原样漏进气泡。这里单独补剥。
+       * （2026-11-20 实测：截图里出现「（+5 秒）饺子还行…」）
+       */
+      const rawBlock = String(block ?? '')
+      // ⚠️ [SILENT] 要在剥标记**之前**认，否则会被下面那条 strip 成空串、silent 标记丢失
+      if (/^[\[［]\s*(?:SILENT|沉默|不说话|不吭声)\s*[\]］]$/i.test(rawBlock.trim())) { st.silent = true; return }
+      let t = rawBlock
+        // 时间注
+        .replace(/[（(]\s*[+＋\-−–—－]?\s*\d+\s*(?:秒|分钟|小时|天)\s*(?:前|之前|以前)?\s*[）)]/g, '')
+        /*
+         * 内容标记（[找图:…] [画图:…] [场景图:…] [换装:…] …）**不能流式原样发出**：
+         * 它们要由 _handle 里的流水线执行（找图/画图会变成真图，作为配图在收尾发）。
+         * 不剥就会把「[找图:荠菜 野菜]」原样发给用户（2026-11-20 实测）。
+         */
+        .replace(/[\[［]\s*(找图|画图|场景图|插画|签名|改标签|改签名|戳一戳|戳|撤回|禁言|改名|发群|换装|换衣服|等)\s*[:：][^\]］]*[\]］]/g, '')
+        .replace(/[\[［]\s*(?:SILENT|戳|撤回|禁言|改名|发群|换装|换衣服)\s*[\]］]/gi, '')
+        // 汉字之间的空格并掉（模型自己敲的空格）
+        .replace(/([\u4e00-\u9fff\u3000-\u303f\uff00-\uffef])[ \t\u3000]+(?=[\u4e00-\u9fff\u3000-\u303f\uff00-\uffef])/g, '$1')
+        .trim()
+      if (!t) return
+      // 短气泡去掉句尾句号
+      while (t && t.length <= 20 && /[。．.]$/.test(t)) t = t.slice(0, -1)
+      t = balanceBrackets(t)
+      if (!t) return
+      if (/^[\[［]\s*(?:SILENT|沉默|不说话|不吭声)\s*[\]］]$/i.test(t)) { st.silent = true; return }
+      if (st.interrupted) return
+      // 第一块：立刻发；后续：按上一块字数等
+      if (st.sentAny) {
+        const gap = self._bubbleGapMs(st.prevBlock, reply, { inScene: self._inScene(msg) })
+        if (gap > 0) await new Promise((r) => setTimeout(r, gap))
+      }
+      // 插话检查：**第一块照发**（先给个反馈），之后每块前都查
+      if (st.sentAny && st.startSeq != null) {
+        const newer = self._inboundAfter(scope, st.startSeq)
+        if (newer.length > 0) {
+          st.interrupted = true
+          self.log.info?.(`bridge：插话打断 —— 用户又说了 ${newer.length} 句，停掉剩余气泡`)
+          try { msg.__interrupted = true } catch { /* 只读对象 */ }
+          return
+        }
+      }
+      try {
+        const ids = await self._send(msg, t)
+        if (Array.isArray(ids)) st.ids.push(...ids)
+        st.sentAny = true
+        st.prevBlock = t
+      } catch (e) {
+        self.log.warn?.(`bridge：流式气泡发送失败 — ${String(e?.message ?? e)}`)
+      }
+    }
+
+    const consumeLines = async () => {
+      // ★ 只有**空行**（\n\n）才切块发新气泡；单个 \n 不算分段（块内变空格）
+      for (;;) {
+        const rest = st.raw.slice(st.sentUpTo)
+        const mm = /\n[ \t]*\n/.exec(rest)
+        if (!mm) return
+        const block = rest.slice(0, mm.index)
+        if (unclosedMarker(block)) return   // 标记没闭合，再等等
+        st.sentUpTo += mm.index + mm[0].length
+        await sendBlock(block.replace(/([\u3000-\u303f\u4e00-\u9fff\uff00-\uffef])\n([\u3000-\u303f\u4e00-\u9fff\uff00-\uffef])/g, '$1$2').replace(/\n/g, ' '))
+        if (st.interrupted || st.silent) return
+      }
+    }
+
+    return {
+      st,
+      onDelta: (delta) => {
+        if (st.interrupted || st.silent) return
+        st.raw += String(delta ?? '')
+        // 不能 await（回调是同步的）—— 排进队列，失败只记日志
+        st.queue = (st.queue ?? Promise.resolve()).then(consumeLines).catch(() => {})
+      },
+      /** 生成结束：发掉剩下的尾块 + 配图，返回 message_id 数组。 */
+      finish: async (opts2 = {}) => {
+        await (st.queue ?? Promise.resolve())
+        const full = String(opts2.text ?? st.raw)
+        if (full.length > st.raw.length) st.raw = full
+        if (!st.interrupted && !st.silent) {
+          const rest = st.raw.slice(st.sentUpTo).trim()
+          if (rest) {
+            // 长行再按句切（和 splitMessage 口径一致）
+            const maxChars = Number(reply.maxChars ?? 500)
+            const pieces = reply.segment === true ? splitMessage(rest, maxChars, { clauseSplit: !self._isIntimateNow(msg) }) : [rest]
+            for (const pc of pieces) {
+              if (st.interrupted) break
+              await sendBlock(pc)
+            }
+          }
+          // 配图：文字发完后补一张（流式期间不带图）
+          if (opts2.cover?.url && !st.interrupted) {
+            try { const ids = await self._send(msg, '', opts2.cover) ; if (Array.isArray(ids)) st.ids.push(...ids) } catch { /* 图失败不影响文字 */ }
+          }
+        }
+        return st.ids
+      },
+    }
+  }
+
   async _send(msg, text, cover = null, target = null, opts = {}) {
     {
       const _origText = String(text ?? '')
@@ -12450,8 +12904,9 @@ const drewRecently = __drawRecentMs > 0 && lastDrewAt > 0 && Date.now() - lastDr
       const _ddText = String(text ?? '').trim()
       if (this._sentTextAt === undefined) this._sentTextAt = new Map()
       const _prev = this._sentTextAt.get(_ddScope)
-      if (_ddText && !cover?.url && _prev && _prev.text === _ddText && Date.now() - _prev.at < 30_000) {
-        this.log?.info?.(`bridge：重复回复去重 → 跳过「${_ddText.slice(0, 20)}」（30s 内已发过同一句）`)
+      if (_ddText && !cover?.url && _prev && Date.now() - _prev.at < 30_000
+        && (_prev.text === _ddText || nearSameText(_prev.text, _ddText))) {
+        this.log?.info?.(`bridge：重复回复去重 → 跳过「${_ddText.slice(0, 20)}」（30s 内已发过近似的一句）`)
         // 返回 [] 而不是裸 return —— 调用方（_handle）会读 `sentIds.length`，
         // 裸 return 得到 undefined → "Cannot read properties of undefined (reading 'length')"
         // → 整条回复被误判"发送失败"（2026-11-20 实测 5 次）。
@@ -12577,6 +13032,7 @@ const drewRecently = __drawRecentMs > 0 && lastDrewAt > 0 && Date.now() - lastDr
     const segments = buildOutgoingSegments(text, cover, {
       maxChars,
       segment: reply.segment === true,
+      clauseSplit: !this._isIntimateNow(msg),
     })
 
     /*
@@ -12588,48 +13044,20 @@ const drewRecently = __drawRecentMs > 0 && lastDrewAt > 0 && Date.now() - lastDr
      * 只在「有多段」时才有意义；单段不受影响。
      */
     /*
-     * ★★ 插话打断（2026-11-20 加固）：基线改用「被回复那条消息的入站序号」。
+     * ⚠️ 2026-11-20 回退：**不要**拿"被回复消息的 seq"当基线。
      *
-     * 原来 `__startSeq` 取的是 `_send` 开始那一刻的 `_inbound.seq` —— 但用户
-     * 往往是在**生成那 5~9 秒里**就补了新消息（`_recordInbound` 入口即把 seq 加过），
-     * 于是 `_inboundAfter(__startSeq)` 永远看不到它，多气泡照发 → 用户观感就是
-     * 「插话打断没实现」。
+     * 之前在这条路径上做过"生成期间用户又说话 → 只发第一段就停"，
+     * 结果私聊正常聊天里用户几乎总会补一句，于是**每条多气泡回复都被截成 1 条**，
+     * 用户反馈「分段发送是不是没了」（19:21:50 日志：插话打断 —— 停掉剩余 1 段）。
      *
-     * 现在（私聊 / 群聊，只要调用方给了 `opts.afterSeq` = 本条消息 seq）：把基线设成
-     * 这条消息的 seq，那么「用户在这条消息之后又说了话」会在第一个气泡发完后立刻
-     * 命中 i>0 的检查 → 只发第一段就停，交给更新的消息去回（新消息优先）。
-     *
-     * ⚠️ 为什么不"整条不发"：私聊的硬约定是**至少回 1 条**（check-concurrency
-     *    「私聊连发不能丢消息」），生成期间插话就整条吞掉会变成"问了不理"。
-     *    所以是**截断到第一段**，不是丢弃；单段回复没有"一半"，照常发出。
-     * 群聊只在"冲我来的"新消息（@我 / 引用我 / 我在回的那个人）时才截断，别人闲聊不误伤。
+     * 现在恢复原语义：基线 = **开始发送那一刻**的入站序号。
+     * 只有"发送过程中对方又说话"才会停掉剩余气泡（真·说到一半被打断），
+     * 生成期间的补话不算 —— 那是合并/排队该处理的事，不在这里截断。
      */
-    const __scopeStr = String(msg.scope ?? '')
-    const __isPrivateScope = __scopeStr.startsWith('private:')
-    const __afterSeq = Number.isFinite(opts?.afterSeq) ? Number(opts.afterSeq) : null
-    /*
-     * 「这条入站消息算不算打断」——
-     *   私聊：同一个人的任何新话都算；
-     *   群聊：只有**冲我来的**（@我 / 引用我的回复 / 就是我在回的那个人）才算，
-     *        避免群里别人闲聊把我的回复误截断。
-     */
-    const __isInterrupting = (e) => {
-      if (__isPrivateScope) return true
-      if (!e) return false
-      if (e.mentionsMe) return true
-      if (e.replyTo && msg?.messageId != null && String(e.replyTo) === String(msg.messageId)) return true
-      try { if (e.replyTo && typeof this._isMyReplyId === 'function' && this._isMyReplyId(__scopeStr, e.replyTo)) return true } catch { /* ignore */ }
-      const __who = String(msg?.userId ?? '')
-      if (__who && String(e.sender ?? '') === __who) return true
-      return false
-    }
-
     let __interrupt = false
     let __startSeq = 0
-    if (__afterSeq != null) {
-      __startSeq = __afterSeq
-    } else if (segments.length > 1) {
-      const __rec = this._inbound?.get(__scopeStr || 'unknown')
+    if (segments.length > 1) {
+      const __rec = this._inbound?.get(String(msg.scope ?? 'unknown'))
       __startSeq = __rec ? __rec.seq : 0
     }
 
@@ -12644,7 +13072,7 @@ const drewRecently = __drawRecentMs > 0 && lastDrewAt > 0 && Date.now() - lastDr
        * 用户却没看到要确认的东西（后面还会被草稿冷却挡住）。
        */
       if (segments.length > 1 && i > 0 && opts?.noInterrupt !== true) {
-        const __newMsgs = this._inboundAfter(msg.scope, __startSeq).filter(__isInterrupting)
+        const __newMsgs = this._inboundAfter(msg.scope, __startSeq)
         if (__newMsgs.length > 0) {
           __interrupt = true
           this.log.info?.(`bridge：插话打断 —— 用户又说了 ${__newMsgs.length} 句，停掉剩余 ${segments.length - i} 段`)
@@ -13849,7 +14277,7 @@ const drewRecently = __drawRecentMs > 0 && lastDrewAt > 0 && Date.now() - lastDr
        * （我第一版写的是 `clean === '[SILENT]'` —— 那会漏掉「[表情包][SILENT]」
        *   「好了[SILENT]」这种，而且大小写/全角都不认。`_handle` 那边有现成的正则。）
        */
-      const hadSilent = /[\[［]\s*[SILENTsilent]{6}\s*[\]］]/.test(rawText)
+      const hadSilent = /[\[［]\s*(?:SILENT|silent|沉默|不说话|不吭声)\s*[\]］]/.test(rawText)
       const clean = rawText.replace(/[\[［]\s*[SILENTsilent]{6}\s*[\]］]/g, '').trim()
       if (!clean) {
         if (hadSilent) {
@@ -14142,6 +14570,54 @@ const drewRecently = __drawRecentMs > 0 && lastDrewAt > 0 && Date.now() - lastDr
    *        （2026-11-19 用户：「发照片表情就是当前聊天的心情来」）
    *        —— 没给标签时，**按这段话里的情绪挑**，而不是随机抽一张。
    */
+  /**
+   * **接不上话时的"无语"回应**（2026-11-20，用户口径）。
+   *
+   * 「不像接话的话可以靠无语表情或者直接发无语」。
+   * 私聊必回，但有时确实没什么好说的 —— 那就别硬憋一段话：
+   *   ① 先发一个「无语」收藏表情（`[表情包:无语]` → _pickMface，
+   *      收藏库按标签找不到会退 QQ 内置"无语"）；
+   *   ② 表情发不出去（没有表情库/都被过滤）→ 退回两个字的「无语」。
+   *
+   * 配置：`qq.reply.speechless = { enabled?, sticker?, text? }`（默认开）。
+   *
+   * @returns {Promise<string|null>} 实际发出去的文案（表情返回 `[表情包:无语]`），没发成返回 null
+   */
+  async _sendSpeechless(msg, d) {
+    const c = this.cfg.reply?.speechless ?? {}
+    if (c.enabled === false) return null
+    const stickerName = String(c.sticker ?? '无语').trim() || '无语'
+    // ① 表情优先
+    try {
+      const mark = `[表情包:${stickerName}]`
+      const ids = await this._send(msg, mark)
+      if (Array.isArray(ids) && ids.length) {
+        this.stats.replied++
+        this.log.info?.(`bridge：接不上话 → 回了个「${stickerName}」表情`)
+        this._record(msg, d, mark, 'speechless-emoji')
+        return mark
+      }
+    } catch (e) {
+      this.log.warn?.(`bridge：无语表情发送失败 — ${String(e?.message ?? e).slice(0, 80)}`)
+    }
+    // ② 退回两个字
+    const txt = String(c.text ?? '无语').trim()
+    if (txt) {
+      try {
+        const ids = await this._send(msg, txt)
+        if (Array.isArray(ids) && ids.length) {
+          this.stats.replied++
+          this.log.info?.(`bridge：接不上话 → 发了「${txt}」`)
+          this._record(msg, d, txt, 'speechless-text')
+          return txt
+        }
+      } catch (e) {
+        this.log.warn?.(`bridge：无语文字发送失败 — ${String(e?.message ?? e).slice(0, 80)}`)
+      }
+    }
+    return null
+  }
+
   async _pickMface(name, ctx = {}) {
     const map = this.cfg.reply?.mfaceMap ?? {}
     const key = String(name ?? '').trim()
@@ -14534,6 +15010,16 @@ export function pickCrossGroupCover({
   return { url: lastSentImage.url }
 }
 
+/** 补齐气泡里**没闭合的括号/引号**（模型常写「（起来还能打个电话」少右括号）。 */
+export function balanceBrackets(s) {
+  let t = String(s ?? '')
+  const pairs = [['（','）'],['(',')'],['【','】']]
+  for (const [l, r] of pairs) {
+    const open = (t.split(l).length - 1), close = (t.split(r).length - 1)
+    if (open > close) t += r.repeat(open - close)
+  }
+  return t
+}
 export function buildOutgoingSegments(text, cover = null, opts = {}) {
   const maxChars = Number.isFinite(opts.maxChars) ? opts.maxChars : 500
   const segment = opts.segment === true
@@ -14541,8 +15027,8 @@ export function buildOutgoingSegments(text, cover = null, opts = {}) {
   const segments = []
   for (const piece of splitFaceMarkers(text)) {
     if (piece.kind === 'face' || piece.kind === 'mface') { segments.push(piece); continue }
-    const chunks = segment ? splitMessage(piece.text, maxChars) : [piece.text]
-    for (const c of chunks) if (String(c).trim()) segments.push({ kind: 'text', text: String(c) })
+    const chunks = segment ? splitMessage(piece.text, maxChars, { clauseSplit: opts.clauseSplit }) : [piece.text]
+    for (const c of chunks) if (String(c).trim()) segments.push({ kind: 'text', text: balanceBrackets(String(c)) })
   }
 
   /*
@@ -14556,7 +15042,7 @@ export function buildOutgoingSegments(text, cover = null, opts = {}) {
 }
 
 /** 按句读 + 长度拆分成多条消息（像人发消息那样）。 */
-export function splitMessage(text, maxChars = 500) {
+export function splitMessage(text, maxChars = 500, opts = {}) {
   const t = String(text).trim()
   if (!t) return []
 
@@ -14582,12 +15068,30 @@ export function splitMessage(text, maxChars = 500) {
   //
   // 现在：**只在换行处分条**（模型自己用换行控制发几条）；单行内的逗号不拆。
   // 仅当某一行本身超长（> maxChars）才按句末/长度硬切。
-  const blocks = t.split(/\n+/).map((s) => s.trim()).filter(Boolean)
-  if (blocks.length <= 1) return splitBySentences(t, maxChars)
+  /*
+   * ★★ 分段口径（2026-11-20 按用户明确要求改回）：
+   *   · **只有空行（两个换行 \n\n）才是分段** —— 模型空一行 = 分两条发；
+   *   · **单个换行（\n）不分段**，在同一气泡里变成空格；
+   * 之前那版按单换行 \n+ 拆，模型随手折行就被炸成多条，还显得碎。
+   */
+  const blocks = t
+    .split(/\n\s*\n/)
+    .map((s) => s.replace(/([\u3000-\u303f\u4e00-\u9fff\uff00-\uffef])\n([\u3000-\u303f\u4e00-\u9fff\uff00-\uffef])/g, '$1$2').replace(/\n/g, ' ').replace(/[ \t]{2,}/g, ' ').trim())
+    .filter(Boolean)
+  if (blocks.length === 0) return []
+  const __cs = opts.clauseSplit !== false   // close/场景模式：false，不按逗号拆碎
+  if (blocks.length <= 1) {
+    const one = splitBySentences(blocks[0], maxChars)
+    return __cs ? one.flatMap((x) => splitClauses(x)) : one
+  }
   const out = []
   for (const b of blocks) {
-    if (b.length <= maxChars) out.push(b)
-    else out.push(...splitBySentences(b, maxChars))
+    if (b.length <= maxChars) {
+      out.push(...(__cs ? splitClauses(b) : [b]))
+    } else {
+      const parts = splitBySentences(b, maxChars)
+      out.push(...(__cs ? parts.flatMap((x) => splitClauses(x)) : parts))
+    }
   }
   return out.filter((s) => s.trim())
 
@@ -14601,6 +15105,38 @@ export function splitMessage(text, maxChars = 500) {
  * @param {number} maxChars
  * @returns {string[]}
  */
+/** 长句分段阈值：整块超过这么多字，才按逗号/句末拆成多条短气泡。 */
+const CLAUSE_SPLIT_MIN = 14
+const CLAUSE_MIN_PIECE = 4
+/**
+ * 把一句长话按**逗号/句末标点**拆成几条短气泡（2026-11-20 用户：「这种情况分段发吧」）。
+ * 短句（<= CLAUSE_SPLIT_MIN）原样返回。太碎的尾巴（< CLAUSE_MIN_PIECE）并回前一块。
+ */
+function splitClauses(s) {
+  const t = String(s ?? '').trim()
+  if (t.length <= CLAUSE_SPLIT_MIN) return [t]
+  /*
+   * 2026-11-21：**标记 [...] 是原子**，不能在里面按「、」「，」切开。
+   * 现场：「你笑倒是不嫌累 [表情包:嘲讽、挑衅、竖中指]」被切成两条，
+   * 第一条只剩半个标记 → 变成方括号文字发出去。
+   * 先把标记换成占位符，切完再还原。
+   */
+  const marks = []
+  const masked = t.replace(/\[[^\]\n]*\]/g, (m) => {
+    marks.push(m)
+    return `\u0001${marks.length - 1}\u0001`
+  })
+  const parts = masked.split(/(?<=[，。！？；、!?,;~…])/).map((x) => x.trim()).filter(Boolean)
+  const out = []
+  for (const pc of parts) {
+    if (out.length > 0 && String(pc).replace(/[，。！？；、!?,;~…]/g, '').length < CLAUSE_MIN_PIECE) {
+      out[out.length - 1] += pc
+    } else out.push(pc)
+  }
+  const restore = (x) => String(x).replace(/\u0001(\d+)\u0001/g, (_, i) => marks[Number(i)] ?? '')
+  const cleaned = out.map((x) => restore(x).replace(/[，、；,;]+$/, '').trim()).filter(Boolean)
+  return cleaned.length > 0 ? cleaned : [t]
+}
 function splitBySentences(text, maxChars) {
   const t = String(text).trim()
   if (!t) return []
