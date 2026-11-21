@@ -1748,7 +1748,15 @@ export function parseMessage(raw) {
  */
 export function normalizeEvent(ev) {
   if (!ev || ev.post_type !== 'message') return null
-  const parsed = parseMessage(ev.message)
+  /*
+   * ★ 2026-11-21：事件推送里 message 可能是**空数组**，真正的段只在 raw_message 的 CQ 码里
+   *   （get_msg 会返回完整 message，但 ws 事件推送不同）。原来只 parseMessage(ev.message)
+   *   → 空数组 → text 空 → 卡片/转发/图片全丢。空就回退用 raw_message 解析。
+   */
+  const __m = ev.message
+  const __useRaw = !(Array.isArray(__m) && __m.length)
+  if (__useRaw) { try { console.error('[MSG_FALLBACK] msgLen=' + JSON.stringify(__m).slice(0,40) + ' raw=' + String(ev.raw_message ?? '').slice(0,100)) } catch {} }
+  const parsed = parseMessage(__useRaw ? (ev.raw_message ?? __m) : __m)
   const kind = ev.message_type === 'group' ? 'group' : 'private'
   const userId = String(ev.user_id ?? '')
   const groupId = ev.group_id != null ? String(ev.group_id) : undefined
